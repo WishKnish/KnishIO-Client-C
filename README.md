@@ -3,9 +3,9 @@
 </div>
 <div style="text-align:center">info@wishknish.com | https://wishknish.com</div>
 
-# Knish.IO C/C++ Client SDK
+# Knish.IO C Client SDK
 
-This is the official C/C++ implementation of the Knish.IO client SDK. Its purpose is to expose libraries for building and signing Knish.IO Molecules, composing Atoms, generating Wallets, and much more with native performance and quantum-resistant security.
+This is the official C implementation of the Knish.IO client SDK. Its purpose is to expose libraries for building and signing Knish.IO Molecules, composing Atoms, generating Wallets, and much more with native performance and quantum-resistant security.
 
 ## Installation
 
@@ -625,115 +625,6 @@ This method involves individually building Atoms and Molecules, triggering the s
     1. Balance and ContinuID queries → returns wallet information
     2. Wallet list queries → returns array of wallet data
     3. Molecule proposals, authorization requests, token operations → returns transaction metadata
-
-## Memory Management
-
-The C SDK follows strict memory management principles:
-
-- **Input parameters**: You own and must manage input strings and structures
-- **Output parameters**: Functions allocate memory that you must free with `free()`
-- **Object lifetimes**: Use `knishio_*_free()` functions to cleanup SDK objects
-- **Error handling**: Always check return codes before using output parameters
-
-Example cleanup pattern:
-```c
-knishio_client_t* client = NULL;
-knishio_wallet_t* wallet = NULL;
-char* result = NULL;
-
-// ... use client, wallet, result ...
-
-// Cleanup in reverse order
-if (result) free(result);
-if (wallet) knishio_wallet_free(wallet);
-if (client) knishio_client_destroy(client);
-```
-
-## Architectural Differences from JavaScript SDK
-
-The C SDK provides **100% functional equivalency** with the JavaScript SDK but uses different architectural patterns due to C language constraints:
-
-### **Parameter Passing Patterns**
-
-| JavaScript SDK | C SDK Equivalent |
-|----------------|------------------|
-| `new Wallet({secret, token, ...})` | `knishio_wallet_create_from_params(wallet, secret, bundle, token, address, position, batchId, characters)` |
-| `new Molecule({secret, sourceWallet, ...})` | `knishio_molecule_create(molecule, secret, bundle, sourceWallet, remainderWallet, cellSlug, version)` |
-| `new Atom({position, isotope, ...})` | `knishio_atom_create_with_meta(atom, position, address, isotope, token, value, batchId, metaType, metaId, meta, count)` |
-
-### **Key Differences**
-
-1. **Object Constructors vs Individual Parameters**
-   - **JavaScript**: Rich object literals with optional properties
-   - **C**: Individual parameters in specific order (NULL for optional)
-
-2. **Authentication Flow** 
-   - **JavaScript**: Async `await client.requestAuthToken({...})`
-   - **C**: Synchronous `knishio_client_set_secret()` with stored secret usage
-
-3. **Memory Management**
-   - **JavaScript**: Automatic garbage collection
-   - **C**: Manual allocation/deallocation with `free()` and `knishio_*_free()`
-
-4. **Error Handling**
-   - **JavaScript**: Exceptions and promises
-   - **C**: Return codes (`knishio_error_t`) and output parameters
-
-## Demo System
-
-This SDK includes comprehensive examples demonstrating practical implementations:
-
-```bash
-# From the project root directory
-cd build
-
-# Run self-test (comprehensive validation)
-./self-test
-
-# Run integration tests
-./integration-test
-
-# Run specific examples (if built)
-./examples/basic_usage
-./examples/wallet_creation
-./examples/token_transfer
-./examples/metadata_management
-```
-
-The examples system provides:
-- **Basic usage** - Client initialization and authentication
-- **Wallet operations** - Creation, validation, and management
-- **Token operations** - Transfers and balance queries
-- **Metadata management** - Storing and querying metadata
-- **Molecule composition** - Building custom transactions
-
-See `examples/README.md` for complete setup instructions and usage guides.
-
-## Security
-
-This SDK implements quantum-resistant cryptography for future-proof security:
-
-- All signatures use XMSS (post-quantum secure)
-- Encryption uses ML-KEM768 via liboqs (NIST approved)
-- One-time keys prevent signature reuse
-- Secure random generation for all cryptographic operations
-- Memory-safe implementation with bounds checking
-- Stack protection and buffer overflow detection
-- Secure memory clearing for sensitive data
-
-For security issues, please email security@wishknish.com instead of using the issue tracker.
-
-## Features
-
-- 🚀 **Post-Blockchain Architecture**: DAG-based distributed ledger with organism-inspired transaction model
-- 🔐 **Quantum-Resistant Security**: XMSS signatures and ML-KEM768 (NIST FIPS-203) encryption via liboqs
-- ⚡ **Network-Bound Scalability**: Performance improves as the network grows
-- 🔄 **Cross-Platform Compatibility**: Full compatibility with JavaScript, Kotlin, PHP, and Python SDKs
-- 📦 **Comprehensive SDK**: Complete API for wallets, tokens, metadata, and transactions
-- 🧬 **Molecular Composition**: Atomic operations grouped into molecular transactions
-- 🏢 **Cellular Architecture**: Application-specific sub-ledgers with isolation
-- 💾 **Memory Safety**: Strict memory management with explicit allocation/deallocation
-- ⚙️ **C17 Standard**: Modern C with safety features and performance optimization
 
 ## Getting Help
 
