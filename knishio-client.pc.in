@@ -1,0 +1,30 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: KnishIO Client C SDK
+Description: @PROJECT_DESCRIPTION@
+Version: @PROJECT_VERSION@
+URL: https://github.com/KnishIO/KnishIO-Client-SDK
+Requires: libcurl, cjson
+
+Libs: -L${libdir} -lknishio-client
+Libs.private: -lm -lpthread @GMP_LIBRARIES@ @LIBOQS_LIBRARIES@
+Cflags: -I${includedir}
+
+# Feature flags for dependent packages
+quantum_crypto=@HAVE_LIBOQS@
+bigint_support=@GMP_FOUND@
+http_client=@CURL_FOUND@
+json_parser=@CJSON_FOUND@
+
+# 2025 C17 best practices compliance
+c_standard=17
+fortify_source=1
+stack_protection=1
+
+# SDK Implementation Guide compliance
+quantum_resistant=1
+post_blockchain_dlt=1
+performance_target_init_ms=50

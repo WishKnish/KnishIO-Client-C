@@ -1,0 +1,10 @@
+# KnishIO Client SDK Package Configuration
+
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/KnishIOClientTargets.cmake")
+
+# Required dependencies
+find_dependency(Threads REQUIRED)
+
+check_required_components(KnishIOClient)
