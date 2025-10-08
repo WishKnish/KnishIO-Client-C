@@ -694,6 +694,204 @@ The C SDK provides **100% functional equivalency** with the JavaScript SDK but u
 
 The C SDK maintains **perfect cryptographic compatibility** and **identical functional outcomes** with the JavaScript SDK while respecting C language conventions.
 
+## Demo System
+
+This SDK includes comprehensive examples demonstrating practical implementations:
+
+```bash
+# From the project root directory
+cd build
+
+# Run self-test (comprehensive validation)
+./self-test
+
+# Run integration tests
+./integration-test
+
+# Run specific examples (if built)
+./examples/basic_usage
+./examples/wallet_creation
+./examples/token_transfer
+./examples/metadata_management
+```
+
+The examples system provides:
+- **Basic usage** - Client initialization and authentication
+- **Wallet operations** - Creation, validation, and management
+- **Token operations** - Transfers and balance queries
+- **Metadata management** - Storing and querying metadata
+- **Molecule composition** - Building custom transactions
+
+See `examples/README.md` for complete setup instructions and usage guides.
+
+## Security
+
+This SDK implements quantum-resistant cryptography for future-proof security:
+
+- All signatures use XMSS (post-quantum secure)
+- Encryption uses ML-KEM768 via liboqs (NIST approved)
+- One-time keys prevent signature reuse
+- Secure random generation for all cryptographic operations
+- Memory-safe implementation with bounds checking
+- Stack protection and buffer overflow detection
+- Secure memory clearing for sensitive data
+
+For security issues, please email security@wishknish.com instead of using the issue tracker.
+
+## Features
+
+- 🚀 **Post-Blockchain Architecture**: DAG-based distributed ledger with organism-inspired transaction model
+- 🔐 **Quantum-Resistant Security**: XMSS signatures and ML-KEM768 (NIST FIPS-203) encryption via liboqs
+- ⚡ **Network-Bound Scalability**: Performance improves as the network grows
+- 🔄 **Cross-Platform Compatibility**: Full compatibility with JavaScript, Kotlin, PHP, and Python SDKs
+- 📦 **Comprehensive SDK**: Complete API for wallets, tokens, metadata, and transactions
+- 🧬 **Molecular Composition**: Atomic operations grouped into molecular transactions
+- 🏢 **Cellular Architecture**: Application-specific sub-ledgers with isolation
+- 💾 **Memory Safety**: Strict memory management with explicit allocation/deallocation
+- ⚙️ **C17 Standard**: Modern C with safety features and performance optimization
+
 ## Getting Help
 
 Knish.IO is under active development, and our team is ready to assist with integration questions. The best way to seek help is to stop by our [Telegram Support Channel](https://t.me/wishknish). You can also [send us a contact request](https://knish.io/contact) via our website.
+
+### Support Resources
+
+- 📧 Email: info@wishknish.com
+- 💬 Telegram: [WishKnish Support](https://t.me/wishknish)
+- 🐛 Issues: [GitHub Issues](https://github.com/WishKnish/KnishIO-Client-C/issues)
+- 🌐 Website: [https://knish.io](https://knish.io)
+- 📚 [Technical Whitepaper](https://github.com/WishKnish/KnishIO-Technical-Whitepaper)
+- 🔗 Related SDKs:
+  - [JavaScript Client](https://github.com/WishKnish/KnishIO-Client-JS)
+  - [Kotlin Client](https://github.com/WishKnish/KnishIO-Client-Kotlin)
+  - [PHP Client](https://github.com/WishKnish/KnishIO-Client-PHP)
+  - [Python Client](https://github.com/WishKnish/KnishIO-Client-Python)
+
+## Development Notes
+
+### Cross-Platform Testing
+
+The C SDK maintains 100% cryptographic compatibility with all other SDKs through rigorous validation testing. The implementation ensures identical outputs across all platforms.
+
+### Prerequisites
+
+- **CMake** 3.16 or higher
+- **C17 compatible compiler** (GCC 9+, Clang 10+, or MSVC 2019+)
+- **liboqs** for quantum-resistant cryptography
+- **libwebsockets** for real-time subscriptions
+- **libcurl** for HTTP/GraphQL communication
+- **cjson** for JSON parsing and generation
+- **GMP** for arbitrary precision arithmetic
+
+### Building from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/WishKnish/KnishIO-Client-C.git
+cd KnishIO-Client-C
+
+# Create build directory
+mkdir build && cd build
+
+# Configure with CMake
+cmake ..
+
+# Build the library
+make -j$(nproc)
+
+# Run tests
+make test
+
+# Install system-wide (optional)
+sudo make install
+```
+
+### Build Configuration Options
+
+```bash
+# Build with examples
+cmake -DKNISHIO_BUILD_EXAMPLES=ON ..
+
+# Build with tests
+cmake -DKNISHIO_BUILD_TESTS=ON ..
+
+# Build shared library
+cmake -DBUILD_SHARED_LIBS=ON ..
+
+# Build with debug symbols
+cmake -DCMAKE_BUILD_TYPE=Debug ..
+
+# Build with optimizations
+cmake -DCMAKE_BUILD_TYPE=Release ..
+```
+
+### Running Tests
+
+```bash
+# From build directory
+cd build
+
+# Run all tests
+ctest
+
+# Run specific test
+ctest -R test_shake256
+
+# Run tests with verbose output
+ctest -V
+
+# Run self-test executable
+./self-test
+
+# Run integration tests
+./integration-test
+```
+
+### Static vs Dynamic Linking
+
+```bash
+# Static linking (recommended - tested working)
+gcc -std=c17 -I./include $(pkg-config --cflags libcjson liboqs libwebsockets) \
+    -o myapp myapp.c -L. -L/opt/homebrew/lib -lknishio-client-static \
+    $(pkg-config --libs libcjson liboqs libwebsockets) \
+    -lcurl -lgmp -lssl -lcrypto -lz -lpthread
+
+# Dynamic linking (if shared library is available)
+gcc -o myapp myapp.c -lknishio-client -Wl,-rpath,/usr/local/lib
+```
+
+### Platform-Specific Notes
+
+#### macOS (Homebrew)
+```bash
+brew install cmake liboqs libwebsockets curl cjson gmp
+export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
+```
+
+#### Ubuntu/Debian
+```bash
+sudo apt-get install cmake liboqs-dev libwebsockets-dev \
+    libcurl4-openssl-dev libcjson-dev libgmp-dev
+```
+
+#### Windows (MSVC)
+- Install Visual Studio 2019 or later
+- Install vcpkg for dependency management
+- Install dependencies: `vcpkg install liboqs curl cjson gmp`
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Authors
+
+- **WishKnish Corp.** - *Initial work* - [WishKnish](https://wishknish.com)
+- **Eugene Teplitsky** - *Lead Developer*
+
+See also the list of [contributors](https://github.com/WishKnish/KnishIO-Client-C/contributors) who participated in this project.
+
+---
+
+<div style="text-align:center">
+  <strong>Built with ❤️ for the post-blockchain future</strong>
+</div>
