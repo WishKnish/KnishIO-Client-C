@@ -84,3 +84,5 @@ auth_demo
 debug_shake256
 
 .idea/
+# macOS
+**/.DS_Store
