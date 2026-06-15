@@ -99,7 +99,7 @@ knishio_policy_meta_t* knishio_policy_meta_create(
  * @brief Normalize policy JSON structure
  * Equivalent to JavaScript: PolicyMeta.normalizePolicy()
  */
-cJSON* knishio_policy_meta_normalize_policy(cJSON* policy) {
+cJSON* knishio_policy_normalize_json(cJSON* policy) {
     if (!policy) {
         return cJSON_CreateObject();
     }
@@ -139,27 +139,27 @@ cJSON* knishio_policy_meta_normalize_policy(cJSON* policy) {
  * @brief Fill default policy values
  * Equivalent to JavaScript: PolicyMeta.fillDefault()
  */
-knishio_error_t knishio_policy_meta_fill_default(
-    knishio_policy_meta_t* policy_meta,
+knishio_error_t knishio_policy_fill_defaults(
+    cJSON* policy_json,
     const char** meta_keys,
     size_t meta_key_count
 ) {
-    if (!policy_meta || !meta_keys) {
+    if (!policy_json || !meta_keys) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
+
     /* Extract read and write policy keys */
     const char* policy_types[] = { "read", "write" };
-    
+
     for (size_t type_idx = 0; type_idx < 2; type_idx++) {
         const char* policy_type = policy_types[type_idx];
         bool is_write_policy = (strcmp(policy_type, "write") == 0);
-        
+
         /* Get or create policy section */
-        cJSON* policy_section = cJSON_GetObjectItem(policy_meta->policy, policy_type);
+        cJSON* policy_section = cJSON_GetObjectItem(policy_json, policy_type);
         if (!policy_section) {
             policy_section = cJSON_CreateObject();
-            cJSON_AddItemToObject(policy_meta->policy, policy_type, policy_section);
+            cJSON_AddItemToObject(policy_json, policy_type, policy_section);
         }
         
         /* Get existing policy keys */

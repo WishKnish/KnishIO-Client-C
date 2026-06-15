@@ -62,19 +62,5 @@ knishio_wallet_t* knishio_response_wallet_list_to_client_wallet(knishio_json_t *
     return wallet;
 }
 
-/**
- * @brief Free wallet (placeholder)
- */
-void knishio_wallet_free(knishio_wallet_t *wallet) {
-    if (!wallet) {
-        return;
-    }
-
-    knishio_free(wallet->bundle_hash);
-    knishio_free(wallet->token);
-    knishio_free(wallet->address);
-    knishio_free(wallet->position);
-    knishio_free(wallet->pubkey);
-    knishio_free(wallet->created_at);
-    knishio_free(wallet);
-}
+/* knishio_wallet_free removed: the canonical definition lives in wallet.c
+ * (this placeholder was a duplicate symbol that macOS ld64 rejects). */

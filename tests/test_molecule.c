@@ -2,7 +2,6 @@
 #include "knishio/molecule.h"
 #include "knishio/atom.h"
 #include "knishio/wallet.h"
-#include "knishio/crypto/signatures.h"
 #include "knishio/utils/memory.h"
 #include <string.h>
 #include <time.h>

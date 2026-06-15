@@ -133,51 +133,11 @@ knishio_error_t knishio_client_create_rule(
     knishio_create_rule_result_t** result
 );
 
-/**
- * @brief Enforce policies on molecule
- * 
- * @param client KnishIO client instance
- * @param molecule Molecule to evaluate
- * @param result Output policy result (allocated, must be freed)
- * @return KNISHIO_SUCCESS on success, error code on failure
- */
-knishio_error_t knishio_client_enforce_policy(
-    knishio_client_t* client,
-    const knishio_molecule_t* molecule,
-    knishio_policy_result_t** result
-);
-
-/**
- * @brief Check meta access permissions
- * 
- * @param client KnishIO client instance
- * @param meta_type Meta type
- * @param meta_id Meta ID
- * @param wallet_address Wallet address requesting access
- * @param is_write Write access flag
- * @param result Output policy result (allocated, must be freed)
- * @return KNISHIO_SUCCESS on success, error code on failure
- */
-knishio_error_t knishio_client_check_meta_access(
-    knishio_client_t* client,
-    const char* meta_type,
-    const char* meta_id,
-    const char* wallet_address,
-    bool is_write,
-    knishio_policy_result_t** result
-);
-
-/**
- * @brief Load policy from query result into policy engine
- * 
- * @param client KnishIO client instance
- * @param query_result Query result containing policy data
- * @return KNISHIO_SUCCESS on success, error code on failure
- */
-knishio_error_t knishio_client_load_policy_from_query(
-    knishio_client_t* client,
-    const knishio_query_policy_result_t* query_result
-);
+/* Client-side policy enforcement (enforce_policy / check_meta_access /
+ * load_policy_from_query) removed for cross-SDK alignment — it depended on a
+ * C-only policy engine no other SDK has; enforcement is the validator's job.
+ * The molecule-building policy API above (create_policy / create_rule /
+ * query_policy) is retained and matches the JS reference. */
 
 /**
  * @brief Free policy creation result

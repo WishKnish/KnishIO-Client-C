@@ -517,95 +517,12 @@ knishio_error_t knishio_client_create_rule(
     return KNISHIO_SUCCESS;
 }
 
-/* Policy enforcement integration */
-
-knishio_error_t knishio_client_enforce_policy(
-    knishio_client_t* client,
-    const knishio_molecule_t* molecule,
-    knishio_policy_result_t** result
-) {
-    if (!client || !molecule || !result) {
-        return KNISHIO_ERROR_INVALID_ARGS;
-    }
-    
-    /* Get policy engine from client */
-    /* Create a policy engine for evaluation */
-    knishio_policy_engine_t* engine = knishio_policy_engine_create();
-    if (!engine) {
-        /* No policy engine - allow by default */
-        knishio_policy_result_t* policy_result = calloc(1, sizeof(knishio_policy_result_t));
-        if (!policy_result) {
-            return KNISHIO_ERROR_MEMORY;
-        }
-        policy_result->allowed = true;
-        *result = policy_result;
-        return KNISHIO_SUCCESS;
-    }
-    
-    knishio_error_t error = knishio_policy_engine_evaluate_molecule(engine, molecule, result);
-    knishio_policy_engine_free(engine);
-    return error;
-}
-
-knishio_error_t knishio_client_check_meta_access(
-    knishio_client_t* client,
-    const char* meta_type,
-    const char* meta_id,
-    const char* wallet_address,
-    bool is_write,
-    knishio_policy_result_t** result
-) {
-    if (!client || !meta_type || !meta_id || !wallet_address || !result) {
-        return KNISHIO_ERROR_INVALID_ARGS;
-    }
-    
-    /* Get policy engine from client */
-    /* Create a policy engine for evaluation */
-    knishio_policy_engine_t* engine = knishio_policy_engine_create();
-    if (!engine) {
-        /* No policy engine - allow by default */
-        knishio_policy_result_t* policy_result = calloc(1, sizeof(knishio_policy_result_t));
-        if (!policy_result) {
-            return KNISHIO_ERROR_MEMORY;
-        }
-        policy_result->allowed = true;
-        *result = policy_result;
-        return KNISHIO_SUCCESS;
-    }
-    
-    knishio_error_t error = knishio_policy_engine_check_meta_access(
-        engine, meta_type, meta_id, wallet_address, is_write, result);
-    knishio_policy_engine_free(engine);
-    return error;
-}
-
-/* Load policy from query result */
-knishio_error_t knishio_client_load_policy_from_query(
-    knishio_client_t* client,
-    const knishio_query_policy_result_t* query_result
-) {
-    if (!client || !query_result || !query_result->success || !query_result->policy_data) {
-        return KNISHIO_ERROR_INVALID_ARGS;
-    }
-    
-    /* Get policy engine from client */
-    /* Create a policy engine for evaluation */
-    knishio_policy_engine_t* engine = knishio_policy_engine_create();
-    if (!engine) {
-        return KNISHIO_ERROR_POLICY_ENGINE_NOT_INITIALIZED;
-    }
-    
-    /* Parse policy data */
-    cJSON* policy_obj = cJSON_Parse(query_result->policy_data);
-    if (!policy_obj) {
-        return KNISHIO_ERROR_POLICY_INVALID;
-    }
-    
-    knishio_error_t error = knishio_policy_engine_load_policy(engine, policy_obj);
-    cJSON_Delete(policy_obj);
-    
-    return error;
-}
+/* Client-side policy enforcement (knishio_client_enforce_policy /
+ * knishio_client_check_meta_access / knishio_client_load_policy_from_query)
+ * removed for cross-SDK alignment: it relied on a C-only knishio_policy_engine_*
+ * that no other KnishIO SDK has — policy enforcement is the validator's
+ * responsibility. The molecule-building policy API (create_policy / create_rule /
+ * query_policy) is retained and matches the JS reference. */
 
 /* Free policy creation result */
 void knishio_create_policy_result_free(knishio_create_policy_result_t* result) {

@@ -4,16 +4,12 @@
 #include <string.h>
 
 /* External test function declarations */
-extern void test_memory_suite(void);
-extern void test_string_suite(void);
-extern void test_error_suite(void);
+/* Suites whose sources are compiled into knishio_tests (TEST_SOURCES). The
+ * memory/string/error/bigint/signature/performance/leak suites live in files
+ * not currently in the build — broader test resurrection is a follow-up. */
 extern void test_shake256_suite(void);
-extern void test_bigint_suite(void);
 extern void test_wallet_suite(void);
-extern void test_signature_suite(void);  /* WOTS+ quantum-resistant signature tests */
 extern void test_molecule_suite(void);   /* Molecular validation and signing tests */
-extern void test_init_performance_suite(void); /* SDK initialization performance benchmarks */
-extern void test_memory_leak_suite(void); /* Systematic memory leak detection tests */
 
 /* Global test state */
 static int tests_run = 0;
@@ -75,44 +71,16 @@ int main(int argc, char *argv[]) {
     }
     
     /* Run test suites based on filter */
-    if (filter == NULL || strstr("memory", filter) != NULL) {
-        run_test_suite("Memory Management", test_memory_suite);
-    }
-    
-    if (filter == NULL || strstr("string", filter) != NULL) {
-        run_test_suite("String Utilities", test_string_suite);
-    }
-    
-    if (filter == NULL || strstr("error", filter) != NULL) {
-        run_test_suite("Error Handling", test_error_suite);
-    }
-    
     if (filter == NULL || strstr("shake256", filter) != NULL) {
         run_test_suite("SHAKE256 Crypto", test_shake256_suite);
     }
-    
-    if (filter == NULL || strstr("signature", filter) != NULL) {
-        run_test_suite("WOTS+ Signature Verification", test_signature_suite);
-    }
-    
+
     if (filter == NULL || strstr("molecule", filter) != NULL) {
         run_test_suite("Molecular Validation & Signing", test_molecule_suite);
     }
-    
-    if (filter == NULL || strstr("bigint", filter) != NULL) {
-        run_test_suite("BigInt Arithmetic", test_bigint_suite);
-    }
-    
+
     if (filter == NULL || strstr("wallet", filter) != NULL) {
         run_test_suite("Wallet Generation", test_wallet_suite);
-    }
-    
-    if (filter == NULL || strstr("performance", filter) != NULL) {
-        run_test_suite("Performance Benchmarks", test_init_performance_suite);
-    }
-    
-    if (filter == NULL || strstr("memory", filter) != NULL) {
-        run_test_suite("Memory Leak Detection", test_memory_leak_suite);
     }
     
     /* Cross-SDK compatibility tests */
@@ -151,25 +119,6 @@ int main(int argc, char *argv[]) {
     return UnityEnd();
 }
 
-/* Version check test */
-void test_version_check(void) {
-    const char *version = knishio_version();
-    TEST_ASSERT_NOT_NULL(version);
-    TEST_ASSERT_TRUE(strlen(version) > 0);
-    printf("KnishIO SDK Version: %s\n", version);
-}
-
-/* Basic initialization test */
-void test_initialization(void) {
-    /* SDK should already be initialized in main() */
-    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_init());
-    
-    /* Test error message function */
-    const char *msg = knishio_error_message(KNISHIO_SUCCESS);
-    TEST_ASSERT_NOT_NULL(msg);
-    TEST_ASSERT_EQUAL_STRING("Success", msg);
-    
-    msg = knishio_error_message(KNISHIO_ERROR_MEMORY);
-    TEST_ASSERT_NOT_NULL(msg);
-    TEST_ASSERT_EQUAL_STRING("Memory allocation failed", msg);
-}
+/* Note: orphaned helpers test_version_check/test_initialization were removed —
+ * they were never invoked by main() and referenced knishio_error_message, which
+ * is declared (knishio.h) but unimplemented (a separate pre-existing gap). */
