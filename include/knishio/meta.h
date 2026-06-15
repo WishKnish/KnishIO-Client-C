@@ -24,7 +24,7 @@ typedef struct knishio_meta_array knishio_meta_array_t;
 
 /* Constants */
 #define KNISHIO_MAX_META_KEY_LENGTH 256     /**< Maximum meta key length */
-#define KNISHIO_MAX_META_VALUE_LENGTH 1024  /**< Maximum meta value length */
+#define KNISHIO_MAX_META_VALUE_LENGTH 2048  /**< Maximum meta value length (fits base64 ML-KEM768 pubkey ~1580 chars) */
 
 /* Meta structure with C17 static assertions */
 struct knishio_meta {

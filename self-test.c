@@ -65,8 +65,8 @@ static const char* DEFAULT_CONFIG_JSON = "{"
     "\"tests\": {"
         "\"crypto\": {"
             "\"seed\": \"TESTSEED\","
-            "\"secret\": \"e8ffc86d60fc6a73234a834166e7436e21df6c3209dfacc8d0bd6595707872c3799abbf7deee0f9c4b58de1fd89b9abb67a207558208d5ccf550c227d197c24e9fcc3707aeb53c4031d38392020ff72bcaa0f728aa8bc3d47d95ff0afc04d8fcdb69bff638ce56646c154fc92aa517d3c40f550d2ccacbd921724e1d94b82aed2c8e172a8a7ed5a6963f5890157fe77222b97af3787741f9d3cec0b40aec6f07ae4b2b24614f0a20e035aee0df04e176175dc100eb1b00dd7ea95c28cdec47958336945333c3bef24719ed949fa56d1541f24c725d4f374a533bf255cf22f4596147bcd1ba05abcecbe9b12095e1fdddb094616894c366498be0b5785c180100efb3c5b689fc1c01131633fe1775df52a970e9472ab7bc0c19f5742b9e9436753cd16024b2d326b763eca68c414755a0d2fdbb927f007e9413f1190578b2033a03d29387f5aea71b07a5ce80fbfd45be4a15440faadeac50e41846022894fc683a52328b470bc1860c8b038d7258f504178918502b93d84d8b0fbef3e02f89f83cb1ff033a2bdbdf2a2ba78d80c12aa8b2d6c10d76c468186bd4a4e9eacc758546bb50ed7b1ee241cc5b93ff924c7bbee6778b27789e1f9104c917fc93f735eee5b25c07a883788f3d2e0771e751c4f59b76f8426027ac2b07a2ca84534433d0a1b86cef3288e7d79e8b175a3955848cfd1dfbdcd6b5bafcf6789e56e8ef40af\","
-            "\"bundle\": \"fee9c2b9a964d060eb4645c4001db805c3c4b0cc9bba12841036eba4bf44b831\""
+            "\"secret\": \"e8ffc86d60fc6a73234a834166e7436e21df6c3209dfacc8d0bd6595707872c3799abbf7deee0f9c4b58de1fd89b9abb67a207558208d5ccf550c227d197c24e9fcc3707aeb53c4031d38392020ff72bcaa0f728aa8bc3d47d95ff0afc04d8fcdb69bff638ce56646c154fc92aa517d3c40f550d2ccacbd921724e1d94b82aed2c8e172a8a7ed5a6963f5890157fe77222b97af3787741f9d3cec0b40aec6f07ae4b2b24614f0a20e035aee0df04e176175dc100eb1b00dd7ea95c28cdec47958336945333c3bef24719ed949fa56d1541f24c725d4f374a533bf255cf22f4596147bcd1ba05abcecbe9b12095e1fdddb094616894c366498be0b5785c180100efb3c5b689fc1c01131633fe1775df52a970e9472ab7bc0c19f5742b9e9436753cd16024b2d326b763eca68c414755a0d2fdbb927f007e9413f1190578b2033a03d29387f5aea71b07a5ce80fbfd45be4a15440faadeac50e41846022894fc683a52328b470bc1860c8b038d7258f504178918502b93d84d8b0fbef3e02f89f83cb1ff033a2bdbdf2a2ba78d80c12aa8b2d6c10d76c468186bd4a4e9eacc758546bb50ed7b1ee241cc5b93ff924c7bbee6778b27789e1f9104c917fc93f735eee5b25c07a883788f3d2e0771e751c4f59b76f8426027ac2b07a2ca84534433d0a1b86cef3288e7d79e8b175a3955848cfd1dfbdcd6b5bafcf6789e56e8ef40af09a764147640eb10b426349f6ffc8e299cdcebffc3a9d6be362ba33fbf648bf06ea4c35890c705df479030fd1d0669d289dcbabaaf78f945c37fc69f3823dbfa99bdf3cf7bb7be8f810a7eab5167e26691642c3982aa203687d0e674154c970cfc1822f9917f2100ae8950cf0fcab074bfb578f4f6e78df490f0fd9becdba7151f2a5733cc2a3df845aa17bdc49765163d635de5c3a1c376683e622fe3e0a6092a35dfedc4bc5bc9c120d2ed06d899775bcd16417318f4b5c7ba27fdc0a442884a69e71543a13cb26762a0df4f47807924a15da7895b6c96accb09394fdf0232d922a99f4a9f95d46da7b9050eb661f3329fe98372175a82d5e5296e4a31c040da6407194251b5baa7338071d1edfc51f55ca409ffd885045e47412f97a4bbe2e73794d8b276ccb446843bbc38c7e580dc4dc2ba94556de0d80681f60d1b2953021e08a60e26685adf61eff91d9ca7daa04a72de9dc2822655648f3c0f5016967b0e8104d70add65b9b9ce98b3aaa10106f5f32133775a71ab9b006307e390b697c77bb828c3ad07bfdcc3ecf3149ac98dc8a230c281365719d67fd2450c717ad1391880d9c17cb8ba96b6254ac783aeae04f84f14829e4efc6ee73b77670cb9ea96dc73e5464bc4cf46cdd2ebe75009d9c4ce6097eab2858ef2899b3dcd147c579939f45c4ad2aa283b6e9c8ca2539abd5e2332cff851f4fa8c4767732d7977\","
+            "\"bundle\": \"2b77ff69a6d2f8108250389377faa6cbd42caaefa2f966e1b68a4b3fc022c83e\""
         "},"
         "\"metaCreation\": {"
             "\"seed\": \"TESTSEED\","
@@ -376,6 +376,19 @@ static bool test_crypto(test_results_t *results, const cJSON *config) {
  * Test 2: Metadata Creation Test
  * Creates metadata molecule with M and I isotopes following JavaScript pattern exactly
  */
+/* Set deterministic per-atom timestamps before signing (mirrors JS setFixedTimestamps).
+ * The molecular hash serializes created_at*1000 (ms, see molecule.c update_sponge_with_atom),
+ * so a seconds base of 1700000000 + i yields hash timestamps 1700000000000 + i*1000 —
+ * byte-identical to the JS reference. Call AFTER all atoms are added, BEFORE generate_hash. */
+static void set_canonical_timestamps(knishio_molecule_t *molecule) {
+    if (!molecule) return;
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        if (molecule->atoms[i]) {
+            molecule->atoms[i]->created_at = (time_t)(1700000000L + (long)i);
+        }
+    }
+}
+
 static bool test_meta_creation(test_results_t *results, const cJSON *config) {
     log_message("\n2. Metadata Creation Test", COLOR_BLUE);
     
@@ -399,10 +412,11 @@ static bool test_meta_creation(test_results_t *results, const cJSON *config) {
     
     bool success = true;
     knishio_wallet_t *source_wallet = NULL;
+    knishio_wallet_t *remainder_wallet = NULL;
     knishio_molecule_t *molecule = NULL;
     char *secret = NULL;
     char *bundle = NULL;
-    
+
     /* Generate secret and bundle */
     if (!knishio_generate_secret(seed, 2048, &secret)) {
         results->meta_creation.validation_error = safe_strdup("Failed to generate secret");
@@ -421,9 +435,18 @@ static bool test_meta_creation(test_results_t *results, const cJSON *config) {
     }
     
     log_test("Source wallet creation", true, NULL);
-    
+
+    /* Create canonical USER remainder wallet (matches JS Wallet.create). Token 'USER'
+     * keeps the addContinuId guard off so the canonical bbbb... remainder survives,
+     * giving the metadata I-atom a deterministic position/address/pubkey. */
+    if (knishio_wallet_create_simple(&remainder_wallet, secret, token,
+            "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333") != KNISHIO_SUCCESS) {
+        results->meta_creation.validation_error = safe_strdup("Failed to create remainder wallet");
+        goto cleanup;
+    }
+
     /* Create molecule */
-    if (knishio_molecule_create(&molecule, secret, bundle, source_wallet, NULL, NULL, KNISHIO_VERSION_STRING) != KNISHIO_SUCCESS) {
+    if (knishio_molecule_create(&molecule, secret, bundle, source_wallet, remainder_wallet, NULL, KNISHIO_VERSION_STRING) != KNISHIO_SUCCESS) {
         results->meta_creation.validation_error = safe_strdup("Failed to create molecule");
         goto cleanup;
     }
@@ -439,6 +462,9 @@ static bool test_meta_creation(test_results_t *results, const cJSON *config) {
     
     log_test("Metadata molecule initialization", true, NULL);
     
+    /* Deterministic per-atom timestamps (must precede hashing) */
+    set_canonical_timestamps(molecule);
+
     /* Generate molecular hash */
     if (knishio_molecule_generate_hash(molecule) != KNISHIO_SUCCESS) {
         results->meta_creation.validation_error = safe_strdup("Failed to generate molecular hash");
@@ -494,6 +520,7 @@ static bool test_meta_creation(test_results_t *results, const cJSON *config) {
 
 cleanup:
     if (source_wallet) knishio_wallet_free(source_wallet);
+    if (remainder_wallet) knishio_wallet_free(remainder_wallet);
     if (molecule) knishio_molecule_free(molecule);
     if (secret) free(secret);
     if (bundle) free(bundle);
@@ -564,14 +591,14 @@ static bool test_simple_transfer(test_results_t *results, const cJSON *config) {
         goto cleanup;
     }
     
-    /* Create remainder wallet (matches JavaScript SDK auto-creation pattern) */
+    /* Create remainder wallet at the canonical fixed position (matches JS createFixedRemainderWallet) */
     knishio_wallet_t *remainder_wallet = NULL;
-    char *remainder_position = NULL;
-    if (!knishio_generate_random_position(64, KNISHIO_POSITION_CHARSET, &remainder_position)) {
-        results->simple_transfer.validation_error = safe_strdup("Failed to generate remainder position");
+    char *remainder_position = knishio_strdup("bbbb000000000000cccc111111111111dddd222222222222eeee333333333333");
+    if (!remainder_position) {
+        results->simple_transfer.validation_error = safe_strdup("Failed to allocate remainder position");
         goto cleanup;
     }
-    
+
     if (knishio_wallet_create_simple(&remainder_wallet, source_secret, token, remainder_position) != KNISHIO_SUCCESS) {
         results->simple_transfer.validation_error = safe_strdup("Failed to create remainder wallet");
         free(remainder_position);
@@ -595,6 +622,7 @@ static bool test_simple_transfer(test_results_t *results, const cJSON *config) {
     log_test("Value transfer initialization", true, NULL);
     
     /* Generate molecular hash */
+    set_canonical_timestamps(molecule);
     if (knishio_molecule_generate_hash(molecule) != KNISHIO_SUCCESS) {
         results->simple_transfer.validation_error = safe_strdup("Failed to generate molecular hash");
         goto cleanup;
@@ -702,7 +730,7 @@ static bool test_complex_transfer(test_results_t *results, const cJSON *config) 
     log_test("Source wallet creation", true, NULL);
     
     /* Create remainder wallet with fixed position (matches JavaScript pattern) */
-    const char *remainder_position = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+    const char *remainder_position = "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333";
     if (knishio_wallet_create_simple(&remainder_wallet, source_secret, token, remainder_position) != KNISHIO_SUCCESS) {
         results->complex_transfer.validation_error = safe_strdup("Failed to create remainder wallet");
         goto cleanup;
@@ -744,6 +772,7 @@ static bool test_complex_transfer(test_results_t *results, const cJSON *config) 
     log_test("Value transfer with remainder initialization", true, NULL);
     
     /* Generate molecular hash */
+    set_canonical_timestamps(molecule);
     if (knishio_molecule_generate_hash(molecule) != KNISHIO_SUCCESS) {
         results->complex_transfer.validation_error = safe_strdup("Failed to generate molecular hash");
         goto cleanup;
@@ -863,26 +892,25 @@ static bool test_mlkem768(test_results_t *results, const cJSON *config) {
     log_test("Encryption wallet creation", true, NULL);
     
     /* Generate ML-KEM768 seed following JavaScript pattern exactly */
-    /* JavaScript: const seedHex = generateSecret(this.key, 128) → 64 hex chars */
+    /* JavaScript: const seedHex = generateSecret(this.key, 128) → 128 hex chars = 64 bytes */
     char *seed_hex = NULL;
     if (!knishio_generate_secret(encryption_wallet->private_key, 128, &seed_hex)) {
         results->mlkem768.error = safe_strdup("Failed to generate ML-KEM768 seed");
         goto cleanup;
     }
-    
-    /* Verify seed length matches JavaScript output (64 hex chars) */
-    if (!seed_hex || strlen(seed_hex) != 64) {
-        results->mlkem768.error = safe_strdup("Invalid ML-KEM768 seed length (expected 64 hex chars)");
+
+    /* Verify seed length matches JavaScript output (128 hex chars = 64 bytes) */
+    if (!seed_hex || strlen(seed_hex) != 128) {
+        results->mlkem768.error = safe_strdup("Invalid ML-KEM768 seed length (expected 128 hex chars)");
         if (seed_hex) free(seed_hex);
         goto cleanup;
     }
-    
-    /* Convert 64 hex chars to 32 bytes + 32 zero bytes (matching JavaScript padding behavior) */
-    uint8_t seed_bytes[64] = {0}; // Initialize with zeros
-    for (int i = 0; i < 32; i++) { // Only process first 32 hex pairs (64 chars)
+
+    /* Convert 128 hex chars to the full 64-byte (d||z) seed (matches JS Wallet.initializeMLKEM) */
+    uint8_t seed_bytes[64];
+    for (int i = 0; i < 64; i++) {
         char hex_pair[3] = {seed_hex[i*2], seed_hex[i*2+1], '\0'};
         seed_bytes[i] = (uint8_t)strtol(hex_pair, NULL, 16);
-        // Remaining 32 bytes stay as zeros (matching JavaScript behavior)
     }
     
     free(seed_hex); // Clean up seed

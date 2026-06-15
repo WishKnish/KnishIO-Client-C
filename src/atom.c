@@ -377,8 +377,22 @@ knishio_error_t knishio_atom_to_json(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
-    /* KISS approach: Use string concatenation for proper atom serialization */
-    char* buffer = knishio_malloc(2048);  /* Reasonable buffer for most atoms */
+    /* KISS approach: Use string concatenation for proper atom serialization.
+     * Size the buffer to the content: the otsFragment (~1100 chars) and meta values
+     * (a base64 ML-KEM pubkey is ~1580 chars) overflow a fixed 2048 and produce
+     * malformed JSON — sum the variable-length parts. */
+    size_t buf_size = 2048;
+    if (atom->ots_fragment) buf_size += strlen(atom->ots_fragment);
+    if (atom->meta) {
+        for (size_t mi = 0; mi < atom->meta_count; mi++) {
+            if (atom->meta[mi]) {
+                if (atom->meta[mi]->key) buf_size += strlen(atom->meta[mi]->key);
+                if (atom->meta[mi]->value) buf_size += strlen(atom->meta[mi]->value);
+                buf_size += 16;
+            }
+        }
+    }
+    char* buffer = knishio_malloc(buf_size);
     if (!buffer) {
         return KNISHIO_ERROR_MEMORY;
     }
@@ -388,32 +402,32 @@ knishio_error_t knishio_atom_to_json(
     
     /* Add position (required) */
     if (atom->position) {
-        snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"position\":\"%s\",", atom->position);
     }
     
     /* Add wallet address (required) */
     if (atom->wallet_address) {
-        snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"walletAddress\":\"%s\",", atom->wallet_address);
     }
     
     /* Add isotope (required) */
     const char* isotope_str = knishio_isotope_to_string(atom->isotope);
     if (isotope_str) {
-        snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"isotope\":\"%s\",", isotope_str);
     }
     
     /* Add token (required) */
     if (atom->token) {
-        snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"token\":\"%s\",", atom->token);
     }
     
     /* Add value (can be null) */
     if (atom->value && strlen(atom->value) > 0) {
-        snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"value\":\"%s\",", atom->value);
     } else {
         strcat(buffer, "\"value\":null,");
@@ -421,7 +435,7 @@ knishio_error_t knishio_atom_to_json(
     
     /* Add batch ID if present */
     if (atom->batch_id && strlen(atom->batch_id) > 0) {
-        snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"batchId\":\"%s\",", atom->batch_id);
     } else {
         strcat(buffer, "\"batchId\":null,");
@@ -429,7 +443,7 @@ knishio_error_t knishio_atom_to_json(
     
     /* Add meta type if present */
     if (atom->meta_type && strlen(atom->meta_type) > 0) {
-        snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"metaType\":\"%s\",", atom->meta_type);
     } else {
         strcat(buffer, "\"metaType\":null,");
@@ -437,7 +451,7 @@ knishio_error_t knishio_atom_to_json(
     
     /* Add meta ID if present */
     if (atom->meta_id && strlen(atom->meta_id) > 0) {
-        snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"metaId\":\"%s\",", atom->meta_id);
     } else {
         strcat(buffer, "\"metaId\":null,");
@@ -454,7 +468,7 @@ knishio_error_t knishio_atom_to_json(
             
             knishio_meta_t* meta = atom->meta[i];
             if (meta && meta->key && meta->value) {
-                snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+                snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
                     "{\"key\":\"%s\",\"value\":\"%s\"}",
                     meta->key, meta->value);
             }
@@ -466,16 +480,16 @@ knishio_error_t knishio_atom_to_json(
     }
     
     /* Add creation timestamp (JS SDK compatible - milliseconds) */
-    snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+    snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
         "\"createdAt\":\"%ld\",", (long)atom->created_at * 1000);
     
     /* Add index */
-    snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+    snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
         "\"index\":%d", atom->index);
     
     /* Add version if present */
     if (atom->version) {
-        snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             ",\"version\":\"%s\"", atom->version);
     }
     
@@ -486,7 +500,7 @@ knishio_error_t knishio_atom_to_json(
         fprintf(stderr, "DEBUG knishio_atom_to_json: Serializing OTS fragment: length=%zu, first 32 chars: %.32s\n",
                 strlen(atom->ots_fragment), atom->ots_fragment);
 #endif
-        snprintf(buffer + strlen(buffer), 2048 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             ",\"otsFragment\":\"%s\"", atom->ots_fragment);
     } else {
         /* DEBUG: Log missing OTS fragment */

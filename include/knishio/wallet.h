@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 /* Constants */
-#define KNISHIO_SECRET_LENGTH       1024    /**< Secret string length (matches JavaScript SDK) */
+#define KNISHIO_SECRET_LENGTH       2048    /**< Secret string length (2048 hex, cross-SDK canonical) */
 #define KNISHIO_BUNDLE_LENGTH       64      /**< Bundle hash length */
 #define KNISHIO_POSITION_LENGTH     64      /**< Position string length */
 #define KNISHIO_ADDRESS_LENGTH      64      /**< Address string length */

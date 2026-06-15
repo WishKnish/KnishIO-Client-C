@@ -1,9 +1,11 @@
 #include "knishio/wallet.h"
 #include "knishio/crypto/shake256.h"
 #include "knishio/crypto/bigint.h"
+#include "knishio/crypto/mlkem768.h"
 #include "knishio/utils/memory.h"
 #include "knishio/utils/string.h"
 #include "knishio/utils/security.h"
+#include "knishio/utils/encoding.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,9 +23,10 @@ bool knishio_generate_secret(const char* seed, size_t length, char** secret) {
     /* Default length=2048 for backward compatibility */
     if (length == 0) length = 2048;
     
-    /* Replicate JavaScript bug for length=128: produces only 64 hex chars */
-    /* JS: outputLen: length * 2 bits, but for length=128 → 256 bits = 64 hex chars */
-    size_t output_bits = (length == 128) ? 256 : (length * 2);
+    /* Canonical JS formula (post-2026-06 cross-SDK alignment): `length` is the
+     * number of hex chars wanted; outputLen = length*4 bits (= length/2 bytes).
+     * length=2048 -> 2048 hex secret; length=128 -> 64-byte (d||z) ML-KEM seed. */
+    size_t output_bits = length * 4;
     
     return knishio_shake256_hash(seed, output_bits, secret);
 }
@@ -619,6 +622,53 @@ void knishio_position_sequence_free(knishio_position_sequence_t *sequence) {
 /**
  * @brief Create wallet from parameters (full implementation)
  */
+/**
+ * @brief Derive the wallet's ML-KEM768 keypair from its private key and store the
+ *        base64 public key in wallet->pubkey. Mirrors JS Wallet.initializeMLKEM:
+ *        seed = generateSecret(key, 128) -> 64 bytes -> FIPS-203 keygen -> base64.
+ */
+bool knishio_wallet_initialize_mlkem(knishio_wallet_t *wallet) {
+    if (!wallet || !wallet->private_key) {
+        return false;
+    }
+
+    /* JS: const seedHex = generateSecret(this.key, 128) -> 128 hex chars = 64 bytes */
+    char *seed_hex = NULL;
+    if (!knishio_generate_secret(wallet->private_key, 128, &seed_hex)) {
+        return false;
+    }
+    if (!seed_hex || strlen(seed_hex) != 128) {
+        free(seed_hex);
+        return false;
+    }
+
+    /* Convert 128 hex chars -> the full 64-byte (d||z) seed (no truncation) */
+    uint8_t seed[64];
+    for (int i = 0; i < 64; i++) {
+        char pair[3] = { seed_hex[i * 2], seed_hex[i * 2 + 1], '\0' };
+        seed[i] = (uint8_t)strtol(pair, NULL, 16);
+    }
+    free(seed_hex);
+
+    /* Deterministic ML-KEM768 keygen (FIPS-203, mlkem-native) */
+    knishio_mlkem768_keypair_t keypair;
+    if (knishio_mlkem768_keypair_from_seed(&keypair, seed, sizeof(seed)) != KNISHIO_SUCCESS) {
+        memset(seed, 0, sizeof(seed));
+        return false;
+    }
+    memset(seed, 0, sizeof(seed));
+
+    /* base64-encode the 1184-byte public key (JS serializes the ML-KEM pubkey as base64) */
+    char *pubkey_b64 = NULL;
+    if (!knishio_base64_encode(keypair.public_key, KNISHIO_PUBKEY_LENGTH, &pubkey_b64)) {
+        return false;
+    }
+
+    knishio_free(wallet->pubkey);
+    wallet->pubkey = pubkey_b64;
+    return true;
+}
+
 bool knishio_wallet_create_from_params(knishio_wallet_t **wallet,
                                        const char *secret,
                                        const char *bundle,
@@ -672,8 +722,12 @@ bool knishio_wallet_create_from_params(knishio_wallet_t **wallet,
                 w->address = generated_address;
             }
         }
+
+        /* Initialize ML-KEM768 keypair (JS Wallet calls initializeMLKEM after key/address)
+         * so every wallet carries a deterministic base64 pubkey for the ContinuID I-atom. */
+        knishio_wallet_initialize_mlkem(w);
     }
-    
+
     if (batch_id) {
         w->batch_id = knishio_strdup(batch_id);
     }

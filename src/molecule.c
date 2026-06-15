@@ -903,7 +903,11 @@ knishio_error_t knishio_molecule_to_json(
     /* KISS approach: Use string concatenation for now */
     /* This is simpler and more reliable than complex JSON builder API */
     
-    char* buffer = knishio_malloc(8192);  /* Reasonable buffer for most molecules */
+    /* Size the buffer to the content: each atom carries an otsFragment (~1100 chars) plus
+     * meta that can include a base64 ML-KEM pubkey (~1580 chars). A fixed 8192 truncated
+     * any molecule with a pubkey I-atom, producing malformed JSON — scale per atom. */
+    size_t buf_size = 16384 + molecule->atom_count * 8192;
+    char* buffer = knishio_malloc(buf_size);
     if (!buffer) {
         return KNISHIO_ERROR_MEMORY;
     }
@@ -916,19 +920,19 @@ knishio_error_t knishio_molecule_to_json(
     
     /* Add molecular hash */
     if (molecule->molecular_hash) {
-        snprintf(buffer + strlen(buffer), 8192 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"molecularHash\":\"%s\",", molecule->molecular_hash);
     } else {
         strcat(buffer, "\"molecularHash\":null,");
     }
     
     /* Add creation timestamp (JS SDK compatible - milliseconds) */
-    snprintf(buffer + strlen(buffer), 8192 - strlen(buffer),
+    snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
         "\"createdAt\":\"%ld\",", (long)molecule->created_at * 1000);
     
     /* Add cell slug if present */
     if (molecule->cell_slug && strlen(molecule->cell_slug) > 0) {
-        snprintf(buffer + strlen(buffer), 8192 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"cellSlug\":\"%s\",", molecule->cell_slug);
     } else {
         strcat(buffer, "\"cellSlug\":null,");
@@ -936,7 +940,7 @@ knishio_error_t knishio_molecule_to_json(
     
     /* Add bundle hash */
     if (molecule->bundle && strlen(molecule->bundle) > 0) {
-        snprintf(buffer + strlen(buffer), 8192 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"bundle\":\"%s\",", molecule->bundle);
     } else {
         strcat(buffer, "\"bundle\":null,");
@@ -944,7 +948,7 @@ knishio_error_t knishio_molecule_to_json(
     
     /* Add version if present */
     if (molecule->version) {
-        snprintf(buffer + strlen(buffer), 8192 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             "\"version\":\"%s\",", molecule->version);
     }
     
@@ -965,7 +969,7 @@ knishio_error_t knishio_molecule_to_json(
         }
         
         /* Add atom JSON to buffer */
-        strncat(buffer, atom_json, 8192 - strlen(buffer) - 1);
+        strncat(buffer, atom_json, buf_size - strlen(buffer) - 1);
         knishio_free(atom_json);
     }
     
@@ -974,7 +978,7 @@ knishio_error_t knishio_molecule_to_json(
     
     /* Add sourceWallet data for cross-SDK validation (matches Python/TypeScript pattern) */
     if (molecule->source_wallet) {
-        snprintf(buffer + strlen(buffer), 8192 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             ",\"sourceWallet\":{\"address\":\"%s\",\"position\":\"%s\",\"token\":\"%s\",\"balance\":%.1f}",
             molecule->source_wallet->address ? molecule->source_wallet->address : "",
             molecule->source_wallet->position ? molecule->source_wallet->position : "",
@@ -985,7 +989,7 @@ knishio_error_t knishio_molecule_to_json(
     
     /* Add remainderWallet data for cross-SDK validation (matches Python/TypeScript pattern) */
     if (molecule->remainder_wallet) {
-        snprintf(buffer + strlen(buffer), 8192 - strlen(buffer),
+        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             ",\"remainderWallet\":{\"address\":\"%s\",\"position\":\"%s\",\"token\":\"%s\",\"balance\":%.1f}",
             molecule->remainder_wallet->address ? molecule->remainder_wallet->address : "",
             molecule->remainder_wallet->position ? molecule->remainder_wallet->position : "",
@@ -1300,74 +1304,78 @@ knishio_error_t knishio_molecule_init_meta(
     
     printf("DEBUG knishio_molecule_init_meta: Meta atom added successfully\n");
     
-    /* Add ContinuID atom (I isotope) - matches JavaScript pattern */
+    /* Add ContinuID atom (I isotope) sourced from the remainder wallet — mirrors JS
+     * Molecule.addContinuIdAtom (I-atom wallet = remainderWallet, meta carries the
+     * ContinuID chain fields). The metadata flow must supply a USER remainder wallet. */
     printf("DEBUG knishio_molecule_init_meta: Creating ContinuID atom\n");
-    
-    char* continuid_position = NULL;
-    if (!knishio_generate_random_position(64, KNISHIO_POSITION_CHARSET, &continuid_position)) {
-        printf("DEBUG knishio_molecule_init_meta: Failed to generate random position\n");
-        return KNISHIO_ERROR_CRYPTO;
+
+    knishio_wallet_t* rw = molecule->remainder_wallet;
+    if (!rw) {
+        printf("DEBUG knishio_molecule_init_meta: No remainder wallet for ContinuID atom\n");
+        return KNISHIO_ERROR_INVALID_STATE;
     }
-    
-    printf("DEBUG knishio_molecule_init_meta: Generated ContinuID position: %.16s...\n", continuid_position);
-    
-    /* Generate wallet address for ContinuID atom */
-    char* continuid_secret = NULL;
-    char* continuid_private_key = NULL;
-    char* continuid_address = NULL;
-    
-    if (!knishio_generate_secret("ContinuID", 2048, &continuid_secret)) {
-        printf("DEBUG knishio_molecule_init_meta: Failed to generate ContinuID secret\n");
-        return KNISHIO_ERROR_CRYPTO;
-    }
-    
-    if (!knishio_generate_wallet_key(continuid_secret, molecule->source_wallet->token, continuid_position, &continuid_private_key)) {
-        printf("DEBUG knishio_molecule_init_meta: Failed to generate ContinuID private key\n");
-        free(continuid_secret);
-        return KNISHIO_ERROR_CRYPTO;
-    }
-    
-    if (!knishio_generate_address(continuid_private_key, &continuid_address)) {
-        printf("DEBUG knishio_molecule_init_meta: Failed to generate ContinuID address\n");
-        free(continuid_secret);
-        free(continuid_private_key);
-        return KNISHIO_ERROR_CRYPTO;
-    }
-    
-    printf("DEBUG knishio_molecule_init_meta: Generated ContinuID address: %.16s...\n", continuid_address);
-    
+
     knishio_atom_t* continuid_atom = NULL;
     result = knishio_atom_create(
         &continuid_atom,
-        continuid_position,
-        continuid_address,
+        rw->position,
+        rw->address,
         KNISHIO_ISOTOPE_I,
-        molecule->source_wallet->token,
+        rw->token,
         NULL,  /* No value for ContinuID */
         NULL   /* No batch_id */
     );
-    
-    /* Clean up temporary keys */
-    free(continuid_secret);
-    free(continuid_private_key);
-    free(continuid_address);
-    
-    printf("DEBUG knishio_molecule_init_meta: ContinuID atom creation result: %d\n", result);
-    
-    knishio_free(continuid_position);
-    
+
     if (result != KNISHIO_SUCCESS) {
         printf("DEBUG knishio_molecule_init_meta: ContinuID atom creation failed\n");
         return result;
     }
-    
+
     printf("DEBUG knishio_molecule_init_meta: ContinuID atom created successfully\n");
-    
-    /* Set ContinuID metadata */
+
+    /* Set ContinuID metaType/metaId (JS: walletBundle / remainderWallet.bundle) */
     if (continuid_atom->meta_type) knishio_free(continuid_atom->meta_type);
     if (continuid_atom->meta_id) knishio_free(continuid_atom->meta_id);
     continuid_atom->meta_type = knishio_strdup("walletBundle");
-    continuid_atom->meta_id = knishio_strdup(molecule->bundle);
+    continuid_atom->meta_id = knishio_strdup(rw->bundle_hash);
+
+    /* Populate the ContinuID meta in JS insertion order (= hash order):
+     * previousPosition (source wallet position), pubkey (remainder ML-KEM pubkey, base64),
+     * characters. Each entry only added when truthy, matching JS. */
+    {
+        const char* ci_keys[3];
+        const char* ci_vals[3];
+        size_t ci_n = 0;
+        if (molecule->source_wallet && molecule->source_wallet->position) {
+            ci_keys[ci_n] = "previousPosition";
+            ci_vals[ci_n] = molecule->source_wallet->position;
+            ci_n++;
+        }
+        if (rw->pubkey) {
+            ci_keys[ci_n] = "pubkey";
+            ci_vals[ci_n] = rw->pubkey;
+            ci_n++;
+        }
+        if (rw->characters) {
+            ci_keys[ci_n] = "characters";
+            ci_vals[ci_n] = rw->characters;
+            ci_n++;
+        }
+        if (ci_n > 0) {
+            continuid_atom->meta = malloc(sizeof(knishio_meta_t*) * ci_n);
+            if (continuid_atom->meta) {
+                continuid_atom->meta_count = ci_n;
+                for (size_t i = 0; i < ci_n; i++) {
+                    if (knishio_meta_create(&continuid_atom->meta[i], ci_keys[i], ci_vals[i]) != KNISHIO_SUCCESS) {
+                        printf("DEBUG knishio_molecule_init_meta: Failed to create ContinuID meta[%zu]\n", i);
+                        continuid_atom->meta[i] = NULL;
+                    }
+                }
+            } else {
+                continuid_atom->meta_count = 0;
+            }
+        }
+    }
     
     printf("DEBUG knishio_molecule_init_meta: Adding ContinuID atom to molecule\n");
     result = knishio_molecule_add_atom(molecule, continuid_atom);
