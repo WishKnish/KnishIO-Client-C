@@ -83,9 +83,9 @@ void test_molecule_add_atoms(void) {
     /* Create and add test atoms */
     for (int i = 0; i < 5; i++) {
         knishio_atom_t* atom = NULL;
-        char position[64], address[64], value[32];
-        snprintf(position, sizeof(position), "test_position_%d", i);
-        snprintf(address, sizeof(address), "test_address_%d", i);
+        char position[65], address[65], value[32];
+        snprintf(position, sizeof(position), "%064x", (unsigned)i);
+        snprintf(address, sizeof(address), "%064x", (unsigned)(i + 0x100));
         snprintf(value, sizeof(value), "%d", i * 100);
         
         result = knishio_atom_create(
@@ -124,9 +124,9 @@ void test_molecule_generate_hash(void) {
     /* Add some atoms first */
     for (int i = 0; i < 3; i++) {
         knishio_atom_t* atom = NULL;
-        char position[64], address[64];
-        snprintf(position, sizeof(position), "pos_%d", i);
-        snprintf(address, sizeof(address), "addr_%d", i);
+        char position[65], address[65];
+        snprintf(position, sizeof(position), "%064x", (unsigned)i);
+        snprintf(address, sizeof(address), "%064x", (unsigned)(i + 0x100));
         
         result = knishio_atom_create(
             &atom, position, address, KNISHIO_ISOTOPE_V,
@@ -146,11 +146,12 @@ void test_molecule_generate_hash(void) {
     TEST_ASSERT_NOT_NULL(molecule->molecular_hash);
     TEST_ASSERT_EQUAL(KNISHIO_MOLECULAR_HASH_LENGTH, strlen(molecule->molecular_hash));
     
-    /* Verify it's valid hex */
+    /* Verify it's a valid base-17 molecular hash (0-9, a-g — NOT hex; e.g. canonical
+     * hashes contain 'g'). */
     for (int i = 0; i < KNISHIO_MOLECULAR_HASH_LENGTH; i++) {
         char c = molecule->molecular_hash[i];
         TEST_ASSERT_TRUE(
-            (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+            (c >= '0' && c <= '9') || (c >= 'a' && c <= 'g')
         );
     }
     
@@ -193,7 +194,7 @@ void test_molecule_check_basic_validation(void) {
     /* Add atoms and generate hash */
     knishio_atom_t* atom = NULL;
     result = knishio_atom_create(
-        &atom, "test_position", "test_address", KNISHIO_ISOTOPE_V,
+        &atom, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", KNISHIO_ISOTOPE_V,
         "TEST", "100", NULL
     );
     TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
@@ -219,7 +220,7 @@ void test_molecule_check_hash_mismatch(void) {
     /* Add atom and generate hash */
     knishio_atom_t* atom = NULL;
     result = knishio_atom_create(
-        &atom, "test_position", "test_address", KNISHIO_ISOTOPE_V,
+        &atom, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", KNISHIO_ISOTOPE_V,
         "TEST", "100", NULL
     );
     TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
@@ -252,9 +253,9 @@ void test_molecule_filter_atoms_by_isotope(void) {
     
     for (int i = 0; i < 5; i++) {
         knishio_atom_t* atom = NULL;
-        char position[64], address[64];
-        snprintf(position, sizeof(position), "pos_%d", i);
-        snprintf(address, sizeof(address), "addr_%d", i);
+        char position[65], address[65];
+        snprintf(position, sizeof(position), "%064x", (unsigned)i);
+        snprintf(address, sizeof(address), "%064x", (unsigned)(i + 0x100));
         
         result = knishio_atom_create(
             &atom, position, address, isotopes[i],
@@ -287,8 +288,10 @@ void test_molecule_filter_atoms_by_isotope(void) {
     
     knishio_free(filtered_atoms);
     
-    /* Filter by non-existent isotope */
-    result = knishio_molecule_filter_atoms_by_isotope(molecule, "X", &filtered_atoms, &filtered_count);
+    /* Filter by a VALID isotope absent from this molecule (U), expecting 0 matches.
+     * (An invalid isotope char like "X" is correctly rejected with INVALID_ARGS — that's
+     * a different path; here we exercise the valid-but-absent → 0-matches path.) */
+    result = knishio_molecule_filter_atoms_by_isotope(molecule, "U", &filtered_atoms, &filtered_count);
     TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
     TEST_ASSERT_EQUAL(0, filtered_count); /* Should find 0 matches */
     
@@ -308,9 +311,9 @@ void test_molecule_generate_next_index(void) {
     /* Add some atoms */
     for (int i = 0; i < 3; i++) {
         knishio_atom_t* atom = NULL;
-        char position[64], address[64];
-        snprintf(position, sizeof(position), "pos_%d", i);
-        snprintf(address, sizeof(address), "addr_%d", i);
+        char position[65], address[65];
+        snprintf(position, sizeof(position), "%064x", (unsigned)i);
+        snprintf(address, sizeof(address), "%064x", (unsigned)(i + 0x100));
         
         result = knishio_atom_create(
             &atom, position, address, KNISHIO_ISOTOPE_V,
@@ -337,22 +340,27 @@ void test_molecule_check_with_signature_validation(void) {
     /* Add atoms with OTS fragments to simulate signed molecule */
     for (int i = 0; i < 4; i++) { /* 4 atoms * 512 chars = 2048 total (minimum OTS length) */
         knishio_atom_t* atom = NULL;
-        char position[64], address[64], fragment[513];
-        snprintf(position, sizeof(position), "pos_%d", i);
-        snprintf(address, sizeof(address), "addr_%d", i);
+        char position[65], address[65], fragment[513];
+        snprintf(position, sizeof(position), "%064x", (unsigned)i);
+        snprintf(address, sizeof(address), "%064x", (unsigned)(i + 0x100));
         
         /* Create test OTS fragment */
         for (int j = 0; j < 512; j++) {
             fragment[j] = 'a' + ((i + j) % 26);
         }
         fragment[512] = '\0';
-        
+
+        /* Balanced V-atom values (sum to 0: -300 + 100*3) so the molecule passes the
+         * conservation check (knishio_molecule_check enforces V-isotope balance, matching
+         * JS CheckMolecule.isotopeV); this test exercises the signed-molecule check +
+         * signature-mismatch path, not an unbalanced transfer. */
+        const char* atom_value = (i == 0) ? "-300" : "100";
         result = knishio_atom_create(
             &atom, position, address, KNISHIO_ISOTOPE_V,
-            "TEST", "100", NULL
+            "TEST", atom_value, NULL
         );
         TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
-        
+
         knishio_atom_set_ots_fragment(atom, fragment);
         knishio_molecule_add_atom(molecule, atom);
     }
@@ -367,7 +375,7 @@ void test_molecule_check_with_signature_validation(void) {
     
     /* Test validation with invalid sender wallet (signature will fail) */
     knishio_wallet_t* test_wallet = NULL;
-    bool wallet_created = knishio_wallet_create(&test_wallet, "test_secret", "TEST", "W1");
+    bool wallet_created = knishio_wallet_create(&test_wallet, "test_secret", "TEST", KNISHIO_FIXED_POSITION);
     if (wallet_created && test_wallet) {
         result = knishio_molecule_check(molecule, test_wallet);
         /* This will likely fail because the OTS signature is fake */
@@ -391,7 +399,7 @@ void test_molecule_to_json_basic(void) {
     /* Add a test atom */
     knishio_atom_t* atom = NULL;
     result = knishio_atom_create(
-        &atom, "test_position", "test_address", KNISHIO_ISOTOPE_V,
+        &atom, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", KNISHIO_ISOTOPE_V,
         "TEST", "100", NULL
     );
     TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
@@ -426,9 +434,9 @@ void test_molecule_memory_management(void) {
     /* Add multiple atoms to test array management */
     for (int i = 0; i < 10; i++) {
         knishio_atom_t* atom = NULL;
-        char position[64], address[64];
-        snprintf(position, sizeof(position), "pos_%d", i);
-        snprintf(address, sizeof(address), "addr_%d", i);
+        char position[65], address[65];
+        snprintf(position, sizeof(position), "%064x", (unsigned)i);
+        snprintf(address, sizeof(address), "%064x", (unsigned)(i + 0x100));
         
         result = knishio_atom_create(
             &atom, position, address, KNISHIO_ISOTOPE_V,
