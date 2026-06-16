@@ -227,29 +227,29 @@ void test_shake256_known_vectors(void) {
 void test_shake256_js_compatibility(void) {
     char *output = NULL;
     
-    /* Test vector 1: "test" -> 256 bits (deterministic output validation) */
+    /* Test vector 1: "test" -> 256 bits (canonical, verified via Python hashlib.shake_256) */
     TEST_ASSERT_TRUE(knishio_shake256_hash("test", 256, &output));
     TEST_ASSERT_NOT_NULL(output);
     /* Verify deterministic output - this should match across all platforms */
-    TEST_ASSERT_EQUAL_STRING("59a371cbc697df7265d38e58b9debd5b0aab58060a2c146a73e2c30a00c6fae6", output);
+    TEST_ASSERT_EQUAL_STRING("b54ff7255705a71ee2925e4a3e30e41aed489a579d5595e0df13e32e1e4dd202", output);
     knishio_free(output);
-    
-    /* Test vector 2: "KnishIO" -> 256 bits */
+
+    /* Test vector 2: "KnishIO" -> 256 bits (canonical, verified via Python hashlib.shake_256) */
     TEST_ASSERT_TRUE(knishio_shake256_hash("KnishIO", 256, &output));
     TEST_ASSERT_NOT_NULL(output);
-    TEST_ASSERT_EQUAL_STRING("03db598c7665a610e46d1de03487f452c3906521c2df67aca41953be8701273d", output);
+    TEST_ASSERT_EQUAL_STRING("35e3c3f33aefb940baaf430855ccb441c24b7b0542f682b8543f4c9d3a077c6e", output);
     knishio_free(output);
-    
-    /* Test vector 3: Empty string -> 256 bits */
+
+    /* Test vector 3: Empty string -> 256 bits (canonical, verified via Python hashlib.shake_256) */
     TEST_ASSERT_TRUE(knishio_shake256_hash("", 256, &output));
     TEST_ASSERT_NOT_NULL(output);
-    TEST_ASSERT_EQUAL_STRING("f605d5ca4568307e7756c5a89a27f83c3ea73a758899192e384b792efb324ee9", output);
+    TEST_ASSERT_EQUAL_STRING("46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f", output);
     knishio_free(output);
-    
-    /* Test vector 4: "hello world" -> 512 bits */
+
+    /* Test vector 4: "hello world" -> 512 bits (canonical, verified via Python hashlib.shake_256) */
     TEST_ASSERT_TRUE(knishio_shake256_hash("hello world", 512, &output));
     TEST_ASSERT_NOT_NULL(output);
-    TEST_ASSERT_EQUAL_STRING("a8ac9491bf98d16335e506dbdc0fd6928b922e67a939d8be5589ce02c1d65faf09a7379e6f3e915f3754b0072c614f6e76202c49513f6243bbfbce2551cb24ff", output);
+    TEST_ASSERT_EQUAL_STRING("369771bb2cb9d2b04c1d54cca487e372d9f187f73f7ba3f65b95c8ee7798c527f4f3c2d55c2d46a29f2e945d469c3df27853a8735271f5cc2d9e889544357116", output);
     knishio_free(output);
 }
 

@@ -514,7 +514,7 @@ bool knishio_wallet_self_test(void) {
     /* Test vector: alice-test-seed-2025 */
     const char* seed = "alice-test-seed-2025";
     const char* expected_bundle = "a06e74f7c0ccb8b28b8864468dc404c5e4e116ed2f3bd197320395369000cc7b";
-    const char* expected_address = "f653df9b2d6e407af3531e58fb22ab50042e44c3e72219e050f844f72870b4b4";
+    const char* expected_address = "c6802a455002eee377179a768240128449723e91b06ffd821935b0fe702b248b";
     
     return knishio_wallet_test_vector(seed, expected_bundle, expected_address, 
                                      "TEST", KNISHIO_FIXED_POSITION);

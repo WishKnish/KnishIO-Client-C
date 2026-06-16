@@ -16,7 +16,7 @@ add_compile_definitions(_FORTIFY_SOURCE=2)  # Buffer overflow protection
 add_compile_options(-fstack-protector-strong)  # Stack protection
 
 # Build options
-option(KNISHIO_BUILD_TESTS "Build tests" OFF)  # opt-in: the target links, but legacy unit fixtures need a refresh (stale SHAKE/wallet vectors + non-hex molecule secrets); c_self_test (parity) builds regardless
+option(KNISHIO_BUILD_TESTS "Build tests" OFF)  # opt-in: the target links + the SHAKE256 & wallet suites PASS (fixtures refreshed cycle 37); the molecule suite still has 9 placeholder-data/expectation failures pending a unit-test resurrection (the molecule code is covered by c_self_test's cross-SDK parity vectors). c_self_test (parity) builds + passes regardless.
 option(KNISHIO_BUILD_EXAMPLES "Build examples" OFF)  # examples reference disabled subsystems (graphql/subscriptions/auth) — never linked
 option(KNISHIO_BUILD_DOCS "Build documentation" OFF)
 option(KNISHIO_ENABLE_COVERAGE "Enable code coverage" OFF)

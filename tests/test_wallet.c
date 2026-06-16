@@ -136,7 +136,7 @@ void test_wallet_address_generation(void) {
     TEST_ASSERT_EQUAL(64, strlen(address));
     
     /* Verify matches JS SDK output */
-    const char* expected_address = "f653df9b2d6e407af3531e58fb22ab50042e44c3e72219e050f844f72870b4b4";
+    const char* expected_address = "c6802a455002eee377179a768240128449723e91b06ffd821935b0fe702b248b";
     TEST_ASSERT_EQUAL_STRING(expected_address, address);
     
     knishio_free(secret);
@@ -176,7 +176,7 @@ void test_wallet_complete_creation(void) {
     /* Verify specific values match JS SDK */
     TEST_ASSERT_EQUAL_STRING("a06e74f7c0ccb8b28b8864468dc404c5e4e116ed2f3bd197320395369000cc7b", 
                            wallet->bundle_hash);
-    TEST_ASSERT_EQUAL_STRING("f653df9b2d6e407af3531e58fb22ab50042e44c3e72219e050f844f72870b4b4", 
+    TEST_ASSERT_EQUAL_STRING("c6802a455002eee377179a768240128449723e91b06ffd821935b0fe702b248b", 
                            wallet->address);
     TEST_ASSERT_EQUAL_STRING(KNISHIO_FIXED_POSITION, wallet->position);
     
@@ -201,7 +201,7 @@ void test_wallet_from_secret(void) {
     /* Verify bundle and address */
     TEST_ASSERT_EQUAL_STRING("a06e74f7c0ccb8b28b8864468dc404c5e4e116ed2f3bd197320395369000cc7b", 
                            wallet->bundle_hash);
-    TEST_ASSERT_EQUAL_STRING("f653df9b2d6e407af3531e58fb22ab50042e44c3e72219e050f844f72870b4b4", 
+    TEST_ASSERT_EQUAL_STRING("c6802a455002eee377179a768240128449723e91b06ffd821935b0fe702b248b", 
                            wallet->address);
     
     knishio_free(secret);
@@ -325,7 +325,7 @@ void test_wallet_test_vectors(void) {
     TEST_ASSERT_NOT_NULL(wallet);
     TEST_ASSERT_EQUAL_STRING("a06e74f7c0ccb8b28b8864468dc404c5e4e116ed2f3bd197320395369000cc7b", 
                            wallet->bundle_hash);
-    TEST_ASSERT_EQUAL_STRING("f653df9b2d6e407af3531e58fb22ab50042e44c3e72219e050f844f72870b4b4", 
+    TEST_ASSERT_EQUAL_STRING("c6802a455002eee377179a768240128449723e91b06ffd821935b0fe702b248b", 
                            wallet->address);
     knishio_wallet_cleanup(wallet);
 }
