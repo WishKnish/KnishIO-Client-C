@@ -31,7 +31,7 @@ typedef struct knishio_http_response {
 typedef struct knishio_http_client {
     char* base_url;                /**< Base URL for requests */
     char* user_agent;              /**< User agent string */
-    char* auth_token;              /**< Authentication token for Authorization header */
+    char* auth_token;              /**< Authentication token for X-Auth-Token header */
     char* auth_pubkey;             /**< Public key for X-KnishIO-Pubkey header */
     long timeout_seconds;          /**< Request timeout */
     bool verify_ssl;               /**< SSL certificate verification */
@@ -81,7 +81,7 @@ knishio_error_t knishio_http_client_set_ssl_verify(
 /**
  * @brief Set authentication token header
  * @param client HTTP client
- * @param token Authentication token (sets Authorization: Bearer {token})
+ * @param token Authentication token (sets X-Auth-Token: {token})
  * @return Success or error code
  */
 knishio_error_t knishio_http_client_set_auth_token(

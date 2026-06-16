@@ -17,6 +17,7 @@ struct knishio_client {
     char *cell_slug;                    /**< Cell identifier */
     knishio_http_client_t *http_client; /**< HTTP client for requests */
     knishio_auth_token_t *auth_token;   /**< Current authentication token (legacy) */
+    bool insecure_tls;                  /**< Skip TLS cert verification (dev/self-signed validators) */
     bool initialized;                   /**< Initialization status */
     knishio_client_auth_state_t auth_state; /**< Authentication state */
 };
@@ -36,6 +37,7 @@ knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_c
     new_client->uri = config->uri ? knishio_strdup(config->uri) : NULL;
     new_client->cell_slug = config->cell_slug ? knishio_strdup(config->cell_slug) : NULL;
     new_client->auth_token = NULL;
+    new_client->insecure_tls = config->insecure_tls;
     new_client->initialized = false;
     
     // Initialize authentication state
@@ -48,7 +50,12 @@ knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_c
         knishio_client_destroy(new_client);
         return http_result;
     }
-    
+
+    /* Opt-in insecure TLS (dev/self-signed validators); default keeps verification ON */
+    if (config->insecure_tls) {
+        knishio_http_client_set_ssl_verify(new_client->http_client, false);
+    }
+
     new_client->initialized = true;
     *client = new_client;
     return KNISHIO_SUCCESS;
@@ -204,6 +211,12 @@ knishio_error_t knishio_client_execute_graphql(
     knishio_error_t error = knishio_graphql_client_create(&gql, client->uri, client->cell_slug);
     if (error != KNISHIO_SUCCESS) {
         return error;
+    }
+
+    /* The per-op gql client makes its own http_client (verify_ssl=true default) — inherit the
+     * client's insecure-TLS opt-in so it can reach a self-signed dev validator (slice 2b-i). */
+    if (client->insecure_tls && gql->http_client) {
+        knishio_http_client_set_ssl_verify(gql->http_client, false);
     }
 
     /* Propagate the client's auth token (slice 2a: manually-set; the full JWT flow is slice 2b).

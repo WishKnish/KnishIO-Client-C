@@ -259,8 +259,11 @@ knishio_error_t knishio_http_post_graphql(
         return error;
     }
 
-    /* Perform POST request */
-    error = knishio_http_post(client, "/graphql", payload, "application/json", response);
+    /* POST to the base_url as-is — it is already the full GraphQL endpoint (the SDK's `uri`
+     * config = "GraphQL endpoint URI", e.g. ".../graphql"). Appending "/graphql" here produced
+     * ".../graphql/graphql" → HTTP 404 (was masked until slice 2b-i, when insecure-TLS first
+     * let the C transport actually reach the server). */
+    error = knishio_http_post(client, "", payload, "application/json", response);
 
     /* Free payload */
     if (payload) {
@@ -338,7 +341,7 @@ knishio_error_t knishio_http_post(
     /* Add authentication headers if present */
     if (client->auth_token) {
         char auth_header[512];
-        snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", client->auth_token);
+        snprintf(auth_header, sizeof(auth_header), "X-Auth-Token: %s", client->auth_token);
         headers = curl_slist_append(headers, auth_header);
     }
     

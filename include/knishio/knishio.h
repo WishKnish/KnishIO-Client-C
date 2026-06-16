@@ -62,6 +62,7 @@ typedef struct {
     void *socket;              /**< WebSocket instance */
     int server_sdk_version;    /**< Server SDK version */
     bool logging;              /**< Enable logging */
+    bool insecure_tls;         /**< Skip TLS cert verification (dev/self-signed validators); default false = verify */
 } knishio_client_config_t;
 
 /**
