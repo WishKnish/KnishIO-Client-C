@@ -100,6 +100,37 @@ static const char* DEFAULT_CONFIG_JSON = "{"
             "\"recipient1Position\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\","
             "\"recipient2Position\": \"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789\""
         "},"
+        "\"tokenCreation\": {"
+            "\"sourceSeed\": \"TESTSEED\","
+            "\"recipientSeed\": \"RECIPIENTSEED\","
+            "\"sourceToken\": \"USER\","
+            "\"newToken\": \"TESTTOKEN\","
+            "\"amount\": 1000000,"
+            "\"sourcePosition\": \"0123456789abcdeffedcba9876543210fedcba9876543210fedcba9876543210\","
+            "\"recipientPosition\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\","
+            "\"metadata\": {"
+                "\"name\": \"Test Token\","
+                "\"fungibility\": \"fungible\","
+                "\"supply\": \"limited\","
+                "\"decimals\": \"0\""
+            "}"
+        "},"
+        "\"walletCreation\": {"
+            "\"sourceSeed\": \"TESTSEED\","
+            "\"newWalletSeed\": \"NEWWALLETSEED\","
+            "\"sourceToken\": \"USER\","
+            "\"newToken\": \"TESTTOKEN\","
+            "\"sourcePosition\": \"0123456789abcdeffedcba9876543210fedcba9876543210fedcba9876543210\","
+            "\"newWalletPosition\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\""
+        "},"
+        "\"shadowWalletClaim\": {"
+            "\"sourceSeed\": \"TESTSEED\","
+            "\"claimSeed\": \"CLAIMSEED\","
+            "\"sourceToken\": \"USER\","
+            "\"claimToken\": \"TESTTOKEN\","
+            "\"sourcePosition\": \"0123456789abcdeffedcba9876543210fedcba9876543210fedcba9876543210\","
+            "\"claimPosition\": \"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\""
+        "},"
         "\"mlkem768\": {"
             "\"seed\": \"TESTSEED\","
             "\"token\": \"ENCRYPT\","
@@ -151,11 +182,17 @@ typedef struct {
     molecule_test_result_t meta_creation;
     molecule_test_result_t simple_transfer;
     molecule_test_result_t complex_transfer;
+    molecule_test_result_t token_creation;
+    molecule_test_result_t wallet_creation;
+    molecule_test_result_t shadow_wallet_claim;
     mlkem768_test_result_t mlkem768;
     negative_test_result_t negative_cases;
     char *molecules_metadata;
     char *molecules_simple_transfer;
     char *molecules_complex_transfer;
+    char *molecules_token_creation;
+    char *molecules_wallet_creation;
+    char *molecules_shadow_wallet_claim;
     char *molecules_mlkem768;
     bool cross_sdk_compatible;
 } test_results_t;
@@ -523,6 +560,397 @@ cleanup:
     if (remainder_wallet) knishio_wallet_free(remainder_wallet);
     if (molecule) knishio_molecule_free(molecule);
     if (secret) free(secret);
+    if (bundle) free(bundle);
+    return success;
+}
+
+/**
+ * Test C1: Token Creation Test
+ * C-isotope atom (issue new token) + ContinuID I-atom, following JavaScript initTokenCreation.
+ */
+static bool test_token_creation(test_results_t *results, const cJSON *config) {
+    log_message("\nC1. Token Creation Test", COLOR_BLUE);
+
+    const cJSON *tc = cJSON_GetObjectItem(config, "tokenCreation");
+    if (!tc) {
+        results->token_creation.validation_error = safe_strdup("Missing tokenCreation configuration");
+        return false;
+    }
+
+    const char *source_seed = cJSON_GetStringValue(cJSON_GetObjectItem(tc, "sourceSeed"));
+    const char *recipient_seed = cJSON_GetStringValue(cJSON_GetObjectItem(tc, "recipientSeed"));
+    const char *source_token = cJSON_GetStringValue(cJSON_GetObjectItem(tc, "sourceToken"));
+    const char *new_token = cJSON_GetStringValue(cJSON_GetObjectItem(tc, "newToken"));
+    const char *source_position = cJSON_GetStringValue(cJSON_GetObjectItem(tc, "sourcePosition"));
+    const char *recipient_position = cJSON_GetStringValue(cJSON_GetObjectItem(tc, "recipientPosition"));
+    cJSON *amount_item = cJSON_GetObjectItem(tc, "amount");
+
+    if (!source_seed || !recipient_seed || !source_token || !new_token || !source_position || !recipient_position || !amount_item) {
+        results->token_creation.validation_error = safe_strdup("Invalid tokenCreation configuration");
+        return false;
+    }
+
+    /* Amount as a string (the C-atom value); JS hashes 1000000 -> "1000000". */
+    char amount_str[32];
+    snprintf(amount_str, sizeof(amount_str), "%lld", (long long)cJSON_GetNumberValue(amount_item));
+
+    bool success = true;
+    knishio_wallet_t *source_wallet = NULL;
+    knishio_wallet_t *recipient_wallet = NULL;
+    knishio_wallet_t *remainder_wallet = NULL;
+    knishio_molecule_t *molecule = NULL;
+    char *source_secret = NULL;
+    char *recipient_secret = NULL;
+    char *bundle = NULL;
+
+    if (!knishio_generate_secret(source_seed, 2048, &source_secret)) {
+        results->token_creation.validation_error = safe_strdup("Failed to generate source secret");
+        goto cleanup;
+    }
+    if (!knishio_generate_bundle_hash(source_secret, NULL, NULL, &bundle)) {
+        results->token_creation.validation_error = safe_strdup("Failed to generate bundle");
+        goto cleanup;
+    }
+    if (!knishio_generate_secret(recipient_seed, 2048, &recipient_secret)) {
+        results->token_creation.validation_error = safe_strdup("Failed to generate recipient secret");
+        goto cleanup;
+    }
+
+    if (knishio_wallet_create_simple(&source_wallet, source_secret, source_token, source_position) != KNISHIO_SUCCESS) {
+        results->token_creation.validation_error = safe_strdup("Failed to create source wallet");
+        goto cleanup;
+    }
+    log_test("Source wallet creation", true, NULL);
+
+    if (knishio_wallet_create_simple(&recipient_wallet, recipient_secret, new_token, recipient_position) != KNISHIO_SUCCESS) {
+        results->token_creation.validation_error = safe_strdup("Failed to create recipient wallet");
+        goto cleanup;
+    }
+    log_test("Recipient wallet creation", true, NULL);
+
+    /* Canonical USER remainder (token 'USER' keeps the ContinuID guard off -> bbbb... survives). */
+    if (knishio_wallet_create_simple(&remainder_wallet, source_secret, source_token,
+            "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333") != KNISHIO_SUCCESS) {
+        results->token_creation.validation_error = safe_strdup("Failed to create remainder wallet");
+        goto cleanup;
+    }
+
+    if (knishio_molecule_create(&molecule, source_secret, bundle, source_wallet, remainder_wallet, NULL, KNISHIO_VERSION_STRING) != KNISHIO_SUCCESS) {
+        results->token_creation.validation_error = safe_strdup("Failed to create molecule");
+        goto cleanup;
+    }
+
+    /* Token meta in JS insertion order [name, fungibility, supply, decimals] (hardcoded to
+     * preserve order — cJSON object iteration would not guarantee it). */
+    {
+        const char* token_meta_keys[] = {"name", "fungibility", "supply", "decimals"};
+        const char* token_meta_values[] = {"Test Token", "fungible", "limited", "0"};
+        if (knishio_molecule_init_token_creation(molecule, recipient_wallet, amount_str, token_meta_keys, token_meta_values, 4) != KNISHIO_SUCCESS) {
+            results->token_creation.validation_error = safe_strdup("Failed to initialize token creation molecule");
+            goto cleanup;
+        }
+    }
+    log_test("Token creation initialization", true, NULL);
+
+    set_canonical_timestamps(molecule);
+
+    if (knishio_molecule_generate_hash(molecule) != KNISHIO_SUCCESS) {
+        results->token_creation.validation_error = safe_strdup("Failed to generate molecular hash");
+        goto cleanup;
+    }
+    if (knishio_molecule_sign(molecule, bundle, false, true) != KNISHIO_SUCCESS) {
+        results->token_creation.validation_error = safe_strdup("Failed to sign molecule");
+        goto cleanup;
+    }
+    log_test("Molecule signing", true, NULL);
+
+    inspect_molecule(molecule, "TOKEN CREATION MOLECULE");
+    diagnose_validation(molecule, source_wallet, "TOKEN CREATION MOLECULE");
+
+    bool is_valid = false;
+    char *validation_error = NULL;
+    if (knishio_molecule_check(molecule, source_wallet) == KNISHIO_SUCCESS) {
+        is_valid = true;
+    } else {
+        validation_error = safe_strdup("Signature verification failed");
+    }
+    log_test("Molecule validation", is_valid, validation_error);
+
+    char *molecule_json = NULL;
+    if (knishio_molecule_to_json(molecule, &molecule_json) == KNISHIO_SUCCESS && molecule_json) {
+        results->molecules_token_creation = safe_strdup(molecule_json);
+        free(molecule_json);
+    }
+
+    results->token_creation.passed = is_valid;
+    if (molecule->molecular_hash) {
+        results->token_creation.molecular_hash = safe_strdup(molecule->molecular_hash);
+    }
+    results->token_creation.atom_count = (int)molecule->atom_count;
+    results->token_creation.validation_error = validation_error;
+
+    success = is_valid;
+
+cleanup:
+    if (source_wallet) knishio_wallet_free(source_wallet);
+    if (recipient_wallet) knishio_wallet_free(recipient_wallet);
+    if (remainder_wallet) knishio_wallet_free(remainder_wallet);
+    if (molecule) knishio_molecule_free(molecule);
+    if (source_secret) free(source_secret);
+    if (recipient_secret) free(recipient_secret);
+    if (bundle) free(bundle);
+    return success;
+}
+
+/**
+ * Test C2: Wallet Creation Test
+ * C-isotope atom (metaType "wallet") defining a new wallet + ContinuID I-atom (initWalletCreation).
+ */
+static bool test_wallet_creation(test_results_t *results, const cJSON *config) {
+    log_message("\nC2. Wallet Creation Test", COLOR_BLUE);
+
+    const cJSON *wc = cJSON_GetObjectItem(config, "walletCreation");
+    if (!wc) {
+        results->wallet_creation.validation_error = safe_strdup("Missing walletCreation configuration");
+        return false;
+    }
+
+    const char *source_seed = cJSON_GetStringValue(cJSON_GetObjectItem(wc, "sourceSeed"));
+    const char *new_wallet_seed = cJSON_GetStringValue(cJSON_GetObjectItem(wc, "newWalletSeed"));
+    const char *source_token = cJSON_GetStringValue(cJSON_GetObjectItem(wc, "sourceToken"));
+    const char *new_token = cJSON_GetStringValue(cJSON_GetObjectItem(wc, "newToken"));
+    const char *source_position = cJSON_GetStringValue(cJSON_GetObjectItem(wc, "sourcePosition"));
+    const char *new_wallet_position = cJSON_GetStringValue(cJSON_GetObjectItem(wc, "newWalletPosition"));
+
+    if (!source_seed || !new_wallet_seed || !source_token || !new_token || !source_position || !new_wallet_position) {
+        results->wallet_creation.validation_error = safe_strdup("Invalid walletCreation configuration");
+        return false;
+    }
+
+    bool success = true;
+    knishio_wallet_t *source_wallet = NULL;
+    knishio_wallet_t *new_wallet = NULL;
+    knishio_wallet_t *remainder_wallet = NULL;
+    knishio_molecule_t *molecule = NULL;
+    char *source_secret = NULL;
+    char *new_wallet_secret = NULL;
+    char *bundle = NULL;
+
+    if (!knishio_generate_secret(source_seed, 2048, &source_secret)) {
+        results->wallet_creation.validation_error = safe_strdup("Failed to generate source secret");
+        goto cleanup;
+    }
+    if (!knishio_generate_bundle_hash(source_secret, NULL, NULL, &bundle)) {
+        results->wallet_creation.validation_error = safe_strdup("Failed to generate bundle");
+        goto cleanup;
+    }
+    if (!knishio_generate_secret(new_wallet_seed, 2048, &new_wallet_secret)) {
+        results->wallet_creation.validation_error = safe_strdup("Failed to generate new wallet secret");
+        goto cleanup;
+    }
+
+    if (knishio_wallet_create_simple(&source_wallet, source_secret, source_token, source_position) != KNISHIO_SUCCESS) {
+        results->wallet_creation.validation_error = safe_strdup("Failed to create source wallet");
+        goto cleanup;
+    }
+    log_test("Source wallet creation", true, NULL);
+
+    if (knishio_wallet_create_simple(&new_wallet, new_wallet_secret, new_token, new_wallet_position) != KNISHIO_SUCCESS) {
+        results->wallet_creation.validation_error = safe_strdup("Failed to create new wallet");
+        goto cleanup;
+    }
+    log_test("New wallet creation", true, NULL);
+
+    if (knishio_wallet_create_simple(&remainder_wallet, source_secret, source_token,
+            "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333") != KNISHIO_SUCCESS) {
+        results->wallet_creation.validation_error = safe_strdup("Failed to create remainder wallet");
+        goto cleanup;
+    }
+
+    if (knishio_molecule_create(&molecule, source_secret, bundle, source_wallet, remainder_wallet, NULL, KNISHIO_VERSION_STRING) != KNISHIO_SUCCESS) {
+        results->wallet_creation.validation_error = safe_strdup("Failed to create molecule");
+        goto cleanup;
+    }
+
+    if (knishio_molecule_init_wallet_creation(molecule, new_wallet, NULL, NULL, 0) != KNISHIO_SUCCESS) {
+        results->wallet_creation.validation_error = safe_strdup("Failed to initialize wallet creation molecule");
+        goto cleanup;
+    }
+    log_test("Wallet creation initialization", true, NULL);
+
+    set_canonical_timestamps(molecule);
+
+    if (knishio_molecule_generate_hash(molecule) != KNISHIO_SUCCESS) {
+        results->wallet_creation.validation_error = safe_strdup("Failed to generate molecular hash");
+        goto cleanup;
+    }
+    if (knishio_molecule_sign(molecule, bundle, false, true) != KNISHIO_SUCCESS) {
+        results->wallet_creation.validation_error = safe_strdup("Failed to sign molecule");
+        goto cleanup;
+    }
+    log_test("Molecule signing", true, NULL);
+
+    inspect_molecule(molecule, "WALLET CREATION MOLECULE");
+    diagnose_validation(molecule, source_wallet, "WALLET CREATION MOLECULE");
+
+    bool is_valid = false;
+    char *validation_error = NULL;
+    if (knishio_molecule_check(molecule, source_wallet) == KNISHIO_SUCCESS) {
+        is_valid = true;
+    } else {
+        validation_error = safe_strdup("Signature verification failed");
+    }
+    log_test("Molecule validation", is_valid, validation_error);
+
+    char *molecule_json = NULL;
+    if (knishio_molecule_to_json(molecule, &molecule_json) == KNISHIO_SUCCESS && molecule_json) {
+        results->molecules_wallet_creation = safe_strdup(molecule_json);
+        free(molecule_json);
+    }
+
+    results->wallet_creation.passed = is_valid;
+    if (molecule->molecular_hash) {
+        results->wallet_creation.molecular_hash = safe_strdup(molecule->molecular_hash);
+    }
+    results->wallet_creation.atom_count = (int)molecule->atom_count;
+    results->wallet_creation.validation_error = validation_error;
+
+    success = is_valid;
+
+cleanup:
+    if (source_wallet) knishio_wallet_free(source_wallet);
+    if (new_wallet) knishio_wallet_free(new_wallet);
+    if (remainder_wallet) knishio_wallet_free(remainder_wallet);
+    if (molecule) knishio_molecule_free(molecule);
+    if (source_secret) free(source_secret);
+    if (new_wallet_secret) free(new_wallet_secret);
+    if (bundle) free(bundle);
+    return success;
+}
+
+/**
+ * Test C3: Shadow Wallet Claim Test
+ * C-isotope atom (meta [shadowWalletClaim, then 7 wallet* keys]) + ContinuID I-atom
+ * (initShadowWalletClaim).
+ */
+static bool test_shadow_wallet_claim(test_results_t *results, const cJSON *config) {
+    log_message("\nC3. Shadow Wallet Claim Test", COLOR_BLUE);
+
+    const cJSON *sc = cJSON_GetObjectItem(config, "shadowWalletClaim");
+    if (!sc) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Missing shadowWalletClaim configuration");
+        return false;
+    }
+
+    const char *source_seed = cJSON_GetStringValue(cJSON_GetObjectItem(sc, "sourceSeed"));
+    const char *claim_seed = cJSON_GetStringValue(cJSON_GetObjectItem(sc, "claimSeed"));
+    const char *source_token = cJSON_GetStringValue(cJSON_GetObjectItem(sc, "sourceToken"));
+    const char *claim_token = cJSON_GetStringValue(cJSON_GetObjectItem(sc, "claimToken"));
+    const char *source_position = cJSON_GetStringValue(cJSON_GetObjectItem(sc, "sourcePosition"));
+    const char *claim_position = cJSON_GetStringValue(cJSON_GetObjectItem(sc, "claimPosition"));
+
+    if (!source_seed || !claim_seed || !source_token || !claim_token || !source_position || !claim_position) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Invalid shadowWalletClaim configuration");
+        return false;
+    }
+
+    bool success = true;
+    knishio_wallet_t *source_wallet = NULL;
+    knishio_wallet_t *claim_wallet = NULL;
+    knishio_wallet_t *remainder_wallet = NULL;
+    knishio_molecule_t *molecule = NULL;
+    char *source_secret = NULL;
+    char *claim_secret = NULL;
+    char *bundle = NULL;
+
+    if (!knishio_generate_secret(source_seed, 2048, &source_secret)) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Failed to generate source secret");
+        goto cleanup;
+    }
+    if (!knishio_generate_bundle_hash(source_secret, NULL, NULL, &bundle)) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Failed to generate bundle");
+        goto cleanup;
+    }
+    if (!knishio_generate_secret(claim_seed, 2048, &claim_secret)) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Failed to generate claim secret");
+        goto cleanup;
+    }
+
+    if (knishio_wallet_create_simple(&source_wallet, source_secret, source_token, source_position) != KNISHIO_SUCCESS) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Failed to create source wallet");
+        goto cleanup;
+    }
+    log_test("Source wallet creation", true, NULL);
+
+    if (knishio_wallet_create_simple(&claim_wallet, claim_secret, claim_token, claim_position) != KNISHIO_SUCCESS) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Failed to create claim wallet");
+        goto cleanup;
+    }
+    log_test("Claim wallet creation", true, NULL);
+
+    if (knishio_wallet_create_simple(&remainder_wallet, source_secret, source_token,
+            "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333") != KNISHIO_SUCCESS) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Failed to create remainder wallet");
+        goto cleanup;
+    }
+
+    if (knishio_molecule_create(&molecule, source_secret, bundle, source_wallet, remainder_wallet, NULL, KNISHIO_VERSION_STRING) != KNISHIO_SUCCESS) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Failed to create molecule");
+        goto cleanup;
+    }
+
+    if (knishio_molecule_init_shadow_wallet_claim(molecule, claim_wallet) != KNISHIO_SUCCESS) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Failed to initialize shadow wallet claim molecule");
+        goto cleanup;
+    }
+    log_test("Shadow wallet claim initialization", true, NULL);
+
+    set_canonical_timestamps(molecule);
+
+    if (knishio_molecule_generate_hash(molecule) != KNISHIO_SUCCESS) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Failed to generate molecular hash");
+        goto cleanup;
+    }
+    if (knishio_molecule_sign(molecule, bundle, false, true) != KNISHIO_SUCCESS) {
+        results->shadow_wallet_claim.validation_error = safe_strdup("Failed to sign molecule");
+        goto cleanup;
+    }
+    log_test("Molecule signing", true, NULL);
+
+    inspect_molecule(molecule, "SHADOW WALLET CLAIM MOLECULE");
+    diagnose_validation(molecule, source_wallet, "SHADOW WALLET CLAIM MOLECULE");
+
+    bool is_valid = false;
+    char *validation_error = NULL;
+    if (knishio_molecule_check(molecule, source_wallet) == KNISHIO_SUCCESS) {
+        is_valid = true;
+    } else {
+        validation_error = safe_strdup("Signature verification failed");
+    }
+    log_test("Molecule validation", is_valid, validation_error);
+
+    char *molecule_json = NULL;
+    if (knishio_molecule_to_json(molecule, &molecule_json) == KNISHIO_SUCCESS && molecule_json) {
+        results->molecules_shadow_wallet_claim = safe_strdup(molecule_json);
+        free(molecule_json);
+    }
+
+    results->shadow_wallet_claim.passed = is_valid;
+    if (molecule->molecular_hash) {
+        results->shadow_wallet_claim.molecular_hash = safe_strdup(molecule->molecular_hash);
+    }
+    results->shadow_wallet_claim.atom_count = (int)molecule->atom_count;
+    results->shadow_wallet_claim.validation_error = validation_error;
+
+    success = is_valid;
+
+cleanup:
+    if (source_wallet) knishio_wallet_free(source_wallet);
+    if (claim_wallet) knishio_wallet_free(claim_wallet);
+    if (remainder_wallet) knishio_wallet_free(remainder_wallet);
+    if (molecule) knishio_molecule_free(molecule);
+    if (source_secret) free(source_secret);
+    if (claim_secret) free(claim_secret);
     if (bundle) free(bundle);
     return success;
 }
@@ -1303,7 +1731,7 @@ static bool test_cross_sdk_validation(test_results_t *results) {
                     if (molecules && cJSON_IsObject(molecules)) {
                         
                         /* Validate each molecule type */
-                        const char* molecule_types[] = {"metadata", "simpleTransfer", "complexTransfer", "mlkem768"};
+                        const char* molecule_types[] = {"metadata", "simpleTransfer", "complexTransfer", "tokenCreation", "walletCreation", "shadowWalletClaim", "mlkem768"};
                         int num_types = sizeof(molecule_types) / sizeof(molecule_types[0]);
                         
                         for (int j = 0; j < num_types; j++) {
@@ -1581,7 +2009,31 @@ static bool save_results(void) {
     cJSON_AddItemToObject(complex_transfer, "hasRemainder", cJSON_CreateBool(g_results.complex_transfer.has_remainder));
     cJSON_AddItemToObject(complex_transfer, "validationError", cJSON_CreateString(g_results.complex_transfer.validation_error ? g_results.complex_transfer.validation_error : "null"));
     cJSON_AddItemToObject(tests, "complexTransfer", complex_transfer);
-    
+
+    /* Token creation test */
+    cJSON *token_creation = cJSON_CreateObject();
+    cJSON_AddItemToObject(token_creation, "passed", cJSON_CreateBool(g_results.token_creation.passed));
+    cJSON_AddItemToObject(token_creation, "molecularHash", cJSON_CreateString(g_results.token_creation.molecular_hash ? g_results.token_creation.molecular_hash : ""));
+    cJSON_AddItemToObject(token_creation, "atomCount", cJSON_CreateNumber(g_results.token_creation.atom_count));
+    cJSON_AddItemToObject(token_creation, "validationError", cJSON_CreateString(g_results.token_creation.validation_error ? g_results.token_creation.validation_error : "null"));
+    cJSON_AddItemToObject(tests, "tokenCreation", token_creation);
+
+    /* Wallet creation test */
+    cJSON *wallet_creation = cJSON_CreateObject();
+    cJSON_AddItemToObject(wallet_creation, "passed", cJSON_CreateBool(g_results.wallet_creation.passed));
+    cJSON_AddItemToObject(wallet_creation, "molecularHash", cJSON_CreateString(g_results.wallet_creation.molecular_hash ? g_results.wallet_creation.molecular_hash : ""));
+    cJSON_AddItemToObject(wallet_creation, "atomCount", cJSON_CreateNumber(g_results.wallet_creation.atom_count));
+    cJSON_AddItemToObject(wallet_creation, "validationError", cJSON_CreateString(g_results.wallet_creation.validation_error ? g_results.wallet_creation.validation_error : "null"));
+    cJSON_AddItemToObject(tests, "walletCreation", wallet_creation);
+
+    /* Shadow wallet claim test */
+    cJSON *shadow_wallet_claim = cJSON_CreateObject();
+    cJSON_AddItemToObject(shadow_wallet_claim, "passed", cJSON_CreateBool(g_results.shadow_wallet_claim.passed));
+    cJSON_AddItemToObject(shadow_wallet_claim, "molecularHash", cJSON_CreateString(g_results.shadow_wallet_claim.molecular_hash ? g_results.shadow_wallet_claim.molecular_hash : ""));
+    cJSON_AddItemToObject(shadow_wallet_claim, "atomCount", cJSON_CreateNumber(g_results.shadow_wallet_claim.atom_count));
+    cJSON_AddItemToObject(shadow_wallet_claim, "validationError", cJSON_CreateString(g_results.shadow_wallet_claim.validation_error ? g_results.shadow_wallet_claim.validation_error : "null"));
+    cJSON_AddItemToObject(tests, "shadowWalletClaim", shadow_wallet_claim);
+
     /* ML-KEM768 test */
     cJSON *mlkem768 = cJSON_CreateObject();
     cJSON_AddItemToObject(mlkem768, "passed", cJSON_CreateBool(g_results.mlkem768.passed));
@@ -1613,6 +2065,9 @@ static bool save_results(void) {
     cJSON_AddItemToObject(molecules, "metadata", cJSON_CreateString(g_results.molecules_metadata ? g_results.molecules_metadata : ""));
     cJSON_AddItemToObject(molecules, "simpleTransfer", cJSON_CreateString(g_results.molecules_simple_transfer ? g_results.molecules_simple_transfer : ""));
     cJSON_AddItemToObject(molecules, "complexTransfer", cJSON_CreateString(g_results.molecules_complex_transfer ? g_results.molecules_complex_transfer : ""));
+    cJSON_AddItemToObject(molecules, "tokenCreation", cJSON_CreateString(g_results.molecules_token_creation ? g_results.molecules_token_creation : ""));
+    cJSON_AddItemToObject(molecules, "walletCreation", cJSON_CreateString(g_results.molecules_wallet_creation ? g_results.molecules_wallet_creation : ""));
+    cJSON_AddItemToObject(molecules, "shadowWalletClaim", cJSON_CreateString(g_results.molecules_shadow_wallet_claim ? g_results.molecules_shadow_wallet_claim : ""));
     cJSON_AddItemToObject(molecules, "mlkem768", cJSON_CreateString(g_results.molecules_mlkem768 ? g_results.molecules_mlkem768 : ""));
     cJSON_AddItemToObject(root, "molecules", molecules);
     
@@ -1657,12 +2112,15 @@ static void display_summary(void) {
     printf("Timestamp: %s\n", g_results.timestamp);
     
     /* Count passed tests */
-    int total_tests = 6; // Updated to include ML-KEM768 and negative tests
+    int total_tests = 9; // crypto + 3 base + 3 extended (token/wallet/shadow) + ML-KEM768 + negative
     int passed_tests = 0;
     if (g_results.crypto.passed) passed_tests++;
     if (g_results.meta_creation.passed) passed_tests++;
     if (g_results.simple_transfer.passed) passed_tests++;
     if (g_results.complex_transfer.passed) passed_tests++;
+    if (g_results.token_creation.passed) passed_tests++;
+    if (g_results.wallet_creation.passed) passed_tests++;
+    if (g_results.shadow_wallet_claim.passed) passed_tests++;
     if (g_results.mlkem768.passed) passed_tests++;
     if (g_results.negative_cases.passed) passed_tests++;
     
@@ -1683,6 +2141,15 @@ static void display_summary(void) {
         }
         if (!g_results.complex_transfer.passed) {
             printf("  - complexTransfer: Validation failed\n");
+        }
+        if (!g_results.token_creation.passed) {
+            printf("  - tokenCreation: Validation failed\n");
+        }
+        if (!g_results.wallet_creation.passed) {
+            printf("  - walletCreation: Validation failed\n");
+        }
+        if (!g_results.shadow_wallet_claim.passed) {
+            printf("  - shadowWalletClaim: Validation failed\n");
         }
         if (!g_results.mlkem768.passed) {
             printf("  - mlkem768: %s\n", g_results.mlkem768.error ? g_results.mlkem768.error : "Validation failed");
@@ -1732,6 +2199,9 @@ static void cleanup_resources(void) {
     free(g_results.molecules_metadata);
     free(g_results.molecules_simple_transfer);
     free(g_results.molecules_complex_transfer);
+    free(g_results.molecules_token_creation);
+    free(g_results.molecules_wallet_creation);
+    free(g_results.molecules_shadow_wallet_claim);
     free(g_results.molecules_mlkem768);
     
     free(g_results.sdk);
@@ -1900,24 +2370,28 @@ int main(void) {
     bool meta_result = test_meta_creation(&g_results, tests_config);
     bool simple_result = test_simple_transfer(&g_results, tests_config);
     bool complex_result = test_complex_transfer(&g_results, tests_config);
+    bool token_result = test_token_creation(&g_results, tests_config);
+    bool wallet_result = test_wallet_creation(&g_results, tests_config);
+    bool shadow_result = test_shadow_wallet_claim(&g_results, tests_config);
     bool mlkem768_result = test_mlkem768(&g_results, tests_config);
     bool negative_result = test_negative_cases(&g_results, tests_config);
     bool cross_sdk_result = test_cross_sdk_validation(&g_results);
-    
+
     /* Save results */
     if (!save_results()) {
         fprintf(stderr, "Failed to save test results\n");
         return EXIT_FAILURE;
     }
-    
+
     /* Display summary */
     display_summary();
-    
+
     /* Exit with appropriate code */
-    int total_tests = 6; // Updated to include ML-KEM768 and negative tests
+    int total_tests = 9; // crypto + 3 base + 3 extended (token/wallet/shadow) + ML-KEM768 + negative
     int passed_tests = (crypto_result ? 1 : 0) + (meta_result ? 1 : 0) +
                       (simple_result ? 1 : 0) + (complex_result ? 1 : 0) +
+                      (token_result ? 1 : 0) + (wallet_result ? 1 : 0) + (shadow_result ? 1 : 0) +
                       (mlkem768_result ? 1 : 0) + (negative_result ? 1 : 0);
-    
+
     return (passed_tests == total_tests) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

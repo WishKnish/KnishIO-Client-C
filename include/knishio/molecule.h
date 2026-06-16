@@ -284,6 +284,60 @@ knishio_error_t knishio_molecule_init_value(
 );
 
 /**
+ * @brief Initialize a token-creation molecule (matches JavaScript SDK initTokenCreation)
+ * Adds a C-isotope atom issuing a new token + an I-isotope ContinuID atom. The C-atom is
+ * signed by molecule->source_wallet; its meta is the user token meta FIRST, then the 7
+ * prefixed wallet* keys for the recipient wallet (setMetaWallet order).
+ * @param molecule Molecule (must have source_wallet + remainder_wallet set)
+ * @param recipient_wallet Wallet receiving the new token
+ * @param amount Initial supply (string; the C-atom value)
+ * @param token_meta_keys Array of user token-meta keys (name/fungibility/supply/decimals)
+ * @param token_meta_values Array of user token-meta values
+ * @param token_meta_count Number of user token-meta pairs
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_molecule_init_token_creation(
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* recipient_wallet,
+    const char* amount,
+    const char** token_meta_keys,
+    const char** token_meta_values,
+    size_t token_meta_count
+);
+
+/**
+ * @brief Initialize a wallet-creation molecule (matches JavaScript SDK initWalletCreation)
+ * Adds a C-isotope atom (metaType "wallet") defining a new wallet on the ledger + an I-isotope
+ * ContinuID atom. The C-atom is signed by molecule->source_wallet; its meta is the optional
+ * leading atom_meta FIRST (e.g. shadowWalletClaim), then the 7 prefixed wallet* keys.
+ * @param molecule Molecule (must have source_wallet + remainder_wallet set)
+ * @param wallet The new wallet being defined
+ * @param atom_meta_keys Optional leading meta keys (may be NULL)
+ * @param atom_meta_values Optional leading meta values (may be NULL)
+ * @param atom_meta_count Number of leading meta pairs (0 for plain wallet creation)
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_molecule_init_wallet_creation(
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* wallet,
+    const char** atom_meta_keys,
+    const char** atom_meta_values,
+    size_t atom_meta_count
+);
+
+/**
+ * @brief Initialize a shadow-wallet-claim molecule (matches JavaScript SDK initShadowWalletClaim)
+ * Prepends a shadowWalletClaim=1 meta key, then delegates to init_wallet_creation.
+ * @param molecule Molecule (must have source_wallet + remainder_wallet set)
+ * @param wallet The shadow wallet being claimed
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_molecule_init_shadow_wallet_claim(
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* wallet
+);
+
+/**
  * @brief Simplified wallet creation (matches JavaScript SDK Wallet.create pattern)
  * @param wallet Output wallet pointer
  * @param secret Wallet secret

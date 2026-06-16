@@ -1196,6 +1196,88 @@ static int compare_atoms_by_index(const void* a, const void* b) {
 
 /* High-level molecule operations for JavaScript SDK compatibility */
 
+/* --- Cross-SDK helpers for the extended molecule types (cycle 33) --- */
+
+/* Append the 7 prefixed wallet* meta keys in JS setMetaWallet() order. The 4 core keys are always
+ * present; batch_id/pubkey/characters are appended ONLY when non-empty (the molecular hash skips
+ * NULL meta — see update_sponge_with_atom — so an empty walletBatchId is omitted, matching JS).
+ * pubkey is already the base64 ML-KEM key (mirrors the ContinuID I-atom). */
+static void append_wallet_meta(const char** keys, const char** vals, size_t* n, const knishio_wallet_t* w) {
+    keys[*n] = "walletTokenSlug";  vals[*n] = w->token;       (*n)++;
+    keys[*n] = "walletBundleHash"; vals[*n] = w->bundle_hash; (*n)++;
+    keys[*n] = "walletAddress";    vals[*n] = w->address;     (*n)++;
+    keys[*n] = "walletPosition";   vals[*n] = w->position;    (*n)++;
+    if (w->batch_id && w->batch_id[0])     { keys[*n] = "walletBatchId";    vals[*n] = w->batch_id;   (*n)++; }
+    if (w->pubkey && w->pubkey[0])         { keys[*n] = "walletPubkey";     vals[*n] = w->pubkey;     (*n)++; }
+    if (w->characters && w->characters[0]) { keys[*n] = "walletCharacters"; vals[*n] = w->characters; (*n)++; }
+}
+
+/* Append the ContinuID (I-isotope) atom, mirroring JS Molecule.addContinuIdAtom(). The I-atom is
+ * sourced from molecule->remainder_wallet (position/address/bundle_hash), metaType "walletBundle",
+ * meta [previousPosition = source.position, pubkey, characters] (each gated on truthy). Extracted
+ * from init_meta so all four init flows share one ContinuID implementation. */
+static knishio_error_t add_continuid_atom(knishio_molecule_t* molecule) {
+    knishio_wallet_t* rw = molecule->remainder_wallet;
+    if (!rw) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    knishio_atom_t* continuid_atom = NULL;
+    knishio_error_t result = knishio_atom_create(
+        &continuid_atom, rw->position, rw->address, KNISHIO_ISOTOPE_I, rw->token, NULL, NULL);
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+
+    /* ContinuID metaType/metaId (JS: walletBundle / remainderWallet.bundle) */
+    if (continuid_atom->meta_type) knishio_free(continuid_atom->meta_type);
+    if (continuid_atom->meta_id) knishio_free(continuid_atom->meta_id);
+    continuid_atom->meta_type = knishio_strdup("walletBundle");
+    continuid_atom->meta_id = knishio_strdup(rw->bundle_hash);
+
+    {
+        const char* ci_keys[3];
+        const char* ci_vals[3];
+        size_t ci_n = 0;
+        if (molecule->source_wallet && molecule->source_wallet->position) {
+            ci_keys[ci_n] = "previousPosition";
+            ci_vals[ci_n] = molecule->source_wallet->position;
+            ci_n++;
+        }
+        if (rw->pubkey) {
+            ci_keys[ci_n] = "pubkey";
+            ci_vals[ci_n] = rw->pubkey;
+            ci_n++;
+        }
+        if (rw->characters) {
+            ci_keys[ci_n] = "characters";
+            ci_vals[ci_n] = rw->characters;
+            ci_n++;
+        }
+        if (ci_n > 0) {
+            continuid_atom->meta = malloc(sizeof(knishio_meta_t*) * ci_n);
+            if (continuid_atom->meta) {
+                continuid_atom->meta_count = ci_n;
+                for (size_t i = 0; i < ci_n; i++) {
+                    if (knishio_meta_create(&continuid_atom->meta[i], ci_keys[i], ci_vals[i]) != KNISHIO_SUCCESS) {
+                        continuid_atom->meta[i] = NULL;
+                    }
+                }
+            } else {
+                continuid_atom->meta_count = 0;
+            }
+        }
+    }
+
+    result = knishio_molecule_add_atom(molecule, continuid_atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(continuid_atom);
+        return result;
+    }
+
+    return KNISHIO_SUCCESS;
+}
+
 /**
  * @brief Initialize metadata molecule (matches JavaScript SDK initMeta)
  * Adds M-isotope atom with metadata and I-isotope atom for ContinuID
@@ -1304,97 +1386,186 @@ knishio_error_t knishio_molecule_init_meta(
     
     printf("DEBUG knishio_molecule_init_meta: Meta atom added successfully\n");
     
-    /* Add ContinuID atom (I isotope) sourced from the remainder wallet — mirrors JS
-     * Molecule.addContinuIdAtom (I-atom wallet = remainderWallet, meta carries the
-     * ContinuID chain fields). The metadata flow must supply a USER remainder wallet. */
-    printf("DEBUG knishio_molecule_init_meta: Creating ContinuID atom\n");
-
-    knishio_wallet_t* rw = molecule->remainder_wallet;
-    if (!rw) {
-        printf("DEBUG knishio_molecule_init_meta: No remainder wallet for ContinuID atom\n");
-        return KNISHIO_ERROR_INVALID_STATE;
-    }
-
-    knishio_atom_t* continuid_atom = NULL;
-    result = knishio_atom_create(
-        &continuid_atom,
-        rw->position,
-        rw->address,
-        KNISHIO_ISOTOPE_I,
-        rw->token,
-        NULL,  /* No value for ContinuID */
-        NULL   /* No batch_id */
-    );
-
-    if (result != KNISHIO_SUCCESS) {
-        printf("DEBUG knishio_molecule_init_meta: ContinuID atom creation failed\n");
-        return result;
-    }
-
-    printf("DEBUG knishio_molecule_init_meta: ContinuID atom created successfully\n");
-
-    /* Set ContinuID metaType/metaId (JS: walletBundle / remainderWallet.bundle) */
-    if (continuid_atom->meta_type) knishio_free(continuid_atom->meta_type);
-    if (continuid_atom->meta_id) knishio_free(continuid_atom->meta_id);
-    continuid_atom->meta_type = knishio_strdup("walletBundle");
-    continuid_atom->meta_id = knishio_strdup(rw->bundle_hash);
-
-    /* Populate the ContinuID meta in JS insertion order (= hash order):
-     * previousPosition (source wallet position), pubkey (remainder ML-KEM pubkey, base64),
-     * characters. Each entry only added when truthy, matching JS. */
-    {
-        const char* ci_keys[3];
-        const char* ci_vals[3];
-        size_t ci_n = 0;
-        if (molecule->source_wallet && molecule->source_wallet->position) {
-            ci_keys[ci_n] = "previousPosition";
-            ci_vals[ci_n] = molecule->source_wallet->position;
-            ci_n++;
-        }
-        if (rw->pubkey) {
-            ci_keys[ci_n] = "pubkey";
-            ci_vals[ci_n] = rw->pubkey;
-            ci_n++;
-        }
-        if (rw->characters) {
-            ci_keys[ci_n] = "characters";
-            ci_vals[ci_n] = rw->characters;
-            ci_n++;
-        }
-        if (ci_n > 0) {
-            continuid_atom->meta = malloc(sizeof(knishio_meta_t*) * ci_n);
-            if (continuid_atom->meta) {
-                continuid_atom->meta_count = ci_n;
-                for (size_t i = 0; i < ci_n; i++) {
-                    if (knishio_meta_create(&continuid_atom->meta[i], ci_keys[i], ci_vals[i]) != KNISHIO_SUCCESS) {
-                        printf("DEBUG knishio_molecule_init_meta: Failed to create ContinuID meta[%zu]\n", i);
-                        continuid_atom->meta[i] = NULL;
-                    }
-                }
-            } else {
-                continuid_atom->meta_count = 0;
-            }
-        }
-    }
-    
-    printf("DEBUG knishio_molecule_init_meta: Adding ContinuID atom to molecule\n");
-    result = knishio_molecule_add_atom(molecule, continuid_atom);
-    printf("DEBUG knishio_molecule_init_meta: ContinuID add_atom result: %d\n", result);
-    
+    /* Add ContinuID atom (I isotope), mirrors JS Molecule.addContinuIdAtom() (extracted helper). */
+    result = add_continuid_atom(molecule);
     if (result != KNISHIO_SUCCESS) {
         printf("DEBUG knishio_molecule_init_meta: Failed to add ContinuID atom\n");
-        knishio_atom_free(continuid_atom);
         return result;
     }
-    
-    printf("DEBUG knishio_molecule_init_meta: ContinuID atom added successfully\n");
+
     printf("DEBUG knishio_molecule_init_meta: Function completed successfully - returning KNISHIO_SUCCESS\n");
-    
+
     return KNISHIO_SUCCESS;
 }
 
 /**
- * @brief Initialize value transfer molecule (matches JavaScript SDK initValue)  
+ * @brief Initialize a token-creation molecule (matches JavaScript SDK initTokenCreation).
+ * C-atom (issue new token) signed by molecule->source_wallet + a ContinuID I-atom.
+ */
+knishio_error_t knishio_molecule_init_token_creation(
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* recipient_wallet,
+    const char* amount,
+    const char** token_meta_keys,
+    const char** token_meta_values,
+    size_t token_meta_count
+) {
+    if (!molecule || !recipient_wallet || !amount) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!molecule->source_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    /* Combined meta: the user token meta FIRST, then the 7 prefixed wallet* keys
+     * (JS: new AtomMeta(meta).setMetaWallet(recipientWallet)). */
+    const char* keys[24];
+    const char* vals[24];
+    size_t n = 0;
+    if (token_meta_keys && token_meta_values) {
+        for (size_t i = 0; i < token_meta_count && n < 16; i++) {
+            if (token_meta_keys[i] && token_meta_values[i]) {
+                keys[n] = token_meta_keys[i];
+                vals[n] = token_meta_values[i];
+                n++;
+            }
+        }
+    }
+    append_wallet_meta(keys, vals, &n, recipient_wallet);
+
+    /* C-atom: position/address/token from the SOURCE (signing) wallet; value=amount;
+     * metaId=recipient.token; batchId=recipient.batch_id (NULL -> hash-skipped). */
+    knishio_atom_t* atom = NULL;
+    knishio_error_t result = knishio_atom_create(
+        &atom,
+        molecule->source_wallet->position,
+        molecule->source_wallet->address,
+        KNISHIO_ISOTOPE_C,
+        molecule->source_wallet->token,
+        amount,
+        recipient_wallet->batch_id
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+
+    if (atom->meta_type) knishio_free(atom->meta_type);
+    if (atom->meta_id) knishio_free(atom->meta_id);
+    atom->meta_type = knishio_strdup("token");
+    atom->meta_id = knishio_strdup(recipient_wallet->token);
+
+    atom->meta = malloc(sizeof(knishio_meta_t*) * n);
+    if (atom->meta) {
+        atom->meta_count = n;
+        for (size_t i = 0; i < n; i++) {
+            if (knishio_meta_create(&atom->meta[i], keys[i], vals[i]) != KNISHIO_SUCCESS) {
+                atom->meta[i] = NULL;
+            }
+        }
+    } else {
+        atom->meta_count = 0;
+    }
+
+    result = knishio_molecule_add_atom(molecule, atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(atom);
+        return result;
+    }
+
+    return add_continuid_atom(molecule);
+}
+
+/**
+ * @brief Initialize a wallet-creation molecule (matches JavaScript SDK initWalletCreation).
+ * C-atom (metaType "wallet") signed by molecule->source_wallet + a ContinuID I-atom.
+ */
+knishio_error_t knishio_molecule_init_wallet_creation(
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* wallet,
+    const char** atom_meta_keys,
+    const char** atom_meta_values,
+    size_t atom_meta_count
+) {
+    if (!molecule || !wallet) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!molecule->source_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    /* Combined meta: the optional leading atom_meta FIRST (e.g. shadowWalletClaim),
+     * then the 7 prefixed wallet* keys (JS: atomMeta.setMetaWallet(wallet)). */
+    const char* keys[24];
+    const char* vals[24];
+    size_t n = 0;
+    if (atom_meta_keys && atom_meta_values) {
+        for (size_t i = 0; i < atom_meta_count && n < 16; i++) {
+            if (atom_meta_keys[i] && atom_meta_values[i]) {
+                keys[n] = atom_meta_keys[i];
+                vals[n] = atom_meta_values[i];
+                n++;
+            }
+        }
+    }
+    append_wallet_meta(keys, vals, &n, wallet);
+
+    /* C-atom: position/address/token from the SOURCE (signing) wallet; NO value;
+     * metaType "wallet"; metaId=wallet.address; batchId=wallet.batch_id (NULL -> hash-skipped). */
+    knishio_atom_t* atom = NULL;
+    knishio_error_t result = knishio_atom_create(
+        &atom,
+        molecule->source_wallet->position,
+        molecule->source_wallet->address,
+        KNISHIO_ISOTOPE_C,
+        molecule->source_wallet->token,
+        NULL,  /* No value for wallet creation */
+        wallet->batch_id
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+
+    if (atom->meta_type) knishio_free(atom->meta_type);
+    if (atom->meta_id) knishio_free(atom->meta_id);
+    atom->meta_type = knishio_strdup("wallet");
+    atom->meta_id = knishio_strdup(wallet->address);
+
+    atom->meta = malloc(sizeof(knishio_meta_t*) * n);
+    if (atom->meta) {
+        atom->meta_count = n;
+        for (size_t i = 0; i < n; i++) {
+            if (knishio_meta_create(&atom->meta[i], keys[i], vals[i]) != KNISHIO_SUCCESS) {
+                atom->meta[i] = NULL;
+            }
+        }
+    } else {
+        atom->meta_count = 0;
+    }
+
+    result = knishio_molecule_add_atom(molecule, atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(atom);
+        return result;
+    }
+
+    return add_continuid_atom(molecule);
+}
+
+/**
+ * @brief Initialize a shadow-wallet-claim molecule (matches JavaScript SDK initShadowWalletClaim).
+ * Prepends shadowWalletClaim=1, then delegates to init_wallet_creation.
+ */
+knishio_error_t knishio_molecule_init_shadow_wallet_claim(
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* wallet
+) {
+    const char* keys[] = { "shadowWalletClaim" };
+    const char* vals[] = { "1" };
+    return knishio_molecule_init_wallet_creation(molecule, wallet, keys, vals, 1);
+}
+
+/**
+ * @brief Initialize value transfer molecule (matches JavaScript SDK initValue)
  * Adds V-isotope atoms: source debit, recipient credit, remainder (UTXO pattern)
  */
 knishio_error_t knishio_molecule_init_value(
