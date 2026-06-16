@@ -29,6 +29,12 @@
 #include "knishio/auth_token.h"
 #include "knishio/meta.h"
 
+/* Forward declarations for the graphql operation/response types — declared here (rather than
+ * #include "knishio/graphql.h") to avoid a circular include (graphql.h -> knishio.h -> client_ops.h).
+ * knishio_client_execute_graphql only uses pointers to these; the full defs live in graphql.h. */
+typedef struct knishio_graphql_operation knishio_graphql_operation_t;
+typedef struct knishio_graphql_response knishio_graphql_response_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -131,6 +137,23 @@ knishio_error_t knishio_client_propose_molecule(
     knishio_client_t* client,
     knishio_molecule_t* molecule,
     char** molecular_hash
+);
+
+/**
+ * @brief Submit a GraphQL operation through a proper graphql client built from this client.
+ * Builds a knishio_graphql_client_t (its own http_client to client->uri + the client's auth token),
+ * executes the operation, and frees the graphql client. Replaces the unsafe
+ * (knishio_graphql_client_t*)client cast in the create ops (the auth token now propagates).
+ *
+ * @param client KnishIO client instance (provides uri/cell_slug/auth_token)
+ * @param operation GraphQL operation to execute
+ * @param response Output response (allocated, free with knishio_graphql_response_free)
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_client_execute_graphql(
+    knishio_client_t* client,
+    const knishio_graphql_operation_t* operation,
+    knishio_graphql_response_t** response
 );
 
 /* Batch operations */

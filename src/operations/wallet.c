@@ -13,10 +13,10 @@
 #include <stdlib.h>
 
 /* CreateWallet GraphQL mutation template */
-static const char* CREATE_WALLET_MUTATION = 
+static const char* CREATE_WALLET_MUTATION =
     "mutation CreateWallet($molecule: MoleculeInput!) {"
     "  ProposeMolecule(molecule: $molecule) {"
-    "    molecular_hash"
+    "    molecularHash"
     "    status"
     "    reason"
     "    payload"
@@ -165,8 +165,8 @@ knishio_error_t knishio_client_create_wallet(
             .requires_auth = true,
             .is_mutation = true
         };
-        knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
-        error = knishio_graphql_execute(graphql_client, &operation, &response);
+        /* Submit through a proper graphql client (auth token propagates), not the old cast. */
+        error = knishio_client_execute_graphql(client, &operation, &response);
     }
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;

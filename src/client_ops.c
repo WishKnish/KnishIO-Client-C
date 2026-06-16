@@ -225,11 +225,12 @@ knishio_error_t knishio_client_propose_molecule(
         return error;
     }
     
-    /* Build ProposeMolecule mutation */
-    const char* mutation = 
+    /* Build ProposeMolecule mutation (camelCase response fields — the validator's MoleculeResponse
+     * exposes molecularHash, not molecular_hash). */
+    const char* mutation =
         "mutation ProposeMolecule($molecule: MoleculeInput!) {"
         "  ProposeMolecule(molecule: $molecule) {"
-        "    molecular_hash"
+        "    molecularHash"
         "    status"
         "    reason"
         "    payload"
@@ -256,9 +257,9 @@ knishio_error_t knishio_client_propose_molecule(
         .is_mutation = true
     };
     
-    /* Cast client to GraphQL client for now */
-    knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
-    error = knishio_graphql_execute(graphql_client, &operation, &response);
+    /* Submit through a proper graphql client (built from the client; auth token propagates),
+     * not the old (knishio_graphql_client_t*)client cast. */
+    error = knishio_client_execute_graphql(client, &operation, &response);
     knishio_free(variables);
     
     if (error != KNISHIO_SUCCESS) {

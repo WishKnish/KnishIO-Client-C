@@ -28,10 +28,10 @@ static const char* CREATE_IDENTIFIER_MUTATION =
     "}";
 
 /* ClaimShadowWallet GraphQL mutation template */
-static const char* CLAIM_SHADOW_WALLET_MUTATION = 
+static const char* CLAIM_SHADOW_WALLET_MUTATION =
     "mutation ClaimShadowWallet($molecule: MoleculeInput!) {"
     "  ProposeMolecule(molecule: $molecule) {"
-    "    molecular_hash"
+    "    molecularHash"
     "    status"
     "    reason"
     "    payload"
@@ -240,7 +240,8 @@ knishio_error_t knishio_client_claim_shadow_wallet(
             .requires_auth = true,
             .is_mutation = true
         };
-        error = knishio_graphql_execute((knishio_graphql_client_t*)client, &operation, &response);
+        /* Submit through a proper graphql client (auth token propagates), not the old cast. */
+        error = knishio_client_execute_graphql(client, &operation, &response);
     }
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -260,7 +261,7 @@ knishio_error_t knishio_client_claim_shadow_wallet(
         /* Parse molecular hash from GraphQL response */
         knishio_json_t* json_root = knishio_json_parse(response->data, NULL);
         if (json_root) {
-            const char* molecular_hash = knishio_json_get_string_path(json_root, "data.ProposeMolecule.molecular_hash");
+            const char* molecular_hash = knishio_json_get_string_path(json_root, "data.ProposeMolecule.molecularHash");
             if (molecular_hash && strlen(molecular_hash) > 0) {
                 claim_result->molecular_hash = knishio_strdup(molecular_hash);
             } else if (molecule->molecular_hash) {

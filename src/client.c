@@ -1,8 +1,10 @@
 #include "knishio/knishio.h"
 #include "knishio/auth_token.h"
 #include "knishio/client_auth.h"
+#include "knishio/client_ops.h"
 #include "knishio/wallet.h"
 #include "knishio/http.h"
+#include "knishio/graphql.h"
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
 #include "client_internal.h"
@@ -176,6 +178,42 @@ knishio_error_t knishio_client_clear_auth(knishio_client_t *client) {
     if (client->http_client) {
         knishio_http_client_clear_auth(client->http_client);
     }
-    
+
     return KNISHIO_SUCCESS;
+}
+
+/* Build a proper graphql client from this client (its own http_client to client->uri + the client's
+ * auth token), submit the operation, and free the graphql client. Replaces the prior
+ * (knishio_graphql_client_t*)client cast in the create ops — knishio_client_t and
+ * knishio_graphql_client_t are different structs, so the cast never propagated the auth token to
+ * the X-Auth-Token header (and was UB). knishio_graphql_client_create makes its OWN http_client to
+ * client->uri, so client->http_client is untouched and graphql_client_free is safe. */
+knishio_error_t knishio_client_execute_graphql(
+    knishio_client_t* client,
+    const knishio_graphql_operation_t* operation,
+    knishio_graphql_response_t** response
+) {
+    if (!client || !operation || !response) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!client->uri) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    knishio_graphql_client_t* gql = NULL;
+    knishio_error_t error = knishio_graphql_client_create(&gql, client->uri, client->cell_slug);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
+
+    /* Propagate the client's auth token (slice 2a: manually-set; the full JWT flow is slice 2b).
+     * graphql_client_set_auth_token pushes it into the http client's X-Auth-Token header. */
+    if (client->auth_token) {
+        knishio_graphql_client_set_auth_token(gql, client->auth_token);
+    }
+
+    error = knishio_graphql_execute(gql, operation, response);
+
+    knishio_graphql_client_free(gql);
+    return error;
 }
