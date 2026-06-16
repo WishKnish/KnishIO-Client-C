@@ -80,136 +80,127 @@ knishio_error_t knishio_client_create_wallet(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     
-    /* Create wallet locally */
-    knishio_wallet_t* wallet = NULL;
-    bool success = knishio_wallet_create(
-        &wallet,
-        "wallet-seed",  /* TODO: Use proper seed */
-        params->token,
-        params->position
-    );
-    
-    if (!success || !wallet) {
-        return KNISHIO_ERROR_WALLET_CREDENTIAL;
-    }
-    
-    /* Create molecule for wallet creation */
+    /* Cycle 39 (slice 1): build the PARITY-CORRECT wallet-creation molecule (C-atom 'wallet' with
+     * the 7 prefixed wallet* keys + a ContinuID I-atom) via knishio_molecule_init_wallet_creation,
+     * signed, on a REAL client-secret-derived source wallet. Live submission + auth = next slice. */
+    knishio_wallet_t* source = NULL;
+    knishio_wallet_t* new_wallet = NULL;
+    knishio_wallet_t* remainder = NULL;
     knishio_molecule_t* molecule = NULL;
-    knishio_error_t error = knishio_molecule_create(
-        &molecule,
-        wallet->secret,
-        wallet->bundle_hash,
-        wallet,
-        NULL,  /* remainder wallet */
-        "wallet",
-        "V4"
-    );
-    
-    if (error != KNISHIO_SUCCESS) {
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return error;
-    }
-    
-    /* Create wallet creation atom */
-    knishio_atom_t* atom = NULL;
-    error = knishio_atom_create(
-        &atom,
-        wallet->position,
-        wallet->address,
-        KNISHIO_ISOTOPE_C,  /* Create isotope */
-        params->token,
-        "0",  /* Initial balance */
-        params->batch_id
-    );
-    
-    if (error != KNISHIO_SUCCESS) {
-        knishio_molecule_free(molecule);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return error;
-    }
-    
-    /* Add atom to molecule */
-    error = knishio_molecule_add_atom(molecule, atom);
-    if (error != KNISHIO_SUCCESS) {
-        knishio_atom_free(atom);
-        knishio_molecule_free(molecule);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return error;
-    }
-    
-    /* Convert molecule to JSON */
-    char* molecule_json = NULL;
-    error = knishio_molecule_to_json(molecule, &molecule_json);
-    if (error != KNISHIO_SUCCESS) {
-        knishio_molecule_free(molecule);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return error;
-    }
-    
-    /* Build variables */
-    size_t var_len = strlen(molecule_json) + 32;
-    char* variables = knishio_malloc(var_len);
-    if (!variables) {
-        knishio_free(molecule_json);
-        knishio_molecule_free(molecule);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
-    knishio_free(molecule_json);
-    
-    /* Execute mutation */
+    char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
-    knishio_graphql_operation_t operation = {
-        .name = "CreateWallet",
-        .query = CREATE_WALLET_MUTATION,
-        .variables_json = variables,
-        .requires_auth = true,
-        .is_mutation = true
-    };
-    
-    knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
-    error = knishio_graphql_execute(graphql_client, &operation, &response);
-    knishio_free(variables);
-    knishio_molecule_free(molecule);
-    
+
+    knishio_error_t error = knishio_client_get_source_wallet(
+        (knishio_client_t*)client, "USER", &source
+    );
     if (error != KNISHIO_SUCCESS) {
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
         return error;
     }
-    
-    /* Create result */
-    knishio_create_wallet_result_t* res = knishio_calloc(1, sizeof(knishio_create_wallet_result_t));
-    if (!res) {
-        knishio_graphql_response_free(response);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return KNISHIO_ERROR_MEMORY;
+
+    /* The new wallet being defined (caller's token + position; fall back to a canonical 64-hex
+     * position if the caller didn't supply a valid one), from the source secret. */
+    {
+        const char* new_pos = (params->position && strlen(params->position) == 64)
+            ? params->position
+            : "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+        error = knishio_wallet_create_simple(&new_wallet, source->secret, params->token, new_pos);
     }
-    
-    if (response->success && response->molecular_hash) {
-        res->success = true;
-        res->wallet = wallet;  /* Transfer ownership */
-        res->molecular_hash = knishio_strdup(response->molecular_hash);
-    } else {
-        res->success = false;
-        res->error_message = response->errors ? 
-            knishio_strdup(response->errors) : 
-            knishio_strdup("Wallet creation failed");
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
     }
-    
-    knishio_graphql_response_free(response);
-    *result = res;
-    
-    return KNISHIO_SUCCESS;
+
+    error = knishio_wallet_create_simple(
+        &remainder, source->secret, "USER",
+        "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333"
+    );
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    error = knishio_molecule_create(
+        &molecule, source->secret, source->bundle_hash, source, remainder, NULL, "V4"
+    );
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    error = knishio_molecule_init_wallet_creation(molecule, new_wallet, NULL, NULL, 0);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    /* Hash + sign (real timestamps — live op). */
+    error = knishio_molecule_generate_hash(molecule);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+    error = knishio_molecule_sign(molecule, source->bundle_hash, false, true);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    /* Serialize + submit (transport/auth unverified — next slice). */
+    {
+        char* molecule_json = NULL;
+        error = knishio_molecule_to_json(molecule, &molecule_json);
+        if (error != KNISHIO_SUCCESS) {
+            goto cleanup;
+        }
+        size_t var_len = strlen(molecule_json) + 32;
+        variables = knishio_malloc(var_len);
+        if (!variables) {
+            knishio_free(molecule_json);
+            error = KNISHIO_ERROR_MEMORY;
+            goto cleanup;
+        }
+        snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
+        knishio_free(molecule_json);
+    }
+
+    {
+        knishio_graphql_operation_t operation = {
+            .name = "CreateWallet",
+            .query = CREATE_WALLET_MUTATION,
+            .variables_json = variables,
+            .requires_auth = true,
+            .is_mutation = true
+        };
+        knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
+        error = knishio_graphql_execute(graphql_client, &operation, &response);
+    }
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    /* Build result */
+    {
+        knishio_create_wallet_result_t* res = knishio_calloc(1, sizeof(knishio_create_wallet_result_t));
+        if (!res) {
+            error = KNISHIO_ERROR_MEMORY;
+            goto cleanup;
+        }
+        if (response->success && response->molecular_hash) {
+            res->success = true;
+            res->wallet = new_wallet;  /* transfer ownership to the caller */
+            new_wallet = NULL;         /* so cleanup below does not free it */
+            res->molecular_hash = knishio_strdup(response->molecular_hash);
+        } else {
+            res->success = false;
+            res->error_message = response->errors ?
+                knishio_strdup(response->errors) :
+                knishio_strdup("Wallet creation failed");
+        }
+        *result = res;
+    }
+
+cleanup:
+    if (response) knishio_graphql_response_free(response);
+    if (variables) knishio_free(variables);
+    if (molecule) knishio_molecule_free(molecule);
+    if (source) knishio_wallet_free(source);
+    if (new_wallet) knishio_wallet_free(new_wallet);
+    if (remainder) knishio_wallet_free(remainder);
+    return error;
 }
 
 /* Query list of wallets */

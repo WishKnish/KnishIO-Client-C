@@ -83,186 +83,148 @@ knishio_error_t knishio_client_create_token(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     
-    /* Get source wallet for token creation */
-    knishio_wallet_t* wallet = NULL;
-    knishio_error_t error = knishio_client_get_source_wallet(
-        (knishio_client_t*)client, 
-        "USER", 
-        &wallet
-    );
-    if (error != KNISHIO_SUCCESS) {
-        return error;
-    }
-    
-    /* Create molecule for token creation */
+    /* Cycle 39 (slice 1): build the PARITY-CORRECT token-creation molecule (C-atom 'token' with
+     * the 7 prefixed wallet* keys + a ContinuID I-atom) via knishio_molecule_init_token_creation,
+     * signed, on a REAL client-secret-derived source wallet. Live submission + auth is the next
+     * slice — the propose_molecule call below serializes the correct molecule but its GraphQL
+     * transport/auth is not yet verified against the validator. */
+    knishio_wallet_t* source = NULL;
+    knishio_wallet_t* recipient = NULL;
+    knishio_wallet_t* remainder = NULL;
     knishio_molecule_t* molecule = NULL;
-    error = knishio_molecule_create(
-        &molecule,
-        wallet->secret,
-        wallet->bundle_hash,
-        wallet,
-        NULL,  /* remainder wallet */
-        "token",
-        "V4"
-    );
-    
-    if (error != KNISHIO_SUCCESS) {
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return error;
-    }
-    
-    /* Create token creation atom */
-    knishio_atom_t* atom = NULL;
-    
-    /* Build meta array for token properties */
-    knishio_meta_t* meta[10];
-    size_t meta_count = 0;
-    
-    /* Add token name */
-    meta[meta_count] = knishio_malloc(sizeof(knishio_meta_t));
-    meta[meta_count]->key = knishio_strdup("name");
-    meta[meta_count]->value = knishio_strdup(params->name);
-    meta_count++;
-    
-    /* Add fungibility */
-    meta[meta_count] = knishio_malloc(sizeof(knishio_meta_t));
-    meta[meta_count]->key = knishio_strdup("fungibility");
-    meta[meta_count]->value = knishio_strdup(
-        knishio_token_fungibility_to_string(params->fungibility)
-    );
-    meta_count++;
-    
-    /* Add initial supply amount */
-    char amount_str[32];
-    snprintf(amount_str, sizeof(amount_str), "%d", params->amount);
-    meta[meta_count] = knishio_malloc(sizeof(knishio_meta_t));
-    meta[meta_count]->key = knishio_strdup("amount");
-    meta[meta_count]->value = knishio_strdup(amount_str);
-    meta_count++;
-    
-    /* Add any additional metadata from params */
-    if (params->meta && params->meta_count > 0) {
-        for (size_t i = 0; i < params->meta_count && meta_count < 10; i++) {
-            meta[meta_count] = knishio_malloc(sizeof(knishio_meta_t));
-            meta[meta_count]->key = knishio_strdup(params->meta[i]->key);
-            meta[meta_count]->value = knishio_strdup(params->meta[i]->value);
-            meta_count++;
-        }
-    }
-    
-    /* Create atom with metadata */
-    error = knishio_atom_create_with_meta(
-        &atom,
-        wallet->position,
-        wallet->address,
-        KNISHIO_ISOTOPE_T,  /* Token creation isotope */
-        params->token,
-        amount_str,
-        NULL,  /* batch ID */
-        "token",
-        params->token,
-        meta,
-        meta_count
-    );
-    
-    /* Free meta array */
-    for (size_t i = 0; i < meta_count; i++) {
-        knishio_free((void*)meta[i]->key);
-        knishio_free((void*)meta[i]->value);
-        knishio_free(meta[i]);
-    }
-    
-    if (error != KNISHIO_SUCCESS) {
-        knishio_molecule_free(molecule);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return error;
-    }
-    
-    /* Add units for NFTs if provided */
-    if (params->fungibility == KNISHIO_TOKEN_NONFUNGIBLE && 
-        params->units && params->unit_count > 0) {
-        /* TODO: Add unit atoms for each NFT unit */
-    }
-    
-    /* Add atom to molecule */
-    error = knishio_molecule_add_atom(molecule, atom);
-    if (error != KNISHIO_SUCCESS) {
-        knishio_atom_free(atom);
-        knishio_molecule_free(molecule);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return error;
-    }
-    
-    /* Convert molecule to JSON */
-    char* molecule_json = NULL;
-    error = knishio_molecule_to_json(molecule, &molecule_json);
-    if (error != KNISHIO_SUCCESS) {
-        knishio_molecule_free(molecule);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return error;
-    }
-    
-    /* Build variables */
-    size_t var_len = strlen(molecule_json) + 32;
-    char* variables = knishio_malloc(var_len);
-    if (!variables) {
-        knishio_free(molecule_json);
-        knishio_molecule_free(molecule);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
-    knishio_free(molecule_json);
-    
-    /* Execute mutation */
+    char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
-    knishio_graphql_operation_t operation = {
-        .name = "CreateToken",
-        .query = CREATE_TOKEN_MUTATION,
-        .variables_json = variables,
-        .requires_auth = true,
-        .is_mutation = true
-    };
-    
-    knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
-    error = knishio_graphql_execute(graphql_client, &operation, &response);
-    knishio_free(variables);
-    knishio_molecule_free(molecule);
-    knishio_wallet_cleanup(wallet);
-    knishio_free(wallet);
-    
+
+    knishio_error_t error = knishio_client_get_source_wallet(
+        (knishio_client_t*)client, "USER", &source
+    );
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
-    
-    /* Create result */
-    knishio_create_token_result_t* res = knishio_calloc(1, sizeof(knishio_create_token_result_t));
-    if (!res) {
-        knishio_graphql_response_free(response);
-        return KNISHIO_ERROR_MEMORY;
+
+    /* Recipient (new-token) wallet + canonical USER remainder, from the source secret.
+     * Deterministic 64-hex positions for this slice (live ContinuID position = next slice). */
+    error = knishio_wallet_create_simple(
+        &recipient, source->secret, params->token,
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    );
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
     }
-    
-    if (response->success && response->molecular_hash) {
-        res->success = true;
-        res->token_slug = knishio_strdup(params->token);
-        res->molecular_hash = knishio_strdup(response->molecular_hash);
-        res->response = response->data ? knishio_strdup(response->data) : NULL;
-    } else {
-        res->success = false;
-        res->error_message = response->errors ? 
-            knishio_strdup(response->errors) : 
-            knishio_strdup("Token creation failed");
+    error = knishio_wallet_create_simple(
+        &remainder, source->secret, "USER",
+        "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333"
+    );
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
     }
-    
-    knishio_graphql_response_free(response);
-    *result = res;
-    
-    return KNISHIO_SUCCESS;
+
+    /* Molecule: init_token_creation reads molecule->source_wallet (+ add_continuid_atom reads
+     * molecule->remainder_wallet). */
+    error = knishio_molecule_create(
+        &molecule, source->secret, source->bundle_hash, source, remainder, NULL, "V4"
+    );
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    /* Token meta: name, fungibility, + any params->meta (the init appends the 7 wallet* keys).
+     * The amount is the C-atom VALUE, not meta. */
+    {
+        const char* keys[16];
+        const char* vals[16];
+        size_t n = 0;
+        char amount_str[32];
+
+        keys[n] = "name";        vals[n] = params->name; n++;
+        keys[n] = "fungibility"; vals[n] = knishio_token_fungibility_to_string(params->fungibility); n++;
+        if (params->meta && params->meta_count > 0) {
+            for (size_t i = 0; i < params->meta_count && n < 16; i++) {
+                keys[n] = params->meta[i]->key;
+                vals[n] = params->meta[i]->value;
+                n++;
+            }
+        }
+        snprintf(amount_str, sizeof(amount_str), "%d", params->amount);
+
+        error = knishio_molecule_init_token_creation(molecule, recipient, amount_str, keys, vals, n);
+    }
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    /* Hash + sign (real timestamps — this is a live op, not a fixed-vector test). */
+    error = knishio_molecule_generate_hash(molecule);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+    error = knishio_molecule_sign(molecule, source->bundle_hash, false, true);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    /* Serialize + submit (transport/auth unverified — next slice). */
+    {
+        char* molecule_json = NULL;
+        error = knishio_molecule_to_json(molecule, &molecule_json);
+        if (error != KNISHIO_SUCCESS) {
+            goto cleanup;
+        }
+        size_t var_len = strlen(molecule_json) + 32;
+        variables = knishio_malloc(var_len);
+        if (!variables) {
+            knishio_free(molecule_json);
+            error = KNISHIO_ERROR_MEMORY;
+            goto cleanup;
+        }
+        snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
+        knishio_free(molecule_json);
+    }
+
+    {
+        knishio_graphql_operation_t operation = {
+            .name = "CreateToken",
+            .query = CREATE_TOKEN_MUTATION,
+            .variables_json = variables,
+            .requires_auth = true,
+            .is_mutation = true
+        };
+        knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
+        error = knishio_graphql_execute(graphql_client, &operation, &response);
+    }
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    /* Build result */
+    {
+        knishio_create_token_result_t* res = knishio_calloc(1, sizeof(knishio_create_token_result_t));
+        if (!res) {
+            error = KNISHIO_ERROR_MEMORY;
+            goto cleanup;
+        }
+        if (response->success && response->molecular_hash) {
+            res->success = true;
+            res->token_slug = knishio_strdup(params->token);
+            res->molecular_hash = knishio_strdup(response->molecular_hash);
+            res->response = response->data ? knishio_strdup(response->data) : NULL;
+        } else {
+            res->success = false;
+            res->error_message = response->errors ?
+                knishio_strdup(response->errors) :
+                knishio_strdup("Token creation failed");
+        }
+        *result = res;
+    }
+
+cleanup:
+    if (response) knishio_graphql_response_free(response);
+    if (variables) knishio_free(variables);
+    if (molecule) knishio_molecule_free(molecule);
+    if (source) knishio_wallet_free(source);
+    if (recipient) knishio_wallet_free(recipient);
+    if (remainder) knishio_wallet_free(remainder);
+    return error;
 }
 
 /* Request tokens (mint new tokens) */

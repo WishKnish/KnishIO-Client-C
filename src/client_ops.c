@@ -152,7 +152,14 @@ knishio_error_t knishio_client_set_secret(
     return knishio_client_configure_auth(client, &config);
 }
 
-/* Get source wallet for operations */
+/* Get source wallet for operations — derives a REAL wallet from the client's stored
+ * secret (g_client_state.secret, set via knishio_client_set_secret). The returned wallet
+ * carries secret/position/address/bundle, so callers can build recipient/remainder wallets
+ * from wallet->secret and sign molecules.
+ *
+ * NOTE (cycle 39, slice 1): the source position is the canonical KNISHIO_FIXED_POSITION
+ * placeholder. The live ContinuID-position query (so the source wallet binds to the bundle's
+ * current on-ledger position) is the next slice. */
 knishio_error_t knishio_client_get_source_wallet(
     knishio_client_t* client,
     const char* token,
@@ -161,19 +168,17 @@ knishio_error_t knishio_client_get_source_wallet(
     if (!client || !wallet) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* TODO: Query or create wallet for token */
-    /* For now, create a placeholder wallet */
-    *wallet = knishio_malloc(sizeof(knishio_wallet_t));
-    if (!*wallet) {
-        return KNISHIO_ERROR_MEMORY;
+
+    if (!g_client_state.secret) {
+        return KNISHIO_ERROR_INVALID_STATE;  /* no secret set — call knishio_client_set_secret first */
     }
-    
-    memset(*wallet, 0, sizeof(knishio_wallet_t));
-    (*wallet)->token = knishio_strdup(token ? token : "USER");
-    (*wallet)->initialized = true;
-    
-    return KNISHIO_SUCCESS;
+
+    return knishio_wallet_create_simple(
+        wallet,
+        g_client_state.secret,
+        token ? token : "USER",
+        KNISHIO_FIXED_POSITION
+    );
 }
 
 /* Create and sign a molecule */

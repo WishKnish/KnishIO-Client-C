@@ -1,5 +1,7 @@
 #include "unity.h"
 #include "knishio/wallet.h"
+#include "knishio/knishio.h"        /* knishio_client_config_t, knishio_client_create/destroy */
+#include "knishio/client_ops.h"     /* knishio_client_set_secret, knishio_client_get_source_wallet */
 #include "knishio/utils/memory.h"
 #include "knishio/utils/string.h"
 #include <string.h>
@@ -331,6 +333,49 @@ void test_wallet_test_vectors(void) {
 }
 
 /* Wallet test suite entry point */
+/* Cycle 39 (create-op wiring, slice 1): knishio_client_get_source_wallet now derives a REAL
+ * wallet from the client's stored secret (was a stub returning only a token field). This is the
+ * foundation the create_token/create_wallet/claim_shadow_wallet ops build their molecules on. */
+void test_client_source_wallet_is_real(void) {
+    knishio_client_config_t config = {
+        .uri = "https://localhost:8080/graphql",
+        .cell_slug = "TEST",
+        .client = NULL,
+        .socket = NULL,
+        .server_sdk_version = 3,
+        .logging = false
+    };
+    knishio_client_t* client = NULL;
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_client_create(&client, &config));
+    TEST_ASSERT_NOT_NULL(client);
+
+    /* No secret set yet → get_source_wallet must refuse (no placeholder wallet). */
+    knishio_wallet_t* w0 = NULL;
+    TEST_ASSERT_NOT_EQUAL(KNISHIO_SUCCESS, knishio_client_get_source_wallet(client, "USER", &w0));
+
+    /* Set the client secret (the full 2048-hex secret), then a real source wallet is derived. */
+    char* secret = NULL;
+    TEST_ASSERT_TRUE(knishio_generate_secret("alice-test-seed-2025", 2048, &secret));
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_client_set_secret(client, secret));
+
+    knishio_wallet_t* wallet = NULL;
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_client_get_source_wallet(client, "USER", &wallet));
+    TEST_ASSERT_NOT_NULL(wallet);
+    TEST_ASSERT_NOT_NULL(wallet->secret);
+    TEST_ASSERT_EQUAL(2048, strlen(wallet->secret));
+    TEST_ASSERT_NOT_NULL(wallet->position);
+    TEST_ASSERT_EQUAL(64, strlen(wallet->position));
+    TEST_ASSERT_NOT_NULL(wallet->address);
+    TEST_ASSERT_EQUAL(64, strlen(wallet->address));
+    TEST_ASSERT_NOT_NULL(wallet->bundle_hash);
+    TEST_ASSERT_EQUAL(64, strlen(wallet->bundle_hash));
+    TEST_ASSERT_EQUAL_STRING("USER", wallet->token);
+
+    knishio_wallet_free(wallet);
+    knishio_free(secret);
+    knishio_client_destroy(client);
+}
+
 void test_wallet_suite(void) {
     RUN_TEST(test_wallet_secret_generation);
     RUN_TEST(test_wallet_bundle_generation);
@@ -343,4 +388,5 @@ void test_wallet_suite(void) {
     RUN_TEST(test_wallet_utilities);
     RUN_TEST(test_wallet_error_handling);
     RUN_TEST(test_wallet_self_test);
+    RUN_TEST(test_client_source_wallet_is_real);
 }
