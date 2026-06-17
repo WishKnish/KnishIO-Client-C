@@ -60,7 +60,13 @@ static knishio_json_t* wrap_cjson(cJSON *cjson, bool owned) {
             
         case cJSON_String:
             json->type = KNISHIO_JSON_STRING;
-            json->data.string_value = knishio_strdup(cjson->valuestring);
+            /* Reference the cJSON node's string (NOT a copy): it lives in the parent cJSON tree and
+             * is freed when the owning OBJECT/ARRAY root is cJSON_Delete'd (knishio_json_free). This
+             * keeps the pointer returned by knishio_json_get_string[_path] valid until the ROOT json
+             * is freed — the borrowed-until-root-free contract every caller assumes (they strdup
+             * before freeing the root). Fixes the get_string_path use-after-free, which freed the
+             * wrapper (and thus the owned copy) before the borrowed pointer was read. */
+            json->data.string_value = cjson->valuestring;
             break;
             
         case cJSON_Array:
@@ -141,7 +147,9 @@ void knishio_json_free(knishio_json_t *json) {
     
     switch (json->type) {
         case KNISHIO_JSON_STRING:
-            knishio_free(json->data.string_value);
+            /* string_value references the cJSON tree's valuestring (see wrap_cjson) — it is NOT
+             * owned by this wrapper, so do not free it here. It is released with the owning root's
+             * cJSON tree (the OBJECT/ARRAY case below cJSON_Delete's that tree when owned). */
             break;
             
         case KNISHIO_JSON_ARRAY:

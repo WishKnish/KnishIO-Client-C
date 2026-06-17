@@ -229,22 +229,34 @@ knishio_error_t knishio_client_request_profile_auth_token(
 
     knishio_wallet_t* source = NULL;     /* AUTH signing wallet (address = pubkey) */
     knishio_wallet_t* remainder = NULL;  /* USER remainder (ContinuID I-atom) */
+    char* source_position = NULL;
+    char* remainder_position = NULL;
     knishio_molecule_t* molecule = NULL;
     char* molecule_json = NULL;
     char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
     knishio_request_profile_auth_token_result_t* auth_result = NULL;
 
-    knishio_error_t error = knishio_client_get_source_wallet(client, "AUTH", &source);
+    /* U-source (AUTH) at a FRESH random position. The U-atom is the index-0 OTS signer, so a fixed
+     * position is consumed (used_positions) and a 2nd auth from the same bundle would be rejected
+     * for OTS reuse. U-isotope SKIPS the ContinuID chain check, so any unused position is valid —
+     * mirrors JS `new Wallet({secret, token:'AUTH'})`, which uses a random position. */
+    knishio_error_t error = KNISHIO_SUCCESS;
+    if (!knishio_generate_position(&source_position)) {
+        return KNISHIO_ERROR_CRYPTO;
+    }
+    error = knishio_wallet_create_simple(&source, params->secret, "AUTH", source_position);
     if (error != KNISHIO_SUCCESS) {
-        return error;
+        goto cleanup;
     }
 
-    /* Canonical USER remainder for the ContinuID I-atom (mirrors the JS remainder wallet). */
-    error = knishio_wallet_create_simple(
-        &remainder, source->secret, "USER",
-        "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333"
-    );
+    /* USER remainder (ContinuID I-atom) at a FRESH random position — designates the bundle's next
+     * chain head (mirrors JS Wallet.generatePosition). */
+    if (!knishio_generate_position(&remainder_position)) {
+        error = KNISHIO_ERROR_CRYPTO;
+        goto cleanup;
+    }
+    error = knishio_wallet_create_simple(&remainder, params->secret, "USER", remainder_position);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -344,6 +356,8 @@ cleanup:
     if (molecule) knishio_molecule_free(molecule);
     if (source) knishio_wallet_free(source);
     if (remainder) knishio_wallet_free(remainder);
+    if (source_position) knishio_free(source_position);
+    if (remainder_position) knishio_free(remainder_position);
     if (auth_result) knishio_request_profile_auth_token_result_free(auth_result);
     return error;
 }
