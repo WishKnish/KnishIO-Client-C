@@ -338,6 +338,21 @@ knishio_error_t knishio_molecule_init_shadow_wallet_claim(
 );
 
 /**
+ * @brief Initialize an authorization molecule (matches JavaScript SDK initAuthorization)
+ * Adds a U-isotope atom (signed by molecule->source_wallet; no metaType/metaId; meta =
+ * [encrypt, pubkey, characters] in JS order) + an I-isotope ContinuID atom. Used to request
+ * a bundle-scoped auth token; the validator extracts the pubkey from the U-atom's walletAddress
+ * and issues a JWT (U-isotope is OTS-exempt, but the molecular hash is still verified).
+ * @param molecule Molecule (must have source_wallet [token "AUTH"] + remainder_wallet set)
+ * @param encrypt Whether the session requests encrypted communications (meta "encrypt")
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_molecule_init_authorization(
+    knishio_molecule_t* molecule,
+    bool encrypt
+);
+
+/**
  * @brief Simplified wallet creation (matches JavaScript SDK Wallet.create pattern)
  * @param wallet Output wallet pointer
  * @param secret Wallet secret

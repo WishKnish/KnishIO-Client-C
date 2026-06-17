@@ -12,6 +12,7 @@
 #include "knishio/fingerprint.h"
 #include "knishio/auth_token.h"
 #include "knishio/wallet.h"
+#include "knishio/client_ops.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -205,7 +206,12 @@ knishio_error_t knishio_client_request_guest_auth_token(
     return KNISHIO_SUCCESS;
 }
 
-/* Request profile authentication token */
+/* Request profile authentication token.
+ * Builds + signs a real U-isotope authorization molecule (mirrors JS requestProfileAuthToken /
+ * Molecule.initAuthorization): U-atom (AUTH wallet, meta encrypt/pubkey/characters) + ContinuID
+ * I-atom, submitted via ProposeMolecule (PUBLIC). On acceptance, extracts the bundle-scoped JWT
+ * (data.ProposeMolecule.payload.token) and sets it as the client auth token so subsequent ops
+ * carry X-Auth-Token. (Replaces the prior broken M-isotope/unsigned/no-hash hand-roll.) */
 knishio_error_t knishio_client_request_profile_auth_token(
     knishio_client_t* client,
     const knishio_request_profile_auth_token_params_t* params,
@@ -214,160 +220,131 @@ knishio_error_t knishio_client_request_profile_auth_token(
     if (!client || !params || !result) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
     if (!params->secret) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Create wallet for authorization */
-    knishio_wallet_t* auth_wallet = NULL;
-    bool success = knishio_wallet_create(&auth_wallet, params->secret, "AUTH", NULL);
-    knishio_error_t error = success ? KNISHIO_SUCCESS : KNISHIO_ERROR_MEMORY;
-    if (error != KNISHIO_SUCCESS) {
-        return error;
-    }
-    
-    /* Build molecule for authorization request */
-    knishio_json_builder_t* molecule_builder = knishio_json_builder_create();
-    if (!molecule_builder) {
-        knishio_wallet_cleanup(auth_wallet);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    /* Create molecule structure */
-    error = knishio_json_builder_start_object(molecule_builder);
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_add_string(molecule_builder, "cellSlug", "");
-    }
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_add_string(molecule_builder, "bundleHash", auth_wallet->bundle_hash);
-    }
-    /* TODO: Build atoms array properly - JSON builder doesn't support arrays yet */
-    char atoms_json[2048];
-    snprintf(atoms_json, sizeof(atoms_json), 
-        "[{\"position\":\"%s\",\"walletAddress\":\"%s\",\"isotope\":\"M\","
-        "\"token\":\"AUTH\",\"value\":null,\"metaType\":\"walletBundle\","
-        "\"metaId\":\"%s\"}]",
-        auth_wallet->position ? auth_wallet->position : "",
-        auth_wallet->address ? auth_wallet->address : "",
-        auth_wallet->bundle_hash ? auth_wallet->bundle_hash : "");
-    
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_add_raw(molecule_builder, "atoms", atoms_json);
-    }
-    
-    /* Add metadata as raw JSON */
-    if (error == KNISHIO_SUCCESS) {
-        char meta_json[512];
-        snprintf(meta_json, sizeof(meta_json),
-            "{\"encrypt\":%s}",
-            params->encrypt ? "true" : "false");
-        error = knishio_json_builder_add_raw(molecule_builder, "meta", meta_json);
-    }
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_end_object(molecule_builder); /* end molecule */
-    }
-    
+
+    /* get_source_wallet derives the wallet from the client's stored secret. */
+    knishio_client_set_secret(client, params->secret);
+
+    knishio_wallet_t* source = NULL;     /* AUTH signing wallet (address = pubkey) */
+    knishio_wallet_t* remainder = NULL;  /* USER remainder (ContinuID I-atom) */
+    knishio_molecule_t* molecule = NULL;
     char* molecule_json = NULL;
-    if (error == KNISHIO_SUCCESS) {
-        knishio_json_t* json_obj = knishio_json_builder_build(molecule_builder);
-        if (json_obj) {
-            error = knishio_json_to_string(json_obj, &molecule_json);
-            knishio_json_free(json_obj);
-        } else {
-            error = KNISHIO_ERROR_MEMORY;
-        }
-    }
-    
-    knishio_json_builder_free(molecule_builder);
-    
-    if (error != KNISHIO_SUCCESS) {
-        knishio_wallet_cleanup(auth_wallet);
-        return error;
-    }
-    
-    /* Build variables JSON */
-    knishio_json_builder_t* variables_builder = knishio_json_builder_create();
-    if (!variables_builder) {
-        free(molecule_json);
-        knishio_wallet_cleanup(auth_wallet);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    error = knishio_json_builder_start_object(variables_builder);
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_add_raw(variables_builder, "molecule", molecule_json);
-    }
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_end_object(variables_builder);
-    }
-    
-    char* variables_json = NULL;
-    if (error == KNISHIO_SUCCESS) {
-        knishio_json_t* json_obj = knishio_json_builder_build(variables_builder);
-        if (json_obj) {
-            error = knishio_json_to_string(json_obj, &variables_json);
-            knishio_json_free(json_obj);
-        } else {
-            error = KNISHIO_ERROR_MEMORY;
-        }
-    }
-    
-    knishio_json_builder_free(variables_builder);
-    free(molecule_json);
-    
-    if (error != KNISHIO_SUCCESS) {
-        knishio_wallet_cleanup(auth_wallet);
-        return error;
-    }
-    
-    /* Execute GraphQL mutation */
+    char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
-    knishio_graphql_operation_t operation = {
-        .name = "ProposeMolecule",
-        .query = REQUEST_AUTHORIZATION_MUTATION,
-        .variables_json = variables_json,
-        .requires_auth = false,
-        .is_mutation = true
-    };
-    
-    error = knishio_graphql_execute(
-        (knishio_graphql_client_t*)client,
-        &operation,
-        &response
-    );
-    
-    free(variables_json);
-    
+    knishio_request_profile_auth_token_result_t* auth_result = NULL;
+
+    knishio_error_t error = knishio_client_get_source_wallet(client, "AUTH", &source);
     if (error != KNISHIO_SUCCESS) {
-        knishio_wallet_cleanup(auth_wallet);
         return error;
     }
-    
-    /* Create result structure */
-    knishio_request_profile_auth_token_result_t* auth_result = calloc(1, sizeof(knishio_request_profile_auth_token_result_t));
-    if (!auth_result) {
-        knishio_graphql_response_free(response);
-        knishio_wallet_cleanup(auth_wallet);
-        return KNISHIO_ERROR_MEMORY;
+
+    /* Canonical USER remainder for the ContinuID I-atom (mirrors the JS remainder wallet). */
+    error = knishio_wallet_create_simple(
+        &remainder, source->secret, "USER",
+        "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333"
+    );
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
     }
-    
+
+    error = knishio_molecule_create(
+        &molecule, source->secret, source->bundle_hash, source, remainder, NULL, "V4"
+    );
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    error = knishio_molecule_init_authorization(molecule, params->encrypt);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    error = knishio_molecule_generate_hash(molecule);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+    /* U-isotope is OTS-exempt at the validator, but JS signs (sets otsFragment) — harmless + faithful. */
+    error = knishio_molecule_sign(molecule, source->bundle_hash, false, true);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    error = knishio_molecule_to_json(molecule, &molecule_json);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+    {
+        size_t var_len = strlen(molecule_json) + 32;
+        variables = knishio_malloc(var_len);
+        if (!variables) {
+            error = KNISHIO_ERROR_MEMORY;
+            goto cleanup;
+        }
+        snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
+    }
+
+    {
+        knishio_graphql_operation_t operation = {
+            .name = "ProposeMolecule",
+            .query = REQUEST_AUTHORIZATION_MUTATION,
+            .variables_json = variables,
+            .requires_auth = false,  /* U-isotope ProposeMolecule is PUBLIC */
+            .is_mutation = true
+        };
+        /* Submit through a proper graphql client (slice 2a/2b-i: TLS + X-Auth-Token aware). */
+        error = knishio_client_execute_graphql(client, &operation, &response);
+    }
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    auth_result = calloc(1, sizeof(knishio_request_profile_auth_token_result_t));
+    if (!auth_result) {
+        error = KNISHIO_ERROR_MEMORY;
+        goto cleanup;
+    }
+
     if (response->data && response->success) {
         auth_result->success = true;
         auth_result->response = knishio_strdup(response->data);
-        
-        /* Parse authentication token from response */
-        error = knishio_parse_profile_auth_response(response->data, auth_result);
+
+        /* Extract the JWT (data.ProposeMolecule.payload.token). */
+        knishio_parse_profile_auth_response(response->data, auth_result);
+
+        /* Build + set the client auth token so subsequent ops carry X-Auth-Token. */
+        if (auth_result->token) {
+            knishio_auth_token_config_t token_config = {
+                .token = auth_result->token,
+                .expires_at = 0,
+                .encrypt = params->encrypt,
+                .pubkey = source->address
+            };
+            knishio_auth_token_t* auth_token = NULL;
+            if (knishio_auth_token_create(&auth_token, &token_config) == KNISHIO_SUCCESS && auth_token) {
+                knishio_client_set_auth_token(client, auth_token);
+            }
+        }
     } else {
         auth_result->success = false;
-        auth_result->error_message = knishio_strdup(response->errors ? response->errors : "Profile auth token request failed");
+        auth_result->error_message = knishio_strdup(
+            response->errors ? response->errors : "Profile auth token request failed"
+        );
     }
-    
-    knishio_graphql_response_free(response);
-    knishio_wallet_cleanup(auth_wallet);
-    
+
     *result = auth_result;
-    return KNISHIO_SUCCESS;
+    auth_result = NULL;
+
+cleanup:
+    if (response) knishio_graphql_response_free(response);
+    if (variables) knishio_free(variables);
+    if (molecule_json) knishio_free(molecule_json);
+    if (molecule) knishio_molecule_free(molecule);
+    if (source) knishio_wallet_free(source);
+    if (remainder) knishio_wallet_free(remainder);
+    if (auth_result) knishio_request_profile_auth_token_result_free(auth_result);
+    return error;
 }
 
 /* Declare active session */
@@ -558,21 +535,34 @@ static knishio_error_t knishio_parse_profile_auth_response(
         }
         return KNISHIO_ERROR_JSON_PARSE;
     }
-    
-    /* Extract token from payload */
-    const char* payload = knishio_json_get_string_path(json, "data.ProposeMolecule.payload");
-    if (payload) {
-        /* Parse payload as JSON to extract token */
-        knishio_json_t* payload_json = knishio_json_parse(payload, NULL);
-        if (payload_json) {
-            const char* token = knishio_json_get_string_path(payload_json, "token");
-            if (token) {
-                result->token = knishio_strdup(token);
+
+    /* Extract data.ProposeMolecule.payload (a stringified JSON), then payload.token.
+     * NOTE: knishio_json_get_string_path is use-after-free (it frees the node before returning
+     * the borrowed string -> empty/garbage), so navigate with get_path + get_string and COPY
+     * the string out BEFORE freeing the node. */
+    knishio_json_t* payload_node = knishio_json_get_path(json, "data.ProposeMolecule.payload");
+    if (payload_node) {
+        const char* payload_str = knishio_json_get_string(payload_node);
+        char* payload_copy = payload_str ? knishio_strdup(payload_str) : NULL;
+        knishio_json_free(payload_node);
+
+        if (payload_copy) {
+            knishio_json_t* payload_json = knishio_json_parse(payload_copy, NULL);
+            if (payload_json) {
+                knishio_json_t* token_node = knishio_json_get_path(payload_json, "token");
+                if (token_node) {
+                    const char* token = knishio_json_get_string(token_node);
+                    if (token) {
+                        result->token = knishio_strdup(token);
+                    }
+                    knishio_json_free(token_node);
+                }
+                knishio_json_free(payload_json);
             }
-            knishio_json_free(payload_json);
+            knishio_free(payload_copy);
         }
     }
-    
+
     knishio_json_free(json);
     return KNISHIO_SUCCESS;
 }

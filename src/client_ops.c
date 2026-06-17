@@ -10,6 +10,7 @@
 #include "knishio/operations/transfer.h"
 #include "knishio/operations/wallet.h"
 #include "knishio/operations/token.h"
+#include "knishio/operations/auth.h"
 #include "knishio/graphql.h"
 #include "knishio/auth_token.h"
 #include "knishio/crypto/shake256.h"
@@ -43,18 +44,39 @@ static char* knishio_generate_simple_bundle_hash(const char* secret) {
     return bundle_hash;
 }
 
-/* Simple stub for authentication functions (since client_auth.c is disabled) */
+/* Authenticate with profile credentials: store the secret, build + submit a U-isotope auth
+ * molecule, and set the resulting bundle-scoped JWT as the client auth token (mirrors JS
+ * requestAuthToken -> requestProfileAuthToken). */
 knishio_error_t knishio_client_authenticate(
     knishio_client_t* client,
     const char* secret,
     bool encrypt
 ) {
-    /* Store secret in global state for now */
+    if (!client || !secret) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+
+    /* Store secret in global state (get_source_wallet reads it). */
     if (g_client_state.secret) {
         free(g_client_state.secret);
     }
-    g_client_state.secret = secret ? knishio_strdup(secret) : NULL;
-    return KNISHIO_SUCCESS;
+    g_client_state.secret = knishio_strdup(secret);
+
+    knishio_request_profile_auth_token_params_t params = {
+        .secret = secret,
+        .encrypt = encrypt
+    };
+    knishio_request_profile_auth_token_result_t* result = NULL;
+    knishio_error_t error = knishio_client_request_profile_auth_token(client, &params, &result);
+
+    bool authorized = (error == KNISHIO_SUCCESS && result && result->success && result->token);
+    if (result) {
+        knishio_request_profile_auth_token_result_free(result);
+    }
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
+    return authorized ? KNISHIO_SUCCESS : KNISHIO_ERROR_AUTHORIZATION_REJECTED;
 }
 
 knishio_error_t knishio_client_configure_auth(

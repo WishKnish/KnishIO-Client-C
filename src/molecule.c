@@ -1399,6 +1399,80 @@ knishio_error_t knishio_molecule_init_meta(
 }
 
 /**
+ * @brief Initialize an authorization molecule (matches JavaScript SDK Molecule.initAuthorization).
+ * U-isotope atom (signed by source_wallet; no metaType/metaId; meta = [encrypt, pubkey, characters]
+ * in JS order — encrypt from the caller, pubkey/characters from the AUTH wallet via setAtomWallet)
+ * + a ContinuID I-atom. The validator issues a bundle-scoped JWT from the U-atom's walletAddress.
+ */
+knishio_error_t knishio_molecule_init_authorization(
+    knishio_molecule_t* molecule,
+    bool encrypt
+) {
+    if (!molecule) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!molecule->source_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    knishio_wallet_t* sw = molecule->source_wallet;
+
+    /* U-atom: no value, no metaType/metaId (JS Atom.create with isotope 'U'). */
+    knishio_atom_t* u_atom = NULL;
+    knishio_error_t result = knishio_atom_create(
+        &u_atom,
+        knishio_wallet_get_position(sw),
+        knishio_wallet_get_address(sw),
+        KNISHIO_ISOTOPE_U,
+        sw->token,
+        NULL,  /* no value */
+        NULL   /* no batch_id */
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+
+    /* Meta in JS order: encrypt (from caller), then pubkey + characters (setAtomWallet). */
+    {
+        const char* keys[3];
+        const char* vals[3];
+        size_t n = 0;
+        keys[n] = "encrypt"; vals[n] = encrypt ? "true" : "false"; n++;
+        if (sw->pubkey) {
+            keys[n] = "pubkey"; vals[n] = sw->pubkey; n++;
+        }
+        if (sw->characters) {
+            keys[n] = "characters"; vals[n] = sw->characters; n++;
+        }
+        u_atom->meta = malloc(sizeof(knishio_meta_t*) * n);
+        if (u_atom->meta) {
+            u_atom->meta_count = n;
+            for (size_t i = 0; i < n; i++) {
+                if (knishio_meta_create(&u_atom->meta[i], keys[i], vals[i]) != KNISHIO_SUCCESS) {
+                    u_atom->meta[i] = NULL;
+                }
+            }
+        } else {
+            u_atom->meta_count = 0;
+        }
+    }
+
+    result = knishio_molecule_add_atom(molecule, u_atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(u_atom);
+        return result;
+    }
+
+    /* ContinuID I-atom (JS addContinuIdAtom) — requires molecule->remainder_wallet. */
+    result = add_continuid_atom(molecule);
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+
+    return KNISHIO_SUCCESS;
+}
+
+/**
  * @brief Initialize a token-creation molecule (matches JavaScript SDK initTokenCreation).
  * C-atom (issue new token) signed by molecule->source_wallet + a ContinuID I-atom.
  */

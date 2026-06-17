@@ -175,19 +175,30 @@ knishio_error_t knishio_graphql_execute(
         return error;
     }
 
+    /* Serialize the request object to a JSON string for the POST body. (The prior code passed the
+     * knishio_json_t* OBJECT straight into knishio_http_post_graphql's `const char* query` param,
+     * which re-wrapped it as {"query":"<raw-pointer-bytes>"} — a malformed body the validator could
+     * not parse, so it fell back to the protected operation default and rejected even public
+     * U-isotope ProposeMolecule with "X-Auth-Token header is required". Serialize the already-built,
+     * properly-escaped request object and POST it raw instead.) */
+    char* request_str = knishio_json_serialize(request_json, false);
+    knishio_json_free(request_json);
+    if (!request_str) {
+        set_graphql_error(client, "Failed to serialize GraphQL request JSON");
+        return KNISHIO_ERROR_MEMORY;
+    }
+
     /* Log request if debug mode enabled */
     if (client->debug_mode) {
-        char* debug_json = knishio_json_serialize(request_json, true);
-        if (debug_json) {
-            knishio_log(KNISHIO_LOG_DEBUG, "GraphQL Request: %s", debug_json);
-            knishio_free(debug_json);
-        }
+        knishio_log(KNISHIO_LOG_DEBUG, "GraphQL Request: %s", request_str);
     }
-    
-    /* Execute HTTP request using enhanced client */
+
+    /* Execute HTTP request — POST the full body to the endpoint as-is (base_url is already the full
+     * GraphQL endpoint; X-Auth-Token + insecure-TLS ride on the http client). */
     knishio_http_response_t* http_response = NULL;
-    knishio_error_t post_error = knishio_http_post_graphql(client->http_client, request_json, NULL, &http_response);
-    knishio_json_free(request_json);
+    knishio_error_t post_error = knishio_http_post(
+        client->http_client, "", request_str, "application/json", &http_response);
+    knishio_free(request_str);
     
     if (post_error != KNISHIO_SUCCESS || !http_response) {
         const char* http_error = knishio_http_client_error(client->http_client);
