@@ -108,6 +108,24 @@ knishio_error_t knishio_client_get_source_wallet(
 );
 
 /**
+ * @brief Get the signing source wallet at the bundle's live on-ledger ContinuID position.
+ * Equivalent to JavaScript: client.getSourceWallet() (queries ContinuId, builds the wallet at
+ * the returned position; falls back to KNISHIO_FIXED_POSITION for a genesis bundle with no
+ * ContinuID yet). Use this for non-auth molecules (token/wallet/claim creation) so the source
+ * wallet binds to the bundle's current chain head and passes ContinuID chain validation.
+ *
+ * @param client KnishIO client instance
+ * @param token Token type (optional; defaults to "USER")
+ * @param wallet Output wallet (allocated, must be freed)
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_client_get_source_wallet_continuid(
+    knishio_client_t* client,
+    const char* token,
+    knishio_wallet_t** wallet
+);
+
+/**
  * @brief Create and sign a molecule
  * Equivalent to JavaScript: client.createMolecule()
  * 

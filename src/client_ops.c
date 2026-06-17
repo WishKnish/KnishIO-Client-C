@@ -203,6 +203,49 @@ knishio_error_t knishio_client_get_source_wallet(
     );
 }
 
+/* Resolve the SIGNING source wallet at the bundle's live on-ledger ContinuID position (slice 2c,
+ * mirrors JS getSourceWallet). Queries ContinuId(bundle, "USER"); if a 64-char position is
+ * returned, the wallet is built there so it binds to the bundle's current chain head and passes
+ * the validator's ContinuID chain validation; otherwise (genesis / no ContinuID yet) it falls
+ * back to KNISHIO_FIXED_POSITION. */
+knishio_error_t knishio_client_get_source_wallet_continuid(
+    knishio_client_t* client,
+    const char* token,
+    knishio_wallet_t** wallet
+) {
+    if (!client || !wallet) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!g_client_state.secret) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    const char* tok = token ? token : "USER";
+
+    /* Derive the bundle hash from the secret (temp wallet at the fixed position). */
+    knishio_wallet_t* tmp = NULL;
+    knishio_error_t error = knishio_wallet_create_simple(
+        &tmp, g_client_state.secret, tok, KNISHIO_FIXED_POSITION);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
+
+    /* Query the live ContinuID position for the bundle; fall back to the fixed position (genesis). */
+    const char* position = KNISHIO_FIXED_POSITION;
+    knishio_continuId_result_t* cid = NULL;
+    if (knishio_client_query_continuId(client, tmp->bundle_hash, &cid) == KNISHIO_SUCCESS
+        && cid && cid->wallet && cid->wallet->position
+        && strlen(cid->wallet->position) == 64) {
+        position = cid->wallet->position;
+    }
+
+    error = knishio_wallet_create_simple(wallet, g_client_state.secret, tok, position);
+
+    if (cid) knishio_continuId_result_free(cid);
+    knishio_wallet_free(tmp);
+    return error;
+}
+
 /* Create and sign a molecule */
 knishio_error_t knishio_client_create_molecule(
     knishio_client_t* client,

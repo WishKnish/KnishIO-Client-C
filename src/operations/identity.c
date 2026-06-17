@@ -6,6 +6,8 @@
 #include "knishio/knishio.h"
 #include "knishio/operations/identity.h"
 #include "knishio/operations/wallet.h"
+#include "knishio/client_ops.h"
+#include "knishio/wallet.h"
 #include "knishio/graphql.h"
 #include "knishio/json.h"
 #include "knishio/json/builder.h"
@@ -159,12 +161,14 @@ knishio_error_t knishio_client_claim_shadow_wallet(
     knishio_wallet_t* source = NULL;
     knishio_wallet_t* claim_wallet = NULL;
     knishio_wallet_t* remainder = NULL;
+    char* remainder_position = NULL;
     knishio_molecule_t* molecule = NULL;
     char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
     knishio_claim_shadow_wallet_result_t* claim_result = NULL;
 
-    knishio_error_t error = knishio_client_get_source_wallet(
+    /* Source wallet at the bundle's LIVE on-ledger ContinuID position (slice 2c). */
+    knishio_error_t error = knishio_client_get_source_wallet_continuid(
         (knishio_client_t*)client, "USER", &source
     );
     if (error != KNISHIO_SUCCESS) {
@@ -184,16 +188,21 @@ knishio_error_t knishio_client_claim_shadow_wallet(
         claim_wallet->batch_id = knishio_strdup(params->batch_id);
     }
 
+    /* Remainder (ContinuID I-atom) at a FRESH random position — the bundle's NEXT chain head. */
+    if (!knishio_generate_position(&remainder_position)) {
+        error = KNISHIO_ERROR_CRYPTO;
+        goto cleanup;
+    }
     error = knishio_wallet_create_simple(
-        &remainder, source->secret, "USER",
-        "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333"
+        &remainder, source->secret, "USER", remainder_position
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
 
     error = knishio_molecule_create(
-        &molecule, source->secret, source->bundle_hash, source, remainder, NULL, "V4"
+        &molecule, source->secret, source->bundle_hash, source, remainder,
+        knishio_client_get_cell_slug((knishio_client_t*)client), "V4"
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -282,6 +291,7 @@ knishio_error_t knishio_client_claim_shadow_wallet(
 cleanup:
     if (response) knishio_graphql_response_free(response);
     if (variables) knishio_free(variables);
+    if (remainder_position) knishio_free(remainder_position);
     if (molecule) knishio_molecule_free(molecule);
     if (source) knishio_wallet_free(source);
     if (claim_wallet) knishio_wallet_free(claim_wallet);

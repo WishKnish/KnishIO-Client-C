@@ -76,6 +76,14 @@ knishio_error_t knishio_client_set_auth_token(knishio_client_t *client,
 knishio_auth_token_t* knishio_client_get_auth_token(const knishio_client_t* client);
 
 /**
+ * @brief Get the client's configured cell slug (the cell molecules are submitted to)
+ *
+ * @param client KnishIO client instance
+ * @return Cell slug or NULL (do not free)
+ */
+const char* knishio_client_get_cell_slug(const knishio_client_t* client);
+
+/**
  * @brief Clear authentication from client
  * Removes authentication token and clears auth headers
  * 

@@ -250,7 +250,8 @@ knishio_error_t knishio_client_request_profile_auth_token(
     }
 
     error = knishio_molecule_create(
-        &molecule, source->secret, source->bundle_hash, source, remainder, NULL, "V4"
+        &molecule, source->secret, source->bundle_hash, source, remainder,
+        knishio_client_get_cell_slug(client), "V4"
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;

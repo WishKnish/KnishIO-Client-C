@@ -5,6 +5,7 @@
 
 #include "knishio/knishio.h"
 #include "knishio/operations/wallet.h"
+#include "knishio/client_ops.h"
 #include "knishio/graphql.h"
 #include "knishio/json/parser.h"
 
@@ -53,15 +54,15 @@ static const char* QUERY_WALLET_BUNDLE =
     "}";
 
 /* QueryContinuId GraphQL query template */
-static const char* QUERY_CONTINUID = 
-    "query QueryContinuId($bundle: String) {"
-    "  ContinuId(bundleHash: $bundle) {"
+static const char* QUERY_CONTINUID =
+    "query QueryContinuId($bundle: String, $token: String) {"
+    "  ContinuId(bundle: $bundle, token: $token) {"
+    "    position"
+    "    address"
+    "    tokenSlug"
     "    bundleHash"
-    "    wallet {"
-    "      address"
-    "      token"
-    "      amount"
-    "    }"
+    "    pubkey"
+    "    characters"
     "  }"
     "}";
 
@@ -86,11 +87,13 @@ knishio_error_t knishio_client_create_wallet(
     knishio_wallet_t* source = NULL;
     knishio_wallet_t* new_wallet = NULL;
     knishio_wallet_t* remainder = NULL;
+    char* remainder_position = NULL;
     knishio_molecule_t* molecule = NULL;
     char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
 
-    knishio_error_t error = knishio_client_get_source_wallet(
+    /* Source wallet at the bundle's LIVE on-ledger ContinuID position (slice 2c). */
+    knishio_error_t error = knishio_client_get_source_wallet_continuid(
         (knishio_client_t*)client, "USER", &source
     );
     if (error != KNISHIO_SUCCESS) {
@@ -109,16 +112,21 @@ knishio_error_t knishio_client_create_wallet(
         goto cleanup;
     }
 
+    /* Remainder (ContinuID I-atom) at a FRESH random position — the bundle's NEXT chain head. */
+    if (!knishio_generate_position(&remainder_position)) {
+        error = KNISHIO_ERROR_CRYPTO;
+        goto cleanup;
+    }
     error = knishio_wallet_create_simple(
-        &remainder, source->secret, "USER",
-        "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333"
+        &remainder, source->secret, "USER", remainder_position
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
 
     error = knishio_molecule_create(
-        &molecule, source->secret, source->bundle_hash, source, remainder, NULL, "V4"
+        &molecule, source->secret, source->bundle_hash, source, remainder,
+        knishio_client_get_cell_slug((knishio_client_t*)client), "V4"
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -196,6 +204,7 @@ knishio_error_t knishio_client_create_wallet(
 cleanup:
     if (response) knishio_graphql_response_free(response);
     if (variables) knishio_free(variables);
+    if (remainder_position) knishio_free(remainder_position);
     if (molecule) knishio_molecule_free(molecule);
     if (source) knishio_wallet_free(source);
     if (new_wallet) knishio_wallet_free(new_wallet);
@@ -488,13 +497,15 @@ knishio_error_t knishio_client_query_continuId(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     
-    /* Build variables */
-    char variables[256] = "{}";
+    /* Build variables — the ContinuID chain is the USER token relay. */
+    char variables[512] = "{}";
     if (bundle) {
-        snprintf(variables, sizeof(variables), "{\"bundle\":\"%s\"}", bundle);
+        snprintf(variables, sizeof(variables),
+                 "{\"bundle\":\"%s\",\"token\":\"USER\"}", bundle);
     }
-    
-    /* Execute query */
+
+    /* Execute query through a proper graphql client (slice 2a/2b transport: TLS + auth header +
+     * the valid-body serialization). Was the old (knishio_graphql_client_t*)client cast. */
     knishio_graphql_response_t* response = NULL;
     knishio_graphql_operation_t operation = {
         .name = "QueryContinuId",
@@ -503,83 +514,77 @@ knishio_error_t knishio_client_query_continuId(
         .requires_auth = false,
         .is_mutation = false
     };
-    
-    knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
-    knishio_error_t error = knishio_graphql_execute(graphql_client, &operation, &response);
-    
+
+    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
-    
+
     /* Create result */
     knishio_continuId_result_t* res = knishio_calloc(1, sizeof(knishio_continuId_result_t));
     if (!res) {
         knishio_graphql_response_free(response);
         return KNISHIO_ERROR_MEMORY;
     }
-    
+
     if (response->success && response->data) {
         res->success = true;
-        
-        /* Parse ContinuId from GraphQL response following 2025 C17 best practices */
+
+        /* The validator's ContinuId returns a Wallet DIRECTLY at data.ContinuId (fields:
+         * position/address/tokenSlug/bundleHash/pubkey/characters). A null data.ContinuId means
+         * the bundle has no ContinuID yet (genesis) -> res->wallet = NULL (NOT an error).
+         * NOTE: knishio_json_get_string_path is use-after-free — navigate with get_path +
+         * get_string and COPY each value out BEFORE freeing the node. */
         knishio_json_t* json_root = knishio_json_parse(response->data, NULL);
         if (json_root) {
-            /* Extract ContinuId data from data.ContinuId */
-            knishio_json_t* continuId_obj = knishio_json_get_path(json_root, "data.ContinuId");
-            if (continuId_obj && knishio_json_get_type(continuId_obj) == KNISHIO_JSON_OBJECT) {
-                /* Extract bundle hash */
-                const char* bundle_hash = knishio_json_get_string_path(continuId_obj, "bundleHash");
-                if (bundle_hash && strlen(bundle_hash) > 0) {
-                    res->bundle_hash = knishio_strdup(bundle_hash);
-                } else {
-                    res->bundle_hash = knishio_strdup("");
-                }
-                
-                /* Extract wallet data */
-                knishio_json_t* wallet_obj = knishio_json_get_path(continuId_obj, "wallet");
-                if (wallet_obj && knishio_json_get_type(wallet_obj) == KNISHIO_JSON_OBJECT) {
-                    knishio_wallet_t* wallet = knishio_calloc(1, sizeof(knishio_wallet_t));
-                    if (wallet) {
-                        /* Extract wallet fields from ContinuId */
-                        const char* address = knishio_json_get_string_path(wallet_obj, "address");
-                        const char* token = knishio_json_get_string_path(wallet_obj, "token");
-                        const char* amount = knishio_json_get_string_path(wallet_obj, "amount");
-                        
-                        /* Populate wallet structure */
-                        if (address) wallet->address = knishio_strdup(address);
-                        if (bundle_hash) wallet->bundle_hash = knishio_strdup(bundle_hash);
-                        if (token) wallet->token = knishio_strdup(token);
-                        if (amount) wallet->balance = strtod(amount, NULL);
-                        
-                        res->wallet = wallet;
-                    } else {
-                        /* Failed to allocate wallet */
-                        res->success = false;
-                        res->error_message = knishio_strdup("Failed to allocate memory for ContinuId wallet");
+            knishio_json_t* cid = knishio_json_get_path(json_root, "data.ContinuId");
+            if (cid && knishio_json_get_type(cid) == KNISHIO_JSON_OBJECT) {
+                knishio_wallet_t* wallet = knishio_calloc(1, sizeof(knishio_wallet_t));
+                if (wallet) {
+                    static const char* fields[] = {
+                        "position", "address", "tokenSlug", "bundleHash", "pubkey", "characters"
+                    };
+                    char* vals[6] = {0};
+                    for (size_t i = 0; i < 6; i++) {
+                        knishio_json_t* node = knishio_json_get_path(cid, fields[i]);
+                        if (node) {
+                            const char* s = knishio_json_get_string(node);
+                            if (s) vals[i] = knishio_strdup(s);
+                            knishio_json_free(node);
+                        }
                     }
+                    wallet->position    = vals[0];
+                    wallet->address     = vals[1];
+                    wallet->token       = vals[2];
+                    wallet->bundle_hash = vals[3] ? vals[3] : (bundle ? knishio_strdup(bundle) : NULL);
+                    wallet->pubkey      = vals[4];
+                    wallet->characters  = vals[5];
+                    res->wallet = wallet;
+                    if (wallet->bundle_hash) res->bundle_hash = knishio_strdup(wallet->bundle_hash);
                 } else {
-                    /* No wallet in ContinuId response */
-                    res->wallet = NULL;
+                    res->success = false;
+                    res->error_message = knishio_strdup("Failed to allocate memory for ContinuId wallet");
                 }
+                knishio_json_free(cid);
             } else {
-                /* No ContinuId found in response */
-                res->success = false;
-                res->error_message = knishio_strdup("No ContinuId found in response");
+                /* Genesis: no ContinuID registered for this bundle yet. */
+                if (cid) knishio_json_free(cid);
+                res->wallet = NULL;
+                if (bundle) res->bundle_hash = knishio_strdup(bundle);
             }
-            
+
             knishio_json_free(json_root);
         } else {
-            /* JSON parsing failed */
             res->success = false;
             res->error_message = knishio_strdup("Failed to parse ContinuId JSON response");
         }
     } else {
         res->success = false;
-        res->error_message = response->errors ? 
-            knishio_strdup(response->errors) : 
+        res->error_message = response->errors ?
+            knishio_strdup(response->errors) :
             knishio_strdup("Query failed");
     }
-    
+
     knishio_graphql_response_free(response);
     *result = res;
     

@@ -166,8 +166,12 @@ knishio_auth_token_t* knishio_client_get_auth_token(const knishio_client_t* clie
     if (!client) {
         return NULL;
     }
-    
+
     return client->auth_token;
+}
+
+const char* knishio_client_get_cell_slug(const knishio_client_t* client) {
+    return client ? client->cell_slug : NULL;
 }
 
 knishio_error_t knishio_client_clear_auth(knishio_client_t *client) {

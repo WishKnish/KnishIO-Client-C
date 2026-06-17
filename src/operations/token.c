@@ -7,6 +7,8 @@
 
 #include "knishio/knishio.h"
 #include "knishio/operations/token.h"
+#include "knishio/client_ops.h"
+#include "knishio/wallet.h"
 #include "knishio/graphql.h"
 
 #include <string.h>
@@ -91,19 +93,21 @@ knishio_error_t knishio_client_create_token(
     knishio_wallet_t* source = NULL;
     knishio_wallet_t* recipient = NULL;
     knishio_wallet_t* remainder = NULL;
+    char* remainder_position = NULL;
     knishio_molecule_t* molecule = NULL;
     char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
 
-    knishio_error_t error = knishio_client_get_source_wallet(
+    /* Source wallet at the bundle's LIVE on-ledger ContinuID position (slice 2c): the molecule
+     * signs at the current chain head so it passes the validator's ContinuID chain validation. */
+    knishio_error_t error = knishio_client_get_source_wallet_continuid(
         (knishio_client_t*)client, "USER", &source
     );
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
 
-    /* Recipient (new-token) wallet + canonical USER remainder, from the source secret.
-     * Deterministic 64-hex positions for this slice (live ContinuID position = next slice). */
+    /* Recipient (new-token) wallet from the source secret (not on the ContinuID chain). */
     error = knishio_wallet_create_simple(
         &recipient, source->secret, params->token,
         "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
@@ -111,9 +115,14 @@ knishio_error_t knishio_client_create_token(
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
+    /* Remainder (ContinuID I-atom) at a FRESH random position — designates the bundle's NEXT
+     * chain head (the relay race; mirrors JS Wallet.generatePosition). */
+    if (!knishio_generate_position(&remainder_position)) {
+        error = KNISHIO_ERROR_CRYPTO;
+        goto cleanup;
+    }
     error = knishio_wallet_create_simple(
-        &remainder, source->secret, "USER",
-        "bbbb000000000000cccc111111111111dddd222222222222eeee333333333333"
+        &remainder, source->secret, "USER", remainder_position
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -122,7 +131,8 @@ knishio_error_t knishio_client_create_token(
     /* Molecule: init_token_creation reads molecule->source_wallet (+ add_continuid_atom reads
      * molecule->remainder_wallet). */
     error = knishio_molecule_create(
-        &molecule, source->secret, source->bundle_hash, source, remainder, NULL, "V4"
+        &molecule, source->secret, source->bundle_hash, source, remainder,
+        knishio_client_get_cell_slug((knishio_client_t*)client), "V4"
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -220,6 +230,7 @@ knishio_error_t knishio_client_create_token(
 cleanup:
     if (response) knishio_graphql_response_free(response);
     if (variables) knishio_free(variables);
+    if (remainder_position) knishio_free(remainder_position);
     if (molecule) knishio_molecule_free(molecule);
     if (source) knishio_wallet_free(source);
     if (recipient) knishio_wallet_free(recipient);
