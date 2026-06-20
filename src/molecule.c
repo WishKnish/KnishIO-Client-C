@@ -1726,7 +1726,7 @@ knishio_error_t knishio_molecule_init_value(
     knishio_atom_t* source_atom = NULL;
     char source_value[32];
     snprintf(source_value, sizeof(source_value), "-%d", (int)molecule->source_wallet->balance);
-    
+
     knishio_error_t result = knishio_atom_create(
         &source_atom,
         knishio_wallet_get_position(molecule->source_wallet),
@@ -1734,7 +1734,7 @@ knishio_error_t knishio_molecule_init_value(
         KNISHIO_ISOTOPE_V,
         molecule->source_wallet->token,
         source_value,
-        NULL
+        molecule->source_wallet->batch_id  /* carry the wallet's batchId (NULL -> hash-skipped; C++/JS parity) */
     );
     
     if (result != KNISHIO_SUCCESS) {
@@ -1761,7 +1761,7 @@ knishio_error_t knishio_molecule_init_value(
         KNISHIO_ISOTOPE_V,
         recipient_wallet->token,
         recipient_value,
-        NULL
+        recipient_wallet->batch_id  /* recipient batchId -> validator creates a claimable shadow */
     );
     
     if (result != KNISHIO_SUCCESS) {
@@ -1796,7 +1796,7 @@ knishio_error_t knishio_molecule_init_value(
             KNISHIO_ISOTOPE_V,
             molecule->remainder_wallet->token,
             remainder_value,
-            NULL
+            molecule->remainder_wallet->batch_id  /* carry the remainder wallet's batchId (NULL -> hash-skipped) */
         );
         
         if (result != KNISHIO_SUCCESS) {
