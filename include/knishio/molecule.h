@@ -284,6 +284,20 @@ knishio_error_t knishio_molecule_init_value(
 );
 
 /**
+ * @brief Initialize a token-burn molecule (canonical 3 V-atoms, zero-sum).
+ * Source debits full balance; the burn-target atom credits `amount` to the all-zeros burn
+ * bundle (empty position/address, metaType 'walletBundle', metaId all-zeros = destruction);
+ * the remainder returns (balance - amount) to the source identity. Pure V (no ContinuID).
+ * @param molecule Molecule (must have source_wallet [with balance] + remainder_wallet set)
+ * @param amount Amount to burn (integer)
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_molecule_init_burn(
+    knishio_molecule_t* molecule,
+    int amount
+);
+
+/**
  * @brief Initialize a token-creation molecule (matches JavaScript SDK initTokenCreation)
  * Adds a C-isotope atom issuing a new token + an I-isotope ContinuID atom. The C-atom is
  * signed by molecule->source_wallet; its meta is the user token meta FIRST, then the 7

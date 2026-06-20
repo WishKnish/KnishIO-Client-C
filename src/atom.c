@@ -79,9 +79,12 @@ knishio_error_t knishio_atom_create_with_meta(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
-    /* Validate position and address lengths */
-    if (strlen(position) != KNISHIO_POSITION_LENGTH || 
-        strlen(wallet_address) != KNISHIO_ADDRESS_LENGTH) {
+    /* Validate position and address lengths. Empty ("") is allowed: a shadow/burn-target
+     * atom (e.g. the all-zeros burn bundle) has no position/address — keyed by bundle +
+     * metaType/metaId instead. The molecular hash absorbs "" as a no-op, so this is canonical
+     * (matches the other SDKs). A non-empty value must still be exactly 64 hex chars. */
+    if ((strlen(position) != 0 && strlen(position) != KNISHIO_POSITION_LENGTH) ||
+        (strlen(wallet_address) != 0 && strlen(wallet_address) != KNISHIO_ADDRESS_LENGTH)) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 

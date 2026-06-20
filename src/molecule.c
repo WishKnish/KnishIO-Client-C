@@ -1749,7 +1749,105 @@ knishio_error_t knishio_molecule_init_value(
             return result;
         }
     }
-    
+
+    return KNISHIO_SUCCESS;
+}
+
+/**
+ * @brief Initialize a token-burn molecule: canonical 3 V-atoms, zero-sum.
+ * Mirrors init_value, but the "recipient" is the all-zeros burn bundle (token destruction):
+ * the burn-target atom has EMPTY position/address + metaType 'walletBundle' + metaId all-zeros.
+ * Pure V (NO ContinuID atom). Requires source_wallet (with balance) + remainder_wallet.
+ */
+knishio_error_t knishio_molecule_init_burn(
+    knishio_molecule_t* molecule,
+    int amount
+) {
+    if (!molecule) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!molecule->source_wallet || !molecule->remainder_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+    if (molecule->source_wallet->balance < amount) {
+        return KNISHIO_ERROR_BALANCE_INSUFFICIENT;
+    }
+
+    /* V-atom 1: debit the ENTIRE source balance (UTXO; conservation needs -balance, not -amount) */
+    knishio_atom_t* source_atom = NULL;
+    char source_value[32];
+    snprintf(source_value, sizeof(source_value), "-%d", (int)molecule->source_wallet->balance);
+    knishio_error_t result = knishio_atom_create(
+        &source_atom,
+        knishio_wallet_get_position(molecule->source_wallet),
+        knishio_wallet_get_address(molecule->source_wallet),
+        KNISHIO_ISOTOPE_V,
+        molecule->source_wallet->token,
+        source_value,
+        NULL
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+    result = knishio_molecule_add_atom(molecule, source_atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(source_atom);
+        return result;
+    }
+
+    /* V-atom 2: credit the burn amount to the all-zeros burn address (destruction).
+     * Empty position/address (no signing wallet); metaType walletBundle + metaId all-zeros. */
+    knishio_atom_t* burn_atom = NULL;
+    char burn_value[32];
+    snprintf(burn_value, sizeof(burn_value), "%d", amount);
+    result = knishio_atom_create(
+        &burn_atom,
+        "",
+        "",
+        KNISHIO_ISOTOPE_V,
+        molecule->source_wallet->token,
+        burn_value,
+        NULL
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+    if (burn_atom->meta_type) knishio_free(burn_atom->meta_type);
+    if (burn_atom->meta_id) knishio_free(burn_atom->meta_id);
+    burn_atom->meta_type = knishio_strdup("walletBundle");
+    burn_atom->meta_id = knishio_strdup("0000000000000000000000000000000000000000000000000000000000000000");
+    result = knishio_molecule_add_atom(molecule, burn_atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(burn_atom);
+        return result;
+    }
+
+    /* V-atom 3: remainder back to the source identity */
+    knishio_atom_t* remainder_atom = NULL;
+    char remainder_value[32];
+    snprintf(remainder_value, sizeof(remainder_value), "%d", (int)molecule->source_wallet->balance - amount);
+    result = knishio_atom_create(
+        &remainder_atom,
+        knishio_wallet_get_position(molecule->remainder_wallet),
+        knishio_wallet_get_address(molecule->remainder_wallet),
+        KNISHIO_ISOTOPE_V,
+        molecule->remainder_wallet->token,
+        remainder_value,
+        NULL
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+    if (remainder_atom->meta_type) knishio_free(remainder_atom->meta_type);
+    if (remainder_atom->meta_id) knishio_free(remainder_atom->meta_id);
+    remainder_atom->meta_type = knishio_strdup("walletBundle");
+    remainder_atom->meta_id = knishio_strdup(molecule->remainder_wallet->bundle_hash);
+    result = knishio_molecule_add_atom(molecule, remainder_atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(remainder_atom);
+        return result;
+    }
+
     return KNISHIO_SUCCESS;
 }
 
