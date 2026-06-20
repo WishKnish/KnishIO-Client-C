@@ -10,6 +10,8 @@
 #include "knishio/client_ops.h"
 #include "knishio/wallet.h"
 #include "knishio/graphql.h"
+#include "knishio/json/builder.h"
+#include "knishio/json/parser.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -139,25 +141,58 @@ knishio_error_t knishio_client_create_token(
     }
 
     /* Token meta: name, fungibility, + any params->meta (the init appends the 7 wallet* keys).
-     * The amount is the C-atom VALUE, not meta. */
+     * The amount is the C-atom VALUE, not meta. For a stackable/non-fungible token with units,
+     * mirror the JS canonical contract: amount = unit count + meta splittable/decimals/tokenUnits. */
     {
-        const char* keys[16];
-        const char* vals[16];
+        const char* keys[24];
+        const char* vals[24];
         size_t n = 0;
         char amount_str[32];
+        char* tu_json = NULL;   /* freed after init_token_creation copies the meta */
 
         keys[n] = "name";        vals[n] = params->name; n++;
         keys[n] = "fungibility"; vals[n] = knishio_token_fungibility_to_string(params->fungibility); n++;
         if (params->meta && params->meta_count > 0) {
-            for (size_t i = 0; i < params->meta_count && n < 16; i++) {
+            for (size_t i = 0; i < params->meta_count && n < 20; i++) {
                 keys[n] = params->meta[i]->key;
                 vals[n] = params->meta[i]->value;
                 n++;
             }
         }
-        snprintf(amount_str, sizeof(amount_str), "%d", params->amount);
+
+        bool is_stackable = (params->fungibility == KNISHIO_TOKEN_STACKABLE ||
+                             params->fungibility == KNISHIO_TOKEN_NONFUNGIBLE);
+        if (is_stackable && params->units && params->unit_count > 0) {
+            /* tokenUnits = JSON array of the unit ids ["u1","u2",...] (mirror JS JSON.stringify(units)) */
+            knishio_json_array_builder_t* ub = knishio_json_array_builder_create();
+            if (ub) {
+                for (size_t i = 0; i < params->unit_count; i++) {
+                    knishio_json_array_add_string(ub, params->units[i] ? params->units[i] : "");
+                }
+                knishio_json_t* uarr = knishio_json_array_build(ub);
+                if (uarr) {
+                    tu_json = knishio_json_serialize(uarr, false);
+                    knishio_json_free(uarr);
+                }
+                knishio_json_array_builder_free(ub);
+            }
+            if (tu_json && n + 3 <= 24) {
+                keys[n] = "splittable"; vals[n] = "1";      n++;
+                keys[n] = "decimals";   vals[n] = "0";      n++;
+                keys[n] = "tokenUnits"; vals[n] = tu_json;  n++;
+            }
+        }
+
+        if (is_stackable && params->unit_count > 0) {
+            snprintf(amount_str, sizeof(amount_str), "%zu", params->unit_count); /* supply = unit count */
+        } else {
+            snprintf(amount_str, sizeof(amount_str), "%d", params->amount);
+        }
 
         error = knishio_molecule_init_token_creation(molecule, recipient, amount_str, keys, vals, n);
+        if (tu_json) {
+            knishio_free(tu_json);
+        }
     }
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
