@@ -1278,6 +1278,68 @@ static knishio_error_t add_continuid_atom(knishio_molecule_t* molecule) {
     return KNISHIO_SUCCESS;
 }
 
+/* Build the canonical tokenUnits wire value `[[id, name, metas], ...]` (matches JS/Rust/Python
+ * to_data()) from a wallet's token_units. Returns a malloc'd JSON string (caller frees) or NULL. */
+static char* build_token_units_json(const knishio_wallet_t* w) {
+    knishio_json_array_builder_t* outer = knishio_json_array_builder_create();
+    if (!outer) {
+        return NULL;
+    }
+    bool ok = true;
+    for (size_t i = 0; i < w->token_unit_count; i++) {
+        const knishio_token_unit_t* u = &w->token_units[i];
+        knishio_json_array_builder_t* inner = knishio_json_array_builder_create();
+        if (!inner) {
+            ok = false;
+            break;
+        }
+        knishio_json_array_add_string(inner, u->id ? u->id : "");
+        knishio_json_array_add_string(inner, u->name ? u->name : "");
+        const char* metas_src = (u->metas_json && u->metas_json[0]) ? u->metas_json : "{}";
+        knishio_json_t* metas_val = knishio_json_parse(metas_src, NULL);
+        if (!metas_val) {
+            metas_val = knishio_json_parse("{}", NULL);
+        }
+        if (metas_val) {
+            knishio_json_array_add(inner, metas_val); /* consumes (frees) metas_val */
+        }
+        knishio_json_array_add_array(outer, inner);   /* duplicates inner */
+        knishio_json_array_builder_free(inner);
+    }
+    char* result = NULL;
+    if (ok) {
+        knishio_json_t* arr = knishio_json_array_build(outer);
+        if (arr) {
+            result = knishio_json_serialize(arr, false);
+            knishio_json_free(arr);
+        }
+    }
+    knishio_json_array_builder_free(outer);
+    return result;
+}
+
+/* Attach a `tokenUnits` meta key to an atom from its wallet's token_units (mirror JS setAtomWallet).
+ * GATED: a wallet with no token_units adds nothing, so fungible ops are byte-identical (the 6 frozen
+ * self-test hashes can't move). Preserves any meta_type/meta_id already set (separate atom fields). */
+static void attach_token_units_meta(knishio_atom_t* atom, const knishio_wallet_t* w) {
+    if (!atom || !w || w->token_unit_count == 0) {
+        return;
+    }
+    char* tu_json = build_token_units_json(w);
+    if (!tu_json) {
+        return;
+    }
+    atom->meta = malloc(sizeof(knishio_meta_t*) * 1);
+    if (atom->meta) {
+        atom->meta_count = 1;
+        if (knishio_meta_create(&atom->meta[0], "tokenUnits", tu_json) != KNISHIO_SUCCESS) {
+            atom->meta[0] = NULL;
+            atom->meta_count = 0;
+        }
+    }
+    knishio_free(tu_json);
+}
+
 /**
  * @brief Initialize metadata molecule (matches JavaScript SDK initMeta)
  * Adds M-isotope atom with metadata and I-isotope atom for ContinuID
@@ -1679,12 +1741,14 @@ knishio_error_t knishio_molecule_init_value(
         return result;
     }
     
+    /* Stackable (NFT) transfer: source atom carries the SENT units (gated; fungible = no-op). */
+    attach_token_units_meta(source_atom, molecule->source_wallet);
     result = knishio_molecule_add_atom(molecule, source_atom);
     if (result != KNISHIO_SUCCESS) {
         knishio_atom_free(source_atom);
         return result;
     }
-    
+
     /* Add recipient atom (credit amount) */
     knishio_atom_t* recipient_atom = NULL;
     char recipient_value[32];
@@ -1709,7 +1773,9 @@ knishio_error_t knishio_molecule_init_value(
     if (recipient_atom->meta_id) knishio_free(recipient_atom->meta_id);
     recipient_atom->meta_type = knishio_strdup("walletBundle");
     recipient_atom->meta_id = knishio_strdup(recipient_wallet->bundle_hash);
-    
+    /* Stackable (NFT) transfer: recipient atom carries the SENT units (gated). */
+    attach_token_units_meta(recipient_atom, recipient_wallet);
+
     result = knishio_molecule_add_atom(molecule, recipient_atom);
     if (result != KNISHIO_SUCCESS) {
         knishio_atom_free(recipient_atom);
@@ -1742,7 +1808,9 @@ knishio_error_t knishio_molecule_init_value(
         if (remainder_atom->meta_id) knishio_free(remainder_atom->meta_id);
         remainder_atom->meta_type = knishio_strdup("walletBundle");
         remainder_atom->meta_id = knishio_strdup(molecule->remainder_wallet->bundle_hash);
-        
+        /* Stackable (NFT) transfer: remainder atom carries the KEPT units (gated). */
+        attach_token_units_meta(remainder_atom, molecule->remainder_wallet);
+
         result = knishio_molecule_add_atom(molecule, remainder_atom);
         if (result != KNISHIO_SUCCESS) {
             knishio_atom_free(remainder_atom);
@@ -1789,6 +1857,8 @@ knishio_error_t knishio_molecule_init_burn(
     if (result != KNISHIO_SUCCESS) {
         return result;
     }
+    /* Stackable (NFT) burn: source atom carries the BURNED units (gated; fungible = no-op). */
+    attach_token_units_meta(source_atom, molecule->source_wallet);
     result = knishio_molecule_add_atom(molecule, source_atom);
     if (result != KNISHIO_SUCCESS) {
         knishio_atom_free(source_atom);
@@ -1842,6 +1912,8 @@ knishio_error_t knishio_molecule_init_burn(
     if (remainder_atom->meta_id) knishio_free(remainder_atom->meta_id);
     remainder_atom->meta_type = knishio_strdup("walletBundle");
     remainder_atom->meta_id = knishio_strdup(molecule->remainder_wallet->bundle_hash);
+    /* Stackable (NFT) burn: remainder atom carries the KEPT units (gated). */
+    attach_token_units_meta(remainder_atom, molecule->remainder_wallet);
     result = knishio_molecule_add_atom(molecule, remainder_atom);
     if (result != KNISHIO_SUCCESS) {
         knishio_atom_free(remainder_atom);

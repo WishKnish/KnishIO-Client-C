@@ -41,14 +41,19 @@ typedef struct knishio_wallet_bundle knishio_wallet_bundle_t;
 typedef struct knishio_position_sequence knishio_position_sequence_t;
 typedef struct knishio_continu_id knishio_continu_id_t;
 
-/* Token unit structure */
+/* Token unit structure. Canonical cross-SDK fields are (id, name, metas); the wire format
+ * emitted on V-atoms is JSON `[[id, name, metas], ...]` (matches JS/Rust/Python to_data()).
+ * `metas_json` holds the metas object as a JSON string (default "{}"). The legacy fields below
+ * are unpopulated/unused today (kept to avoid churn). */
 typedef struct knishio_token_unit {
     char *id;                       /**< Token unit ID */
-    char *token_slug;               /**< Token identifier */
-    double amount;                  /**< Unit amount */
-    char *batch_id;                 /**< Batch identifier */
-    char *created_at;               /**< Creation timestamp */
-    bool is_shadow;                 /**< Shadow unit flag */
+    char *name;                     /**< Token unit name (canonical) */
+    char *metas_json;               /**< Token unit metas as a JSON object string (canonical; default "{}") */
+    char *token_slug;               /**< Token identifier (legacy, unused) */
+    double amount;                  /**< Unit amount (legacy, unused) */
+    char *batch_id;                 /**< Batch identifier (legacy, unused) */
+    char *created_at;               /**< Creation timestamp (legacy, unused) */
+    bool is_shadow;                 /**< Shadow unit flag (legacy, unused) */
 } knishio_token_unit_t;
 
 /**

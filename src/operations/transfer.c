@@ -381,7 +381,6 @@ knishio_error_t knishio_client_burn_tokens(
     size_t unit_count,
     knishio_transfer_result_t** result
 ) {
-    (void)units; (void)unit_count;  /* stackable-units burn path: TODO (flag) */
     if (!client || !token || !result) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
@@ -456,6 +455,14 @@ knishio_error_t knishio_client_burn_tokens(
     error = knishio_wallet_create_simple(&remainder, user->secret, token, remainder_position);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
+    }
+
+    /* 4b. Stackable (NFT) burn: partition the source's tokenUnits → source keeps the BURNED units,
+     * remainder keeps the rest (no recipient); init_burn then emits each atom's tokenUnits. No-op
+     * for a fungible burn (unit_count == 0). NOTE: a live-queried source carries units only once
+     * GraphQL tokenUnits response-parsing lands (follow-up); offline drivers set units directly. */
+    if (unit_count > 0) {
+        knishio_wallet_split_units(source, (char**)units, unit_count, remainder, NULL);
     }
 
     /* 5. Build the molecule + the canonical 3-V-atom burn. */
