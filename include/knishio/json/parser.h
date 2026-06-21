@@ -250,6 +250,23 @@ char* knishio_json_serialize(const knishio_json_t *json, bool pretty);
  */
 char* knishio_json_serialize_ex(const knishio_json_t *json, int indent, bool ensure_ascii);
 
+/**
+ * @brief JSON-escape a string for safe interpolation into a wire JSON document.
+ *
+ * Returns a newly-allocated escaped copy of @p in WITHOUT surrounding quotes
+ * (callers keep their own `"%s"` quoting), or NULL on OOM. Free with
+ * knishio_free. Reuses cJSON's correct escaper (handles `"`, `\\`, and control
+ * chars -> `\\uXXXX`), so the manual snprintf-based wire serializers
+ * (knishio_atom_to_json / knishio_molecule_to_json) emit well-formed JSON for
+ * any value — e.g. the stackable `tokenUnits` value `["u1","u2"]`, whose inner
+ * quotes previously produced malformed molecule JSON. A NULL @p in is treated
+ * as the empty string.
+ *
+ * @param in String to escape (may be NULL)
+ * @return Escaped string without surrounding quotes (caller frees), or NULL on OOM
+ */
+char* knishio_json_escape_string(const char *in);
+
 /* Validation */
 
 /**

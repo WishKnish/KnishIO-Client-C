@@ -322,8 +322,30 @@ char* knishio_json_serialize(const knishio_json_t *json, bool pretty) {
         cJSON_Delete(cjson);
         return str;
     }
-    
+
     return NULL;
+}
+
+/* JSON-escape a string value for safe interpolation into a wire JSON document.
+ * Returns the escaped inner (no surrounding quotes); caller frees with knishio_free.
+ * Reuses cJSON's escaper so the manual snprintf serializers can't emit malformed
+ * JSON for values containing ", \\, or control chars (e.g. tokenUnits ["u1","u2"]). */
+char* knishio_json_escape_string(const char *in) {
+    cJSON *s = cJSON_CreateString(in ? in : "");
+    if (!s) return NULL;
+    char *quoted = cJSON_PrintUnformatted(s);  /* "escaped" — WITH the surrounding quotes */
+    cJSON_Delete(s);
+    if (!quoted) return NULL;
+    size_t qlen = strlen(quoted);
+    size_t inner_len = (qlen >= 2) ? qlen - 2 : 0;  /* strip leading + trailing '"' */
+    char *inner = knishio_malloc(inner_len + 1);
+    if (!inner) { cJSON_free(quoted); return NULL; }
+    if (inner_len > 0) {
+        memcpy(inner, quoted + 1, inner_len);
+    }
+    inner[inner_len] = '\0';
+    cJSON_free(quoted);
+    return inner;
 }
 
 /* Validate JSON string */

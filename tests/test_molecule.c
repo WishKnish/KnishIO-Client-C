@@ -2,6 +2,8 @@
 #include "knishio/molecule.h"
 #include "knishio/atom.h"
 #include "knishio/wallet.h"
+#include "knishio/meta.h"
+#include "knishio/json/parser.h"
 #include "knishio/utils/memory.h"
 #include <string.h>
 #include <time.h>
@@ -462,9 +464,77 @@ void test_molecule_memory_management(void) {
     knishio_molecule_free(NULL);
 }
 
+/* Test knishio_json_escape_string: any value containing JSON special chars must
+ * round-trip cleanly (escape -> quote -> parse -> back == original). Regression
+ * lock for the wire-serializer escaping fix (stackable tokenUnits value etc.). */
+void test_json_escape_string(void) {
+    const char* orig = "a\"b\\c\nd[\"u1\",\"u2\"]";
+    char* esc = knishio_json_escape_string(orig);
+    TEST_ASSERT_NOT_NULL(esc);
+
+    char wrapped[512];
+    snprintf(wrapped, sizeof(wrapped), "\"%s\"", esc);
+    knishio_json_t* j = knishio_json_parse(wrapped, NULL);
+    TEST_ASSERT_NOT_NULL_MESSAGE(j, "escaped+quoted string must parse as valid JSON");
+    const char* back = knishio_json_get_string(j);
+    TEST_ASSERT_NOT_NULL(back);
+    TEST_ASSERT_EQUAL_STRING(orig, back);  /* lossless round-trip */
+    knishio_json_free(j);
+    knishio_free(esc);
+
+    /* NULL input -> empty string (not crash) */
+    char* e0 = knishio_json_escape_string(NULL);
+    TEST_ASSERT_NOT_NULL(e0);
+    TEST_ASSERT_EQUAL_STRING("", e0);
+    knishio_free(e0);
+
+    /* Plain string -> unchanged (escape is a no-op for safe values) */
+    char* ep = knishio_json_escape_string("plain123");
+    TEST_ASSERT_NOT_NULL(ep);
+    TEST_ASSERT_EQUAL_STRING("plain123", ep);
+    knishio_free(ep);
+}
+
+/* Test that an atom carrying a tokenUnits meta value (a JSON string with inner
+ * quotes, e.g. ["u1","u2"]) serializes to WELL-FORMED JSON. Pre-fix the raw "%s"
+ * interpolation produced malformed JSON ("value":"["u1"...) that failed to parse —
+ * exactly the bug that rejected the all-C stackable createToken before submit. */
+void test_atom_to_json_escapes_meta_value(void) {
+    knishio_atom_t* atom = NULL;
+    knishio_error_t result = knishio_atom_create(
+        &atom,
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        KNISHIO_ISOTOPE_C, "STK", "2", NULL
+    );
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
+
+    knishio_meta_t* m = NULL;
+    result = knishio_meta_create(&m, "tokenUnits", "[\"u1\",\"u2\"]");
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_atom_add_meta(atom, m));
+
+    char* json = NULL;
+    result = knishio_atom_to_json(atom, &json);
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
+    TEST_ASSERT_NOT_NULL(json);
+
+    /* THE proof: the serialized atom must be valid JSON (pre-fix: malformed -> NULL). */
+    knishio_json_t* parsed = knishio_json_parse(json, NULL);
+    TEST_ASSERT_NOT_NULL_MESSAGE(parsed,
+        "atom JSON with a tokenUnits meta value must be well-formed (value escaped)");
+
+    /* And the meta value must be present in escaped form (\"u1\" not bare "u1"). */
+    TEST_ASSERT_NOT_NULL(strstr(json, "\\\"u1\\\""));
+
+    knishio_json_free(parsed);
+    knishio_free(json);
+    knishio_atom_free(atom);
+}
+
 /**
  * @brief Molecular Validation and Signing Test Suite
- * 
+ *
  * Comprehensive test suite for molecule operations including hash generation,
  * atom management, validation, and integration with signature verification.
  */
@@ -489,7 +559,9 @@ void test_molecule_suite(void) {
     
     printf("\n--- Testing JSON Serialization ---\n");
     RUN_TEST(test_molecule_to_json_basic);
-    
+    RUN_TEST(test_json_escape_string);
+    RUN_TEST(test_atom_to_json_escapes_meta_value);
+
     printf("\n--- Testing Memory Management ---\n");
     RUN_TEST(test_molecule_memory_management);
     

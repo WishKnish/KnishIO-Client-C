@@ -372,6 +372,17 @@ bool knishio_atom_is_valid_for_isotope(const knishio_atom_t* atom, knishio_isoto
 
 /* Serialization */
 
+/* Append `"<key>":"<JSON-escaped value>",` to a manual-snprintf JSON buffer.
+ * Escaping is mandatory: a raw "%s" interpolation of a value containing " / \\ /
+ * control chars (e.g. the stackable tokenUnits value ["u1","u2"]) yields malformed
+ * JSON that the validator's GraphQL parser rejects before ProposeMolecule runs. */
+static void append_escaped_kv(char* buffer, size_t buf_size, const char* key, const char* value) {
+    char* esc = knishio_json_escape_string(value);
+    snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
+        "\"%s\":\"%s\",", key, esc ? esc : "");
+    knishio_free(esc);
+}
+
 knishio_error_t knishio_atom_to_json(
     const knishio_atom_t* atom,
     char** json_output
@@ -380,17 +391,25 @@ knishio_error_t knishio_atom_to_json(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
-    /* KISS approach: Use string concatenation for proper atom serialization.
-     * Size the buffer to the content: the otsFragment (~1100 chars) and meta values
-     * (a base64 ML-KEM pubkey is ~1580 chars) overflow a fixed 2048 and produce
-     * malformed JSON — sum the variable-length parts. */
-    size_t buf_size = 2048;
-    if (atom->ots_fragment) buf_size += strlen(atom->ots_fragment);
+    /* KISS approach: manual string concatenation. Size the buffer to the content,
+     * accounting for JSON-escape expansion (worst case a control char -> \uXXXX is
+     * 6x). The otsFragment (~1100 chars), a base64 ML-KEM pubkey meta (~1580 chars),
+     * and the user-controllable string fields are all escaped before interpolation. */
+    size_t buf_size = 4096;
+    if (atom->ots_fragment)   buf_size += 6 * strlen(atom->ots_fragment);
+    if (atom->position)       buf_size += 6 * strlen(atom->position);
+    if (atom->wallet_address) buf_size += 6 * strlen(atom->wallet_address);
+    if (atom->token)          buf_size += 6 * strlen(atom->token);
+    if (atom->value)          buf_size += 6 * strlen(atom->value);
+    if (atom->batch_id)       buf_size += 6 * strlen(atom->batch_id);
+    if (atom->meta_type)      buf_size += 6 * strlen(atom->meta_type);
+    if (atom->meta_id)        buf_size += 6 * strlen(atom->meta_id);
+    if (atom->version)        buf_size += 6 * strlen(atom->version);
     if (atom->meta) {
         for (size_t mi = 0; mi < atom->meta_count; mi++) {
             if (atom->meta[mi]) {
-                if (atom->meta[mi]->key) buf_size += strlen(atom->meta[mi]->key);
-                if (atom->meta[mi]->value) buf_size += strlen(atom->meta[mi]->value);
+                if (atom->meta[mi]->key) buf_size += 6 * strlen(atom->meta[mi]->key);
+                if (atom->meta[mi]->value) buf_size += 6 * strlen(atom->meta[mi]->value);
                 buf_size += 16;
             }
         }
@@ -399,103 +418,105 @@ knishio_error_t knishio_atom_to_json(
     if (!buffer) {
         return KNISHIO_ERROR_MEMORY;
     }
-    
+
     /* Start JSON object */
     strcpy(buffer, "{");
-    
+
+    /* All string VALUES below are JSON-escaped (append_escaped_kv / knishio_json_escape_string)
+     * so any value containing " / \ / control chars produces well-formed JSON. */
+
     /* Add position (required) */
     if (atom->position) {
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"position\":\"%s\",", atom->position);
+        append_escaped_kv(buffer, buf_size, "position", atom->position);
     }
-    
+
     /* Add wallet address (required) */
     if (atom->wallet_address) {
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"walletAddress\":\"%s\",", atom->wallet_address);
+        append_escaped_kv(buffer, buf_size, "walletAddress", atom->wallet_address);
     }
-    
+
     /* Add isotope (required) */
     const char* isotope_str = knishio_isotope_to_string(atom->isotope);
     if (isotope_str) {
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"isotope\":\"%s\",", isotope_str);
+        append_escaped_kv(buffer, buf_size, "isotope", isotope_str);
     }
-    
+
     /* Add token (required) */
     if (atom->token) {
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"token\":\"%s\",", atom->token);
+        append_escaped_kv(buffer, buf_size, "token", atom->token);
     }
-    
+
     /* Add value (can be null) */
     if (atom->value && strlen(atom->value) > 0) {
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"value\":\"%s\",", atom->value);
+        append_escaped_kv(buffer, buf_size, "value", atom->value);
     } else {
         strcat(buffer, "\"value\":null,");
     }
-    
+
     /* Add batch ID if present */
     if (atom->batch_id && strlen(atom->batch_id) > 0) {
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"batchId\":\"%s\",", atom->batch_id);
+        append_escaped_kv(buffer, buf_size, "batchId", atom->batch_id);
     } else {
         strcat(buffer, "\"batchId\":null,");
     }
-    
+
     /* Add meta type if present */
     if (atom->meta_type && strlen(atom->meta_type) > 0) {
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"metaType\":\"%s\",", atom->meta_type);
+        append_escaped_kv(buffer, buf_size, "metaType", atom->meta_type);
     } else {
         strcat(buffer, "\"metaType\":null,");
     }
-    
+
     /* Add meta ID if present */
     if (atom->meta_id && strlen(atom->meta_id) > 0) {
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"metaId\":\"%s\",", atom->meta_id);
+        append_escaped_kv(buffer, buf_size, "metaId", atom->meta_id);
     } else {
         strcat(buffer, "\"metaId\":null,");
     }
-    
-    /* Add metadata array if present */
+
+    /* Add metadata array if present (keys AND values escaped — THIS is the stackable
+     * tokenUnits bug site: meta->value is itself a JSON string like ["u1","u2"]). */
     if (atom->meta_count > 0 && atom->meta) {
         strcat(buffer, "\"meta\":[");
-        
+
         for (size_t i = 0; i < atom->meta_count; i++) {
             if (i > 0) {
                 strcat(buffer, ",");
             }
-            
+
             knishio_meta_t* meta = atom->meta[i];
             if (meta && meta->key && meta->value) {
+                char* ek = knishio_json_escape_string(meta->key);
+                char* ev = knishio_json_escape_string(meta->value);
                 snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
                     "{\"key\":\"%s\",\"value\":\"%s\"}",
-                    meta->key, meta->value);
+                    ek ? ek : "", ev ? ev : "");
+                knishio_free(ek);
+                knishio_free(ev);
             }
         }
-        
+
         strcat(buffer, "],");
     } else {
         strcat(buffer, "\"meta\":[],");
     }
-    
+
     /* Add creation timestamp (JS SDK compatible - milliseconds) */
     snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
         "\"createdAt\":\"%ld\",", (long)atom->created_at * 1000);
-    
+
     /* Add index */
     snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
         "\"index\":%d", atom->index);
-    
+
     /* Add version if present */
     if (atom->version) {
+        char* ev = knishio_json_escape_string(atom->version);
         snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            ",\"version\":\"%s\"", atom->version);
+            ",\"version\":\"%s\"", ev ? ev : "");
+        knishio_free(ev);
     }
-    
+
     /* Add OTS fragment if present */
     if (atom->ots_fragment) {
         /* DEBUG: Log OTS fragment serialization */
@@ -503,8 +524,10 @@ knishio_error_t knishio_atom_to_json(
         fprintf(stderr, "DEBUG knishio_atom_to_json: Serializing OTS fragment: length=%zu, first 32 chars: %.32s\n",
                 strlen(atom->ots_fragment), atom->ots_fragment);
 #endif
+        char* eo = knishio_json_escape_string(atom->ots_fragment);
         snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            ",\"otsFragment\":\"%s\"", atom->ots_fragment);
+            ",\"otsFragment\":\"%s\"", eo ? eo : "");
+        knishio_free(eo);
     } else {
         /* DEBUG: Log missing OTS fragment */
 #if KNISHIO_DEBUG_MODE

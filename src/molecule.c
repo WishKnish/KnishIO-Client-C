@@ -919,37 +919,47 @@ knishio_error_t knishio_molecule_to_json(
     strcat(buffer, "\"status\":null,");
     
     /* Add molecular hash */
+    /* String VALUES are JSON-escaped (knishio_json_escape_string) so any value
+     * with " / \ / control chars stays well-formed (mirrors knishio_atom_to_json). */
     if (molecule->molecular_hash) {
+        char* eh = knishio_json_escape_string(molecule->molecular_hash);
         snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"molecularHash\":\"%s\",", molecule->molecular_hash);
+            "\"molecularHash\":\"%s\",", eh ? eh : "");
+        knishio_free(eh);
     } else {
         strcat(buffer, "\"molecularHash\":null,");
     }
-    
+
     /* Add creation timestamp (JS SDK compatible - milliseconds) */
     snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
         "\"createdAt\":\"%ld\",", (long)molecule->created_at * 1000);
-    
+
     /* Add cell slug if present */
     if (molecule->cell_slug && strlen(molecule->cell_slug) > 0) {
+        char* ec = knishio_json_escape_string(molecule->cell_slug);
         snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"cellSlug\":\"%s\",", molecule->cell_slug);
+            "\"cellSlug\":\"%s\",", ec ? ec : "");
+        knishio_free(ec);
     } else {
         strcat(buffer, "\"cellSlug\":null,");
     }
-    
+
     /* Add bundle hash */
     if (molecule->bundle && strlen(molecule->bundle) > 0) {
+        char* eb = knishio_json_escape_string(molecule->bundle);
         snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"bundle\":\"%s\",", molecule->bundle);
+            "\"bundle\":\"%s\",", eb ? eb : "");
+        knishio_free(eb);
     } else {
         strcat(buffer, "\"bundle\":null,");
     }
-    
+
     /* Add version if present */
     if (molecule->version) {
+        char* ev = knishio_json_escape_string(molecule->version);
         snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"version\":\"%s\",", molecule->version);
+            "\"version\":\"%s\",", ev ? ev : "");
+        knishio_free(ev);
     }
     
     /* Add atoms array */
@@ -978,24 +988,26 @@ knishio_error_t knishio_molecule_to_json(
     
     /* Add sourceWallet data for cross-SDK validation (matches Python/TypeScript pattern) */
     if (molecule->source_wallet) {
+        char* sa = knishio_json_escape_string(molecule->source_wallet->address ? molecule->source_wallet->address : "");
+        char* sp = knishio_json_escape_string(molecule->source_wallet->position ? molecule->source_wallet->position : "");
+        char* st = knishio_json_escape_string(molecule->source_wallet->token ? molecule->source_wallet->token : "");
         snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             ",\"sourceWallet\":{\"address\":\"%s\",\"position\":\"%s\",\"token\":\"%s\",\"balance\":%.1f}",
-            molecule->source_wallet->address ? molecule->source_wallet->address : "",
-            molecule->source_wallet->position ? molecule->source_wallet->position : "",
-            molecule->source_wallet->token ? molecule->source_wallet->token : "",
+            sa ? sa : "", sp ? sp : "", st ? st : "",
             molecule->source_wallet->balance);
-        /* DEBUG removed to prevent JSON corruption */
+        knishio_free(sa); knishio_free(sp); knishio_free(st);
     }
-    
+
     /* Add remainderWallet data for cross-SDK validation (matches Python/TypeScript pattern) */
     if (molecule->remainder_wallet) {
+        char* ra = knishio_json_escape_string(molecule->remainder_wallet->address ? molecule->remainder_wallet->address : "");
+        char* rp = knishio_json_escape_string(molecule->remainder_wallet->position ? molecule->remainder_wallet->position : "");
+        char* rt = knishio_json_escape_string(molecule->remainder_wallet->token ? molecule->remainder_wallet->token : "");
         snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
             ",\"remainderWallet\":{\"address\":\"%s\",\"position\":\"%s\",\"token\":\"%s\",\"balance\":%.1f}",
-            molecule->remainder_wallet->address ? molecule->remainder_wallet->address : "",
-            molecule->remainder_wallet->position ? molecule->remainder_wallet->position : "",
-            molecule->remainder_wallet->token ? molecule->remainder_wallet->token : "",
+            ra ? ra : "", rp ? rp : "", rt ? rt : "",
             molecule->remainder_wallet->balance);
-        /* DEBUG removed to prevent JSON corruption */
+        knishio_free(ra); knishio_free(rp); knishio_free(rt);
     }
     
     /* Close main JSON object */
