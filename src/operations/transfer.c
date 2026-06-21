@@ -256,7 +256,7 @@ knishio_error_t knishio_client_query_balance(
     bool first = true;
     
     if (bundle_hash) {
-        strcat(variables, "\"bundle_hashHash\":\"");
+        strcat(variables, "\"bundleHash\":\"");
         strcat(variables, bundle_hash);
         strcat(variables, "\"");
         first = false;
@@ -269,22 +269,19 @@ knishio_error_t knishio_client_query_balance(
     }
     strcat(variables, "}");
     
-    /* Execute GraphQL query */
+    /* Execute through a proper graphql client (auth token propagates as X-Auth-Token; Balance
+     * reads are auth-gated). Was the old (knishio_graphql_client_t*)client cast (cycle-40 bug). */
     knishio_graphql_response_t* response = NULL;
     knishio_graphql_operation_t operation = {
         .name = "QueryBalance",
         .query = QUERY_BALANCE,
         .variables_json = variables,
-        .requires_auth = false,
+        .requires_auth = true,
         .is_mutation = false
     };
-    
-    knishio_error_t error = knishio_graphql_execute(
-        (knishio_graphql_client_t*)client,  /* Cast for now */
-        &operation,
-        &response
-    );
-    
+
+    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
+
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
