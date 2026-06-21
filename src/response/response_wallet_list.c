@@ -55,8 +55,14 @@ knishio_wallet_t* knishio_response_wallet_list_to_client_wallet(knishio_json_t *
         wallet->created_at = knishio_strdup(created_at);
     }
 
+    /* The validator returns Balance.amount as a GraphQL String (Wallet.amount() -> &str), so try the
+     * string form first (strtod); fall back to a numeric amount for other shapes. (Was number-only,
+     * which left balance=0 against this validator.) */
+    const char *amount_str = knishio_json_get_string_path(wallet_data, "amount");
     double amount;
-    if (knishio_json_get_number_path(wallet_data, "amount", &amount)) {
+    if (amount_str) {
+        wallet->balance = strtod(amount_str, NULL);
+    } else if (knishio_json_get_number_path(wallet_data, "amount", &amount)) {
         wallet->balance = amount;
     }
 

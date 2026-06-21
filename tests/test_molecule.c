@@ -4,6 +4,7 @@
 #include "knishio/wallet.h"
 #include "knishio/meta.h"
 #include "knishio/json/parser.h"
+#include "knishio/response/response_wallet_list.h"
 #include "knishio/utils/memory.h"
 #include <string.h>
 #include <time.h>
@@ -532,6 +533,30 @@ void test_atom_to_json_escapes_meta_value(void) {
     knishio_atom_free(atom);
 }
 
+/* Test the Balance-response parser populates wallet->token_units from a tokenUnits
+ * array (the read side of stackable: knishio_client_query_balance_wallet reuses this
+ * parser). Offline regression lock — no validator needed. */
+void test_balance_response_parses_token_units(void) {
+    const char* balance_json =
+        "{\"bundleHash\":\"b\",\"tokenSlug\":\"STK\",\"amount\":2,"
+        "\"tokenUnits\":[{\"id\":\"u1\",\"name\":\"Unit One\",\"metas\":\"{}\"},"
+        "{\"id\":\"u2\",\"name\":\"Unit Two\",\"metas\":\"{}\"}]}";
+    knishio_json_t* node = knishio_json_parse(balance_json, NULL);
+    TEST_ASSERT_NOT_NULL(node);
+
+    knishio_wallet_t* w = knishio_response_wallet_list_to_client_wallet(node, NULL);
+    TEST_ASSERT_NOT_NULL(w);
+    TEST_ASSERT_EQUAL_INT(2, (int)w->token_unit_count);
+    TEST_ASSERT_NOT_NULL(w->token_units);
+    TEST_ASSERT_EQUAL_STRING("u1", w->token_units[0].id);
+    TEST_ASSERT_EQUAL_STRING("Unit One", w->token_units[0].name);
+    TEST_ASSERT_EQUAL_STRING("u2", w->token_units[1].id);
+    TEST_ASSERT_EQUAL_STRING("Unit Two", w->token_units[1].name);
+
+    knishio_wallet_free(w);
+    knishio_json_free(node);
+}
+
 /**
  * @brief Molecular Validation and Signing Test Suite
  *
@@ -561,6 +586,7 @@ void test_molecule_suite(void) {
     RUN_TEST(test_molecule_to_json_basic);
     RUN_TEST(test_json_escape_string);
     RUN_TEST(test_atom_to_json_escapes_meta_value);
+    RUN_TEST(test_balance_response_parses_token_units);
 
     printf("\n--- Testing Memory Management ---\n");
     RUN_TEST(test_molecule_memory_management);

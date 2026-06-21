@@ -8,12 +8,17 @@
 #include "knishio/graphql.h"
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
+#include "knishio/response/response_wallet_list.h"  /* knishio_response_wallet_list_to_client_wallet */
+#include "knishio/client_ops.h"  /* knishio_client_get_source_wallet_continuid, execute_graphql */
 
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-/* QueryBalance GraphQL query template */
+/* QueryBalance GraphQL query template. Selects tokenUnits { id name metas } so
+ * query_balance_wallet reads stackable units back (validator's Wallet.tokenUnits
+ * resolver, gap SDK-001 Phase 1). resolve_token_wallet shares this query and simply
+ * ignores the extra field. */
 static const char* QUERY_BALANCE =
     "query QueryBalance($address: String, $bundleHash: String, $token: String) {"
     "  Balance(address: $address, bundleHash: $bundleHash, token: $token) {"
@@ -24,6 +29,7 @@ static const char* QUERY_BALANCE =
     "    position"
     "    amount"
     "    characters"
+    "    tokenUnits { id name metas }"
     "  }"
     "}";
 
@@ -308,6 +314,74 @@ knishio_error_t knishio_client_query_balance(
     
     knishio_graphql_response_free(response);
     return error;
+}
+
+/* Query a full balance WALLET (balance + stackable token_units) for the authenticated
+ * bundle + token. Completes the all-C stackable round-trip (create_token -> query units
+ * back), mirroring the JS queryBalance().payload(). Reuses the cycle-72 response parser
+ * (knishio_response_wallet_list_to_client_wallet) which populates wallet->token_units
+ * from the validator's Wallet.tokenUnits resolver (gap SDK-001 Phase 1, cycle 75).
+ *
+ * The caller owns *wallet (free with knishio_wallet_free). A null data.Balance (no
+ * balance for this bundle+token, or a shadow) leaves *wallet == NULL and returns SUCCESS. */
+knishio_error_t knishio_client_query_balance_wallet(
+    knishio_client_t* client,
+    const char* token,
+    knishio_wallet_t** wallet
+) {
+    if (!client || !token || !wallet) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    *wallet = NULL;
+
+    /* Resolve the CANONICAL bundle (shake256(secret,256), 64-char) the way create/transfer/burn
+     * do — NOT knishio_client_get_bundle (which is shake256(secret,512), a different 128-char hash). */
+    knishio_wallet_t* id = NULL;
+    knishio_error_t error = knishio_client_get_source_wallet_continuid(client, "USER", &id);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
+    if (!id || !id->bundle_hash) {
+        if (id) knishio_wallet_free(id);
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    char variables[256];
+    snprintf(variables, sizeof(variables),
+             "{\"bundleHash\":\"%s\",\"token\":\"%s\"}", id->bundle_hash, token);
+    knishio_wallet_free(id);
+
+    /* Balance reads are auth-gated by the validator -> requires_auth=true fails fast (KNISHIO_ERROR_AUTH)
+     * if the client isn't authenticated; execute_graphql propagates client->auth_token as X-Auth-Token. */
+    knishio_graphql_response_t* response = NULL;
+    knishio_graphql_operation_t operation = {
+        .name = "QueryBalance",
+        .query = QUERY_BALANCE,
+        .variables_json = variables,
+        .requires_auth = true,
+        .is_mutation = false
+    };
+    error = knishio_client_execute_graphql(client, &operation, &response);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
+
+    if (response->success && response->data) {
+        knishio_json_t* root = knishio_json_parse(response->data, NULL);
+        if (root) {
+            knishio_json_t* bal = knishio_json_get_path(root, "data.Balance");
+            if (bal && knishio_json_get_type(bal) == KNISHIO_JSON_OBJECT) {
+                /* Reuse the cycle-72 parser: fields + balance + tokenUnits -> token_units.
+                 * secret=NULL (read-only wallet; no signing-key derivation needed). */
+                *wallet = knishio_response_wallet_list_to_client_wallet(bal, NULL);
+            }
+            if (bal) knishio_json_free(bal);
+            knishio_json_free(root);
+        }
+    }
+
+    knishio_graphql_response_free(response);
+    return KNISHIO_SUCCESS;
 }
 
 /* Query source wallet for transfers with validation */
