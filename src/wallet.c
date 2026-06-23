@@ -551,6 +551,100 @@ bool knishio_wallet_split_units(knishio_wallet_t *source_wallet,
     return true;
 }
 
+bool knishio_wallet_split_units_multi(knishio_wallet_t *source_wallet,
+                                      const char ***recipient_unit_lists,
+                                      const size_t *recipient_unit_counts,
+                                      knishio_wallet_t **recipient_wallets,
+                                      size_t recipient_count,
+                                      knishio_wallet_t *remainder_wallet) {
+    if (source_wallet == NULL || remainder_wallet == NULL ||
+        recipient_unit_lists == NULL || recipient_unit_counts == NULL ||
+        recipient_wallets == NULL) {
+        return false;
+    }
+
+    /* Any units to send? (else fungible -> no-op) */
+    bool any_sent = false;
+    for (size_t r = 0; r < recipient_count; r++) {
+        if (recipient_unit_counts[r] > 0) { any_sent = true; break; }
+    }
+    if (!any_sent) {
+        return true;
+    }
+
+    /* 1. Each recipient gets its own subset (deep-copied from the source's units; the source is
+     *    not modified yet — step 2 re-partitions it after all subsets are copied). */
+    for (size_t r = 0; r < recipient_count; r++) {
+        knishio_wallet_t *rw = recipient_wallets[r];
+        if (rw == NULL) {
+            return false;
+        }
+        char **ids = (char **) recipient_unit_lists[r];
+        size_t idc = recipient_unit_counts[r];
+        size_t n = 0;
+        for (size_t i = 0; i < source_wallet->token_unit_count; i++) {
+            if (tu_id_in_units(source_wallet->token_units[i].id, ids, idc)) {
+                n++;
+            }
+        }
+        knishio_token_unit_t *subset = (n > 0) ? knishio_calloc(n, sizeof(knishio_token_unit_t)) : NULL;
+        if (n > 0 && subset == NULL) {
+            return false;
+        }
+        size_t si = 0;
+        for (size_t i = 0; i < source_wallet->token_unit_count; i++) {
+            if (tu_id_in_units(source_wallet->token_units[i].id, ids, idc)) {
+                tu_copy(&subset[si++], &source_wallet->token_units[i]);
+            }
+        }
+        tu_free_array(rw->token_units, rw->token_unit_count);
+        rw->token_units = subset;
+        rw->token_unit_count = n;
+    }
+
+    /* 2. Partition the source: SENT union (id in ANY recipient list) -> source; KEPT -> remainder. */
+    size_t sent_n = 0, kept_n = 0;
+    for (size_t i = 0; i < source_wallet->token_unit_count; i++) {
+        bool sent = false;
+        for (size_t r = 0; r < recipient_count; r++) {
+            if (tu_id_in_units(source_wallet->token_units[i].id,
+                               (char **) recipient_unit_lists[r], recipient_unit_counts[r])) {
+                sent = true; break;
+            }
+        }
+        if (sent) sent_n++; else kept_n++;
+    }
+    knishio_token_unit_t *sent_units = (sent_n > 0) ? knishio_calloc(sent_n, sizeof(knishio_token_unit_t)) : NULL;
+    knishio_token_unit_t *kept_units = (kept_n > 0) ? knishio_calloc(kept_n, sizeof(knishio_token_unit_t)) : NULL;
+    if ((sent_n > 0 && sent_units == NULL) || (kept_n > 0 && kept_units == NULL)) {
+        tu_free_array(sent_units, sent_n);
+        tu_free_array(kept_units, kept_n);
+        return false;
+    }
+    size_t sii = 0, kii = 0;
+    for (size_t i = 0; i < source_wallet->token_unit_count; i++) {
+        const knishio_token_unit_t *u = &source_wallet->token_units[i];
+        bool sent = false;
+        for (size_t r = 0; r < recipient_count; r++) {
+            if (tu_id_in_units(u->id, (char **) recipient_unit_lists[r], recipient_unit_counts[r])) {
+                sent = true; break;
+            }
+        }
+        if (sent) tu_copy(&sent_units[sii++], u);
+        else tu_copy(&kept_units[kii++], u);
+    }
+
+    tu_free_array(source_wallet->token_units, source_wallet->token_unit_count);
+    source_wallet->token_units = sent_units;
+    source_wallet->token_unit_count = sent_n;
+
+    tu_free_array(remainder_wallet->token_units, remainder_wallet->token_unit_count);
+    remainder_wallet->token_units = kept_units;
+    remainder_wallet->token_unit_count = kept_n;
+
+    return true;
+}
+
 /* Utility Functions */
 
 bool knishio_random_hex_string(size_t length, const char* charset, char** output) {

@@ -447,6 +447,29 @@ bool knishio_wallet_split_units(knishio_wallet_t *source_wallet,
                                 knishio_wallet_t *recipient_wallet);
 
 /**
+ * @brief Split token units across MULTIPLE recipients (N-way sibling of split_units).
+ *
+ * The source retains the SENT union (all units leaving), each recipient_wallets[i] gets its own
+ * subset (recipient_unit_lists[i]/recipient_unit_counts[i]), and remainder_wallet keeps the KEPT
+ * units (those not assigned to any recipient). Each wallet receives independent deep copies.
+ * No-op when no units are sent (fungible).
+ *
+ * @param source_wallet Source wallet (retains the SENT union)
+ * @param recipient_unit_lists Array (length recipient_count) of unit-id arrays, parallel to recipient_wallets
+ * @param recipient_unit_counts Array (length recipient_count) of per-recipient unit counts
+ * @param recipient_wallets Array (length recipient_count) of destination wallets
+ * @param recipient_count Number of recipients
+ * @param remainder_wallet Wallet to receive the KEPT units
+ * @return True on success, false on failure
+ */
+bool knishio_wallet_split_units_multi(knishio_wallet_t *source_wallet,
+                                      const char ***recipient_unit_lists,
+                                      const size_t *recipient_unit_counts,
+                                      knishio_wallet_t **recipient_wallets,
+                                      size_t recipient_count,
+                                      knishio_wallet_t *remainder_wallet);
+
+/**
  * @brief Get token units data
  * @param wallet Wallet
  * @param units_data Output units data (allocated)

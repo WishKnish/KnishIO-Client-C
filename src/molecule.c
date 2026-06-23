@@ -1833,6 +1833,114 @@ knishio_error_t knishio_molecule_init_value(
     return KNISHIO_SUCCESS;
 }
 
+knishio_error_t knishio_molecule_init_values(
+    knishio_molecule_t* molecule,
+    knishio_wallet_t** recipient_wallets,
+    const int* amounts,
+    size_t recipient_count
+) {
+    if (!molecule || !recipient_wallets || !amounts || recipient_count == 0) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!molecule->source_wallet || !molecule->remainder_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    /* Total to distribute across all recipients */
+    int total = 0;
+    for (size_t i = 0; i < recipient_count; i++) {
+        total += amounts[i];
+    }
+    if (molecule->source_wallet->balance < total) {
+        return KNISHIO_ERROR_BALANCE_INSUFFICIENT;
+    }
+
+    /* Source atom: debit the ENTIRE balance (UTXO drain); carries the SENT union of token units. */
+    knishio_atom_t* source_atom = NULL;
+    char source_value[32];
+    snprintf(source_value, sizeof(source_value), "-%d", (int)molecule->source_wallet->balance);
+    knishio_error_t result = knishio_atom_create(
+        &source_atom,
+        knishio_wallet_get_position(molecule->source_wallet),
+        knishio_wallet_get_address(molecule->source_wallet),
+        KNISHIO_ISOTOPE_V,
+        molecule->source_wallet->token,
+        source_value,
+        molecule->source_wallet->batch_id
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+    attach_token_units_meta(source_atom, molecule->source_wallet);
+    result = knishio_molecule_add_atom(molecule, source_atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(source_atom);
+        return result;
+    }
+
+    /* One atom per recipient: +amount_i, walletBundle -> recipient bundle, its own SENT units. */
+    for (size_t i = 0; i < recipient_count; i++) {
+        knishio_wallet_t* recipient_wallet = recipient_wallets[i];
+        if (!recipient_wallet) {
+            return KNISHIO_ERROR_INVALID_ARGS;
+        }
+        knishio_atom_t* recipient_atom = NULL;
+        char recipient_value[32];
+        snprintf(recipient_value, sizeof(recipient_value), "%d", amounts[i]);
+        result = knishio_atom_create(
+            &recipient_atom,
+            knishio_wallet_get_position(recipient_wallet),
+            knishio_wallet_get_address(recipient_wallet),
+            KNISHIO_ISOTOPE_V,
+            recipient_wallet->token,
+            recipient_value,
+            recipient_wallet->batch_id
+        );
+        if (result != KNISHIO_SUCCESS) {
+            return result;
+        }
+        if (recipient_atom->meta_type) knishio_free(recipient_atom->meta_type);
+        if (recipient_atom->meta_id) knishio_free(recipient_atom->meta_id);
+        recipient_atom->meta_type = knishio_strdup("walletBundle");
+        recipient_atom->meta_id = knishio_strdup(recipient_wallet->bundle_hash);
+        attach_token_units_meta(recipient_atom, recipient_wallet);
+        result = knishio_molecule_add_atom(molecule, recipient_atom);
+        if (result != KNISHIO_SUCCESS) {
+            knishio_atom_free(recipient_atom);
+            return result;
+        }
+    }
+
+    /* Remainder atom: +(balance - total), walletBundle -> sender bundle, KEPT units. */
+    knishio_atom_t* remainder_atom = NULL;
+    char remainder_value[32];
+    snprintf(remainder_value, sizeof(remainder_value), "%d", (int)molecule->source_wallet->balance - total);
+    result = knishio_atom_create(
+        &remainder_atom,
+        knishio_wallet_get_position(molecule->remainder_wallet),
+        knishio_wallet_get_address(molecule->remainder_wallet),
+        KNISHIO_ISOTOPE_V,
+        molecule->remainder_wallet->token,
+        remainder_value,
+        molecule->remainder_wallet->batch_id
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+    if (remainder_atom->meta_type) knishio_free(remainder_atom->meta_type);
+    if (remainder_atom->meta_id) knishio_free(remainder_atom->meta_id);
+    remainder_atom->meta_type = knishio_strdup("walletBundle");
+    remainder_atom->meta_id = knishio_strdup(molecule->remainder_wallet->bundle_hash);
+    attach_token_units_meta(remainder_atom, molecule->remainder_wallet);
+    result = knishio_molecule_add_atom(molecule, remainder_atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(remainder_atom);
+        return result;
+    }
+
+    return KNISHIO_SUCCESS;
+}
+
 /**
  * @brief Initialize a token-burn molecule: canonical 3 V-atoms, zero-sum.
  * Mirrors init_value, but the "recipient" is the all-zeros burn bundle (token destruction):

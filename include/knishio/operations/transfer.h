@@ -66,6 +66,45 @@ knishio_error_t knishio_client_transfer_tokens(
 );
 
 /**
+ * @brief One destination of a multi-recipient stackable transfer.
+ * Provide EITHER units (stackable/NFT: amount = unit_count) OR amount (fungible), not both.
+ * batch_id makes the recipient a claimable shadow under that batch.
+ */
+typedef struct {
+    const char* bundle_hash;        /**< Recipient bundle hash */
+    const char** units;             /**< Array of unit IDs for this recipient (stackable) */
+    size_t unit_count;              /**< Number of units for this recipient */
+    int amount;                     /**< Fungible amount (when unit_count == 0) */
+    const char* batch_id;           /**< Batch ID -> claimable shadow (optional) */
+} knishio_transfer_recipient_t;
+
+/**
+ * @brief Parameters for a multi-recipient transfer (one source funds N recipients).
+ */
+typedef struct {
+    const char* token;                              /**< Token slug to transfer */
+    const knishio_transfer_recipient_t* recipients; /**< Array of recipients */
+    size_t recipient_count;                         /**< Number of recipients */
+    knishio_wallet_t* source_wallet;                /**< Source wallet (optional, auto-selected if NULL) */
+} knishio_transfer_multi_params_t;
+
+/**
+ * @brief Transfer tokens to N recipients in a single molecule (multi-recipient sibling of
+ * knishio_client_transfer_tokens). Each recipient gets its own subset of stackable units (or a
+ * fungible amount); a remainder returns the rest to the sender.
+ *
+ * @param client KnishIO client instance
+ * @param params Multi-recipient transfer parameters
+ * @param result Output transfer result (allocated, must be freed)
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_client_transfer_tokens_multi(
+    knishio_client_t* client,
+    const knishio_transfer_multi_params_t* params,
+    knishio_transfer_result_t** result
+);
+
+/**
  * @brief Query balance for a wallet
  * Enhanced version matching JavaScript: client.queryBalance({ token, bundle })
  * 

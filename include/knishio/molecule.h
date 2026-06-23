@@ -284,6 +284,24 @@ knishio_error_t knishio_molecule_init_value(
 );
 
 /**
+ * @brief Initialize a MULTI-recipient value molecule (multi-recipient sibling of init_value).
+ * One source debits its FULL balance to fund N recipients (each its own amount + stackable units)
+ * plus a remainder back to the sender. recipient_wallets is parallel to amounts. Conserves:
+ * -balance + Sum(amounts) + (balance - Sum) == 0.
+ * @param molecule Molecule to initialize (source_wallet + remainder_wallet set)
+ * @param recipient_wallets Array of recipient wallets
+ * @param amounts Array of per-recipient amounts (parallel to recipient_wallets)
+ * @param recipient_count Number of recipients
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_molecule_init_values(
+    knishio_molecule_t* molecule,
+    knishio_wallet_t** recipient_wallets,
+    const int* amounts,
+    size_t recipient_count
+);
+
+/**
  * @brief Initialize a token-burn molecule (canonical 3 V-atoms, zero-sum).
  * Source debits full balance; the burn-target atom credits `amount` to the all-zeros burn
  * bundle (empty position/address, metaType 'walletBundle', metaId all-zeros = destruction);
