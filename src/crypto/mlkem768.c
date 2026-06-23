@@ -70,7 +70,6 @@ static knishio_error_t mlkem768_init(void) {
 #elif defined(HAVE_LIBOQS)
     /* Initialize liboqs as fallback */
     OQS_init();
-    printf("DEBUG INIT: Using liboqs fallback\n");
     strcpy(g_mlkem_state.algorithm_name, "Kyber768-Fallback");
     g_mlkem_state.initialized = true;
     return KNISHIO_SUCCESS;
@@ -218,7 +217,6 @@ knishio_error_t knishio_mlkem768_keypair_from_seed(knishio_mlkem768_keypair_t *k
 
 #elif defined(HAVE_LIBOQS)
     /* liboqs fallback implementation */
-    printf("DEBUG ML-KEM768: Using liboqs fallback (limited compatibility)\n");
     return KNISHIO_ERROR_NOT_IMPLEMENTED;
 #else
     return KNISHIO_ERROR_NOT_IMPLEMENTED;
@@ -254,7 +252,6 @@ knishio_error_t knishio_mlkem768_encapsulate(const uint8_t *public_key,
 
 #elif defined(HAVE_LIBOQS)
     /* liboqs fallback implementation */
-    printf("DEBUG ML-KEM768: Using liboqs fallback for encapsulation\n");
     return KNISHIO_ERROR_NOT_IMPLEMENTED;
 #else
     return KNISHIO_ERROR_NOT_IMPLEMENTED;
@@ -290,7 +287,6 @@ knishio_error_t knishio_mlkem768_decapsulate(const uint8_t *private_key,
 
 #elif defined(HAVE_LIBOQS)
     /* liboqs fallback implementation */
-    printf("DEBUG ML-KEM768: Using liboqs fallback for decapsulation\n");
     return KNISHIO_ERROR_NOT_IMPLEMENTED;
 #else
     return KNISHIO_ERROR_NOT_IMPLEMENTED;

@@ -257,14 +257,18 @@ knishio_error_t knishio_molecule_sign(
 #endif
     
     if (!molecule || !molecule->secret) {
+#if KNISHIO_DEBUG_MODE
         fprintf(stderr, "DEBUG knishio_molecule_sign: INVALID_ARGS - molecule=%p, secret=%p\n",
                 (void*)molecule, molecule ? (void*)molecule->secret : NULL);
+#endif
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
     /* Check if we have atoms */
     if (molecule->atom_count == 0) {
+#if KNISHIO_DEBUG_MODE
         fprintf(stderr, "DEBUG knishio_molecule_sign: NO ATOMS - returning KNISHIO_ERROR_ATOMS_MISSING\n");
+#endif
         return KNISHIO_ERROR_ATOMS_MISSING;
     }
 #if KNISHIO_DEBUG_MODE
@@ -280,7 +284,9 @@ knishio_error_t knishio_molecule_sign(
             molecule->bundle = knishio_strdup(bundle);
         } else {
             if (!knishio_generate_bundle_hash(molecule->secret, NULL, NULL, &molecule->bundle)) {
+#if KNISHIO_DEBUG_MODE
                 fprintf(stderr, "DEBUG knishio_molecule_sign: generate_bundle_hash failed\n");
+#endif
                 return KNISHIO_ERROR_CRYPTO;
             }
         }
@@ -289,7 +295,9 @@ knishio_error_t knishio_molecule_sign(
     /* Generate molecular hash */
     knishio_error_t error = knishio_molecule_generate_hash(molecule);
     if (error != KNISHIO_SUCCESS) {
+#if KNISHIO_DEBUG_MODE
         fprintf(stderr, "DEBUG knishio_molecule_sign: generate_hash failed with error %d\n", error);
+#endif
         return error;
     }
 #if KNISHIO_DEBUG_MODE
@@ -301,11 +309,15 @@ knishio_error_t knishio_molecule_sign(
     const char* signing_position = signing_atom->position;
     
     if (!signing_position) {
+#if KNISHIO_DEBUG_MODE
         fprintf(stderr, "DEBUG knishio_molecule_sign: No signing position\n");
+#endif
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    fprintf(stderr, "DEBUG knishio_molecule_sign: Signing position: %s, token: %s\n", 
+#if KNISHIO_DEBUG_MODE
+    fprintf(stderr, "DEBUG knishio_molecule_sign: Signing position: %s, token: %s\n",
             signing_position, signing_atom->token ? signing_atom->token : "NULL");
+#endif
 
     /* Generate private key for signing (matching JS Wallet.generateKey) */
     char* private_key = NULL;
@@ -316,11 +328,15 @@ knishio_error_t knishio_molecule_sign(
         &private_key
     );
     if (!key_generated) {
+#if KNISHIO_DEBUG_MODE
         fprintf(stderr, "DEBUG knishio_molecule_sign: generate_wallet_key failed\n");
+#endif
         return KNISHIO_ERROR_CRYPTO;
     }
-    fprintf(stderr, "DEBUG knishio_molecule_sign: Generated private key length: %zu\n", 
+#if KNISHIO_DEBUG_MODE
+    fprintf(stderr, "DEBUG knishio_molecule_sign: Generated private key length: %zu\n",
             private_key ? strlen(private_key) : 0);
+#endif
 
     /* Chunk private key into 16 segments of 128 characters each */
     char** key_chunks = NULL;
@@ -449,12 +465,14 @@ knishio_error_t knishio_molecule_sign(
     size_t sig_len = strlen(final_signature);
     size_t chunk_size = (sig_len + molecule->atom_count - 1) / molecule->atom_count;  /* Ceiling division */
     
+#if KNISHIO_DEBUG_MODE
     /* DEBUG: Log signature details */
-    fprintf(stderr, "DEBUG knishio_molecule_sign: OTS signature length: %zu, atom count: %zu, chunk size: %zu\n", 
+    fprintf(stderr, "DEBUG knishio_molecule_sign: OTS signature length: %zu, atom count: %zu, chunk size: %zu\n",
             sig_len, molecule->atom_count, chunk_size);
     if (sig_len > 0) {
         fprintf(stderr, "DEBUG knishio_molecule_sign: First 64 chars of signature: %.64s\n", final_signature);
     }
+#endif
     
     for (size_t i = 0; i < molecule->atom_count; i++) {
         size_t start_pos = i * chunk_size;
@@ -479,9 +497,11 @@ knishio_error_t knishio_molecule_sign(
         memcpy(molecule->atoms[i]->ots_fragment, final_signature + start_pos, chunk_len);
         molecule->atoms[i]->ots_fragment[chunk_len] = '\0';
         
+#if KNISHIO_DEBUG_MODE
         /* DEBUG: Log fragment attachment */
-        fprintf(stderr, "DEBUG knishio_molecule_sign: Attached OTS fragment to atom %zu: length=%zu, first 32 chars: %.32s\n", 
+        fprintf(stderr, "DEBUG knishio_molecule_sign: Attached OTS fragment to atom %zu: length=%zu, first 32 chars: %.32s\n",
                 i, chunk_len, molecule->atoms[i]->ots_fragment);
+#endif
     }
 
     knishio_free(final_signature);
@@ -1369,16 +1389,22 @@ knishio_error_t knishio_molecule_init_meta(
 #endif
     
     if (!molecule || !meta_type || !meta_id) {
+#if KNISHIO_DEBUG_MODE
         printf("DEBUG knishio_molecule_init_meta: Invalid arguments\n");
+#endif
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
+
     if (!molecule->source_wallet) {
+#if KNISHIO_DEBUG_MODE
         printf("DEBUG knishio_molecule_init_meta: No source wallet\n");
+#endif
         return KNISHIO_ERROR_INVALID_STATE;
     }
-    
+
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG knishio_molecule_init_meta: Source wallet exists, creating meta atom\n");
+#endif
     
     /* Create metadata atom (M isotope) with proper meta array (JavaScript compatible) */
     knishio_atom_t* meta_atom = NULL;
@@ -1386,9 +1412,11 @@ knishio_error_t knishio_molecule_init_meta(
     const char* position = knishio_wallet_get_position(molecule->source_wallet);
     const char* address = knishio_wallet_get_address(molecule->source_wallet);
     
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG knishio_molecule_init_meta: Wallet position: %s\n", position ? position : "NULL");
     printf("DEBUG knishio_molecule_init_meta: Wallet address: %s\n", address ? address : "NULL");
     printf("DEBUG knishio_molecule_init_meta: Wallet token: %s\n", molecule->source_wallet->token ? molecule->source_wallet->token : "NULL");
+#endif
     
     /* Create metadata atom with basic creation first (avoid complexity issues) */
     knishio_error_t result = knishio_atom_create(
@@ -1401,10 +1429,14 @@ knishio_error_t knishio_molecule_init_meta(
         NULL   /* No batch_id */
     );
     
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG knishio_molecule_init_meta: knishio_atom_create result: %d\n", result);
-    
+#endif
+
     if (result != KNISHIO_SUCCESS) {
+#if KNISHIO_DEBUG_MODE
         printf("DEBUG knishio_molecule_init_meta: Meta atom creation failed\n");
+#endif
         return result;
     }
     
@@ -1416,7 +1448,9 @@ knishio_error_t knishio_molecule_init_meta(
     
     /* Populate meta array directly (JavaScript compatibility) */
     if (meta_keys && meta_values && meta_count > 0) {
+#if KNISHIO_DEBUG_MODE
         printf("DEBUG knishio_molecule_init_meta: Populating meta array with %zu items\n", meta_count);
+#endif
         
         /* Allocate meta array */
         meta_atom->meta = malloc(sizeof(knishio_meta_t*) * meta_count);
@@ -1428,46 +1462,65 @@ knishio_error_t knishio_molecule_init_meta(
                 if (meta_keys[i] && meta_values[i]) {
                     knishio_error_t meta_result = knishio_meta_create(&meta_atom->meta[i], meta_keys[i], meta_values[i]);
                     if (meta_result == KNISHIO_SUCCESS) {
-                        printf("DEBUG knishio_molecule_init_meta: Added meta[%zu]: %s = %s\n", 
+#if KNISHIO_DEBUG_MODE
+                        printf("DEBUG knishio_molecule_init_meta: Added meta[%zu]: %s = %s\n",
                                i, meta_keys[i], meta_values[i]);
+#endif
                     } else {
+#if KNISHIO_DEBUG_MODE
                         printf("DEBUG knishio_molecule_init_meta: Failed to create meta[%zu]\n", i);
+#endif
                         meta_atom->meta[i] = NULL;
                     }
                 }
             }
         } else {
+#if KNISHIO_DEBUG_MODE
             printf("DEBUG knishio_molecule_init_meta: Failed to allocate meta array\n");
+#endif
             meta_atom->meta_count = 0;
         }
     } else {
+#if KNISHIO_DEBUG_MODE
         printf("DEBUG knishio_molecule_init_meta: No metadata to populate\n");
+#endif
         meta_atom->meta = NULL;
         meta_atom->meta_count = 0;
     }
     
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG knishio_molecule_init_meta: Meta atom created successfully\n");
-    
     printf("DEBUG knishio_molecule_init_meta: Adding meta atom to molecule\n");
+#endif
     result = knishio_molecule_add_atom(molecule, meta_atom);
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG knishio_molecule_init_meta: knishio_molecule_add_atom result: %d\n", result);
-    
+#endif
+
     if (result != KNISHIO_SUCCESS) {
+#if KNISHIO_DEBUG_MODE
         printf("DEBUG knishio_molecule_init_meta: Failed to add meta atom to molecule\n");
+#endif
         knishio_atom_free(meta_atom);
         return result;
     }
-    
+
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG knishio_molecule_init_meta: Meta atom added successfully\n");
+#endif
     
     /* Add ContinuID atom (I isotope), mirrors JS Molecule.addContinuIdAtom() (extracted helper). */
     result = add_continuid_atom(molecule);
     if (result != KNISHIO_SUCCESS) {
+#if KNISHIO_DEBUG_MODE
         printf("DEBUG knishio_molecule_init_meta: Failed to add ContinuID atom\n");
+#endif
         return result;
     }
 
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG knishio_molecule_init_meta: Function completed successfully - returning KNISHIO_SUCCESS\n");
+#endif
 
     return KNISHIO_SUCCESS;
 }

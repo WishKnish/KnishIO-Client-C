@@ -746,15 +746,19 @@ bool knishio_wallet_test_vector(const char* seed, const char* expected_bundle,
     
     /* Verify bundle hash */
     if (strcmp(wallet->bundle_hash, expected_bundle) != 0) {
-        printf("Bundle mismatch:\n  Expected: %s\n  Got:      %s\n", 
+#if KNISHIO_DEBUG_MODE
+        printf("Bundle mismatch:\n  Expected: %s\n  Got:      %s\n",
                expected_bundle, wallet->bundle_hash);
+#endif
         goto cleanup;
     }
-    
+
     /* Verify address */
     if (strcmp(wallet->address, expected_address) != 0) {
-        printf("Address mismatch:\n  Expected: %s\n  Got:      %s\n", 
+#if KNISHIO_DEBUG_MODE
+        printf("Address mismatch:\n  Expected: %s\n  Got:      %s\n",
                expected_address, wallet->address);
+#endif
         goto cleanup;
     }
     

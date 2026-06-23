@@ -9,6 +9,7 @@
 #include "knishio/response/responses.h"
 #include "knishio/response/response_types.h"
 #include "knishio/utils/memory.h"
+#include "knishio/utils/logging.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -258,7 +259,8 @@ void knishio_response_log(void *response, int level, const char *message) {
     
     char debug_info[256];
     if (knishio_response_debug_info(response, debug_info, sizeof(debug_info)) > 0) {
-        printf("RESPONSE LOG [%s]: %s\n", message ? message : "info", debug_info);
+        /* Route through the logging layer (disabled by default) instead of raw stdout. */
+        KNISHIO_LOG_DEBUG("RESPONSE LOG [%s]: %s", message ? message : "info", debug_info);
     }
 }
 
