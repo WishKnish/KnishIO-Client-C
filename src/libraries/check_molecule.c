@@ -741,58 +741,76 @@ static bool check_isotope_r(const knishio_molecule_t* molecule) {
  * Matches JavaScript CheckMolecule.isotopeV()
  */
 static bool check_isotope_v(const knishio_molecule_t* molecule, const knishio_wallet_t* sender_wallet) {
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG check_isotope_v: Checking V-isotope atoms\n");
-    
+#endif
+
     /* Count V-isotope atoms */
     int v_atom_count = 0;
     double total_value = 0.0;
-    
+
     for (size_t i = 0; i < molecule->atom_count; i++) {
         knishio_atom_t* atom = knishio_molecule_get_atom(molecule, i);
         if (atom && atom->isotope == KNISHIO_ISOTOPE_V) {
             v_atom_count++;
-            
+
             if (atom->value) {
                 double value = atof(atom->value);
                 total_value += value;
+#if KNISHIO_DEBUG_MODE
                 printf("DEBUG check_isotope_v: V-atom %d value: %.1f\n", v_atom_count-1, value);
+#endif
             }
         }
     }
-    
+
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG check_isotope_v: Total V atoms: %d, Total value: %.1f\n", v_atom_count, total_value);
-    
+#endif
+
     /* All atoms must sum to zero for balanced transaction (JavaScript logic) */
     bool balanced = (fabs(total_value) < 0.01);
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG check_isotope_v: Balanced: %s\n", balanced ? "YES" : "NO");
-    
+#endif
+
     if (!balanced) {
+#if KNISHIO_DEBUG_MODE
         printf("DEBUG check_isotope_v: FAIL - Transaction not balanced\n");
+#endif
         return false;
     }
-    
+
     /* Additional sender wallet validation if provided (JavaScript logic) */
     if (sender_wallet && v_atom_count > 0) {
         knishio_atom_t* first_atom = knishio_molecule_get_atom(molecule, 0);
         if (first_atom && first_atom->isotope == KNISHIO_ISOTOPE_V && first_atom->value) {
             double first_value = atof(first_atom->value);
             double remainder = sender_wallet->balance + first_value;
-            
-            printf("DEBUG check_isotope_v: Sender balance: %.1f, First atom: %.1f, Remainder: %.1f\n", 
+
+#if KNISHIO_DEBUG_MODE
+            printf("DEBUG check_isotope_v: Sender balance: %.1f, First atom: %.1f, Remainder: %.1f\n",
                    sender_wallet->balance, first_value, remainder);
-            
+#endif
+
             if (remainder < 0) {
+#if KNISHIO_DEBUG_MODE
                 printf("DEBUG check_isotope_v: FAIL - Insufficient balance\n");
+#endif
                 return false;
             }
-            
+
             if (fabs(remainder - total_value) > 0.01) {
+#if KNISHIO_DEBUG_MODE
                 printf("DEBUG check_isotope_v: FAIL - Remainder mismatch\n");
+#endif
                 return false;
             }
         }
     }
-    
+
+#if KNISHIO_DEBUG_MODE
     printf("DEBUG check_isotope_v: PASS\n");
+#endif
     return true;
 }

@@ -56,8 +56,16 @@ knishio_error_t knishio_client_transfer_tokens(
     if (!client || !params || !result) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    if (!params->recipient || !params->token || params->amount <= 0) {
+    if (!params->recipient || !params->token) {
         return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (params->unit_count > 0 && params->amount > 0) {
+        return KNISHIO_ERROR_INVALID_ARGS;  /* can't move units AND an amount */
+    }
+    /* Units-only stackable transfer → amount = unit count (mirrors transfer_tokens_multi). */
+    int amt = (params->unit_count > 0) ? (int) params->unit_count : (int) params->amount;
+    if (amt <= 0) {
+        return KNISHIO_ERROR_INVALID_ARGS;  /* nothing to transfer */
     }
 
     /* Canonical transfer = 3 V-atoms (source -balance, recipient +amount as a claimable shadow,
@@ -67,6 +75,7 @@ knishio_error_t knishio_client_transfer_tokens(
     knishio_wallet_t* source = NULL;      /* the funded token wallet (transfer source) */
     knishio_wallet_t* recipient = NULL;   /* shadow wallet for the recipient bundle */
     knishio_wallet_t* remainder = NULL;
+    knishio_wallet_t* bw = NULL;          /* Balance-parsed wallet → carries the source's tokenUnits */
     char* remainder_position = NULL;
     char* tok_position = NULL;
     char* tok_amount = NULL;
@@ -100,6 +109,12 @@ knishio_error_t knishio_client_transfer_tokens(
                 const char* a = knishio_json_get_string_path(root, "data.Balance.amount");
                 if (p) tok_position = knishio_strdup(p);
                 if (a) tok_amount = knishio_strdup(a);
+                /* Also parse the FULL Balance wallet (incl. tokenUnits) so the source carries its
+                 * stackable units — otherwise split_units has nothing to partition and the V-atoms
+                 * emit no tokenUnits meta, so the validator never routes the units (mirrors
+                 * transfer_tokens_multi's source-units fix). */
+                knishio_json_t* bal = knishio_json_get_path(root, "data.Balance");
+                if (bal) bw = knishio_response_wallet_list_to_client_wallet(bal, NULL);
                 knishio_json_free(root);
             }
         }
@@ -111,13 +126,22 @@ knishio_error_t knishio_client_transfer_tokens(
         }
     }
 
-    /* 3. Source = the funded token wallet (re-derives address from secret+token+position). */
+    /* 3. Source = the funded token wallet (re-derives address from secret+token+position;
+     * carries the balance + the stackable tokenUnits parsed from the Balance response). */
     error = knishio_wallet_create_simple(&source, user->secret, params->token, tok_position);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
     source->balance = (double) atoi(tok_amount);
-    if (source->balance < params->amount) {
+    if (bw) {
+        /* Move the parsed token units onto the (key-bearing) source wallet (re-derived source has
+         * none, so a plain assign is safe — ownership transfers from bw, which is freed in cleanup). */
+        source->token_units = bw->token_units;
+        source->token_unit_count = bw->token_unit_count;
+        bw->token_units = NULL;
+        bw->token_unit_count = 0;
+    }
+    if (source->balance < amt) {
         error = KNISHIO_ERROR_BALANCE_INSUFFICIENT;
         goto cleanup;
     }
@@ -163,7 +187,7 @@ knishio_error_t knishio_client_transfer_tokens(
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
-    error = knishio_molecule_init_value(molecule, recipient, (int) params->amount);
+    error = knishio_molecule_init_value(molecule, recipient, amt);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -236,6 +260,7 @@ cleanup:
     if (source) knishio_wallet_free(source);
     if (recipient) knishio_wallet_free(recipient);
     if (remainder) knishio_wallet_free(remainder);
+    if (bw) knishio_wallet_free(bw);
     if (user) knishio_wallet_free(user);
     return error;
 }
