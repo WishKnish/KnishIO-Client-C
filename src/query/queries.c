@@ -226,29 +226,6 @@ static const char* QUERY_ACTIVE_SESSION_GRAPHQL =
     "  }\n"
     "}";
 
-static const char* QUERY_USER_ACTIVITY_GRAPHQL =
-    "query($bundleHash: String, $metaType: String, $metaId: String, $ipAddress: String, "
-    "$browser: String, $osCpu: String, $resolution: String, $timeZone: String, "
-    "$countBy: String, $interval: String) {\n"
-    "  UserActivity(bundleHash: $bundleHash, metaType: $metaType, metaId: $metaId, "
-    "ipAddress: $ipAddress, browser: $browser, osCpu: $osCpu, resolution: $resolution, "
-    "timeZone: $timeZone, countBy: $countBy, interval: $interval) {\n"
-    "    bundleHash,\n"
-    "    metaType,\n"
-    "    metaId,\n"
-    "    ipAddress,\n"
-    "    browser,\n"
-    "    osCpu,\n"
-    "    resolution,\n"
-    "    timeZone,\n"
-    "    createdAt,\n"
-    "    activity {\n"
-    "      timestamp,\n"
-    "      count,\n"
-    "      data\n"
-    "    }\n"
-    "  }\n"
-    "}";
 
 /* Helper function to build variables JSON */
 static knishio_error_t build_variables_json(knishio_json_t* variables, char** json_string) {

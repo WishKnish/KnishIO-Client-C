@@ -18,7 +18,6 @@
  * - QueryMetaTypeViaAtom - Meta queries via atom references
  * - QueryPolicy - Policy and rule queries
  * - QueryActiveSession - Active session information
- * - QueryUserActivity - User activity and history
  */
 
 #include "knishio/graphql.h"
@@ -192,22 +191,6 @@ typedef struct {
     const char* meta_id;             /**< Meta ID */
 } knishio_query_active_session_params_t;
 
-/**
- * @brief Parameters for user activity query
- * Matches JavaScript SDK QueryUserActivity
- */
-typedef struct {
-    const char* bundle_hash;         /**< Bundle hash */
-    const char* meta_type;           /**< Meta type */
-    const char* meta_id;             /**< Meta ID */
-    const char* ip_address;          /**< IP address */
-    const char* browser;             /**< Browser */
-    const char* os_cpu;              /**< OS and CPU */
-    const char* resolution;          /**< Screen resolution */
-    const char* time_zone;           /**< Time zone */
-    const char* count_by;            /**< Count by parameter */
-    const char* interval;            /**< Interval parameter */
-} knishio_query_user_activity_params_t;
 
 /* Query execution functions */
 
@@ -331,15 +314,6 @@ knishio_error_t knishio_query_active_session(
     knishio_response_active_session_t** response
 );
 
-/**
- * @brief Query user activity
- * Equivalent to JavaScript: client.queryUserActivity({ ... })
- */
-knishio_error_t knishio_query_user_activity(
-    knishio_graphql_client_t* client,
-    const knishio_query_user_activity_params_t* params,
-    knishio_response_query_user_activity_t** response
-);
 
 /* Utility functions for building queries */
 

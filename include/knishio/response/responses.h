@@ -40,7 +40,6 @@
 #include "response_claim_shadow_wallet.h"
 #include "response_create_rule.h"
 #include "response_policy.h"
-#include "response_query_user_activity.h"
 #include "response_query_active_session.h"
 
 #ifdef __cplusplus
@@ -65,7 +64,6 @@ typedef struct knishio_response_link_identifier knishio_response_link_identifier
 typedef struct knishio_response_claim_shadow_wallet knishio_response_claim_shadow_wallet_t;
 typedef struct knishio_response_create_rule knishio_response_create_rule_t;
 typedef struct knishio_response_policy knishio_response_policy_t;
-typedef struct knishio_response_query_user_activity knishio_response_query_user_activity_t;
 
 /**
  * @brief Complete response system initialization
@@ -228,7 +226,6 @@ extern const char* const KNISHIO_RESPONSE_KEY_LINK_IDENTIFIER;
 extern const char* const KNISHIO_RESPONSE_KEY_CLAIM_SHADOW_WALLET;
 extern const char* const KNISHIO_RESPONSE_KEY_CREATE_RULE;
 extern const char* const KNISHIO_RESPONSE_KEY_POLICY;
-extern const char* const KNISHIO_RESPONSE_KEY_QUERY_USER_ACTIVITY;
 
 /* Response system statistics */
 

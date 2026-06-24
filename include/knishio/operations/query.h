@@ -8,7 +8,6 @@
  * Provides high-level query operations matching JavaScript SDK:
  * - QueryAtom for atom queries
  * - QueryActiveSession for session queries  
- * - QueryUserActivity for activity queries
  * 
  * Full alignment with JS SDK query functionality.
  */
@@ -103,31 +102,6 @@ typedef struct {
     char* error_message;                /**< Error message if failed */
 } knishio_query_active_session_result_t;
 
-/**
- * @brief Parameters for user activity query
- * Matches JavaScript SDK queryUserActivity() parameters
- */
-typedef struct {
-    const char* bundle_hash;            /**< Bundle hash */
-    const char* meta_type;              /**< Meta type */
-    const char* meta_id;                /**< Meta ID */
-    const char* ip_address;             /**< IP address */
-    const char* browser;                /**< Browser */
-    const char* os_cpu;                 /**< Operating system and CPU */
-    const char* resolution;             /**< Screen resolution */
-    const char* time_zone;              /**< Time zone */
-    const char* count_by;               /**< Count by parameter */
-    const char* interval;               /**< Interval parameter */
-} knishio_query_user_activity_params_t;
-
-/**
- * @brief Result of user activity query
- */
-typedef struct {
-    bool success;                       /**< Query success flag */
-    char* response;                     /**< Activity data (JSON) */
-    char* error_message;                /**< Error message if failed */
-} knishio_query_user_activity_result_t;
 
 /**
  * @brief Query atoms by various parameters
@@ -159,20 +133,6 @@ knishio_error_t knishio_client_query_active_session(
     knishio_query_active_session_result_t** result
 );
 
-/**
- * @brief Query user activity
- * Equivalent to JavaScript: client.queryUserActivity({ ... })
- * 
- * @param client KnishIO client instance
- * @param params Query parameters
- * @param result Output query result (allocated, must be freed)
- * @return KNISHIO_SUCCESS on success, error code on failure
- */
-knishio_error_t knishio_client_query_user_activity(
-    knishio_client_t* client,
-    const knishio_query_user_activity_params_t* params,
-    knishio_query_user_activity_result_t** result
-);
 
 /**
  * @brief Free atom query result
@@ -186,11 +146,6 @@ void knishio_query_atom_result_free(knishio_query_atom_result_t* result);
  */
 void knishio_query_active_session_result_free(knishio_query_active_session_result_t* result);
 
-/**
- * @brief Free user activity query result
- * @param result Result to free
- */
-void knishio_query_user_activity_result_free(knishio_query_user_activity_result_t* result);
 
 #ifdef __cplusplus
 }

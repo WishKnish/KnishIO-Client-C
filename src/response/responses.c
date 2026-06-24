@@ -40,7 +40,6 @@ const char* const KNISHIO_RESPONSE_KEY_LINK_IDENTIFIER = "data.LinkIdentifier";
 const char* const KNISHIO_RESPONSE_KEY_CLAIM_SHADOW_WALLET = "data.ClaimShadowWallet";
 const char* const KNISHIO_RESPONSE_KEY_CREATE_RULE = "data.CreateRule";
 const char* const KNISHIO_RESPONSE_KEY_POLICY = "data.Policy";
-const char* const KNISHIO_RESPONSE_KEY_QUERY_USER_ACTIVITY = "data.QueryUserActivity";
 
 /**
  * @brief Initialize statistics
