@@ -1,0 +1,62 @@
+# C SDK CI — enforces the clang-tidy lint gate (cycle 115) + the build + c_self_test
+# (the 6 frozen molecular-hash vectors + ML-KEM768) + the unit suites. Born-enforced:
+# the repo had no CI, so the gate was local-only/bypassable until now.
+#
+# ML-KEM768 is provided by mlkem-native, vendored as a git submodule (external/mlkem-native)
+# → checkout must be recursive. clang-tidy is version-sensitive (the .clang-tidy
+# bugprone-*/performance-* globs were tuned against LLVM 22), so CI pins LLVM 22 and builds
+# with clang-22 (clang-clean compile_commands.json for clang-tidy).
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  gate:
+    name: build + self-test + clang-tidy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # fetch external/mlkem-native (vendored ML-KEM)
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libcurl4-openssl-dev libssl-dev \
+            libgmp-dev libcjson-dev lsb-release wget software-properties-common gnupg
+
+      # Pin LLVM 22 (matches the cycle-115 tuning) so the clang-tidy check set is reproducible.
+      - name: Install LLVM 22 (clang + clang-tidy)
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y clang-tidy-22
+
+      # Build with clang-22 → the compile DB clang-tidy reads is clang-clean. EXPORT_COMPILE_COMMANDS
+      # is on by default; -DCLANG_TIDY_EXE pins the tidy binary without a CMake edit.
+      - name: Configure
+        run: |
+          CC=clang-22 CXX=clang++-22 cmake -S . -B build \
+            -DKNISHIO_BUILD_TESTS=ON \
+            -DCLANG_TIDY_EXE="$(command -v clang-tidy-22)"
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      # Deterministic parity gate: the 6 frozen molecular hashes + ML-KEM768. Cross-SDK
+      # validation is disabled (a single-repo checkout has no sibling SDK result dumps).
+      - name: Self-test (frozen molecular hashes + ML-KEM768)
+        run: |
+          mkdir -p shared-test-results
+          KNISHIO_DISABLE_CROSS_VALIDATION=true \
+          KNISHIO_SHARED_RESULTS="$PWD/shared-test-results" \
+            ./build/c_self_test
+
+      - name: Unit tests (knishio_tests)
+        run: ctest --test-dir build --output-on-failure
+
+      # The cycle-115 lint gate (clang-tidy bugprone-*/performance-* over the first-party
+      # sources, mlkem-native excluded). Last so a version-drift failure is cleanly isolated.
+      - name: clang-tidy (lint gate)
+        run: cmake --build build --target lint
