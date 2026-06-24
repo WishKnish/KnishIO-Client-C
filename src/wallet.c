@@ -9,7 +9,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
 /* Legacy function definitions updated to support ContinuID structures */
 
@@ -662,20 +661,15 @@ bool knishio_random_hex_string(size_t length, const char* charset, char** output
         return false;
     }
     
-    /* Seed random number generator (only once per process) */
-    static int seeded = 0;
-    if (!seeded) {
-        // KNOWN: non-CSPRNG seed for the position/charset salt generator (positions are public
-        // salt, not the secret). Hardening to a CSPRNG (cross-SDK parity with JS/Rust) is a
-        // separate security follow-up.
-        // NOLINTNEXTLINE(bugprone-random-generator-seed)
-        srand((unsigned int)time(NULL));
-        seeded = 1;
+    /* Fill with CSPRNG bytes, then map each byte onto the charset (getrandom/urandom/BCrypt via
+     * knishio_secure_random; for the 16-char hex charset, byte % 16 is unbiased since 256 = 16*16). */
+    if (!knishio_secure_random((unsigned char*)*output, length)) {
+        knishio_free(*output);
+        *output = NULL;
+        return false;
     }
-    
-    /* Generate random hex string */
     for (size_t i = 0; i < length; i++) {
-        (*output)[i] = chars[rand() % charset_len];
+        (*output)[i] = chars[(unsigned char)(*output)[i] % charset_len];
     }
     (*output)[length] = '\0';
     
@@ -816,10 +810,15 @@ bool knishio_generate_random_position(size_t salt_length,
         return false;
     }
     
-    /* Generate random position using secure random */
+    /* Generate the position from CSPRNG bytes mapped onto the charset (see knishio_random_hex_string). */
     size_t charset_len = strlen(charset);
+    if (!knishio_secure_random((unsigned char*)*position, salt_length)) {
+        free(*position);
+        *position = NULL;
+        return false;
+    }
     for (size_t i = 0; i < salt_length; i++) {
-        (*position)[i] = charset[rand() % charset_len];
+        (*position)[i] = charset[(unsigned char)(*position)[i] % charset_len];
     }
     (*position)[salt_length] = '\0';
     
