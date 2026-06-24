@@ -358,10 +358,20 @@ knishio_error_t knishio_graphql_propose_molecule(
         return KNISHIO_ERROR_MEMORY;
     }
 
+    /* Serialize the built mutation object before POSTing — knishio_http_post_graphql takes a
+     * const char* body, not a knishio_json_t* (mirror knishio_graphql_execute's serialize step). */
+    char* mutation_str = knishio_json_serialize(mutation_json, false);
+    knishio_json_free(mutation_json);
+    if (!mutation_str) {
+        knishio_proposal_result_free(*result);
+        *result = NULL;
+        return KNISHIO_ERROR_MEMORY;
+    }
+
     /* Execute the mutation using enhanced HTTP client */
     knishio_http_response_t* response = NULL;
-    knishio_error_t post_error = knishio_http_post_graphql(client->http_client, mutation_json, NULL, &response);
-    knishio_json_free(mutation_json);
+    knishio_error_t post_error = knishio_http_post_graphql(client->http_client, mutation_str, NULL, &response);
+    knishio_free(mutation_str);
     
     if (post_error != KNISHIO_SUCCESS || !response) {
         error = KNISHIO_ERROR_NETWORK;
@@ -424,10 +434,20 @@ knishio_error_t knishio_graphql_query_balance(
         return KNISHIO_ERROR_MEMORY;
     }
 
+    /* Serialize the built query object before POSTing — knishio_http_post_graphql takes a
+     * const char* body, not a knishio_json_t* (mirror knishio_graphql_execute's serialize step). */
+    char* query_str = knishio_json_serialize(query_json, false);
+    knishio_json_free(query_json);
+    if (!query_str) {
+        knishio_balance_result_free(*result);
+        *result = NULL;
+        return KNISHIO_ERROR_MEMORY;
+    }
+
     /* Execute the query using enhanced HTTP client */
     knishio_http_response_t* response = NULL;
-    knishio_error_t post_error = knishio_http_post_graphql(client->http_client, query_json, NULL, &response);
-    knishio_json_free(query_json);
+    knishio_error_t post_error = knishio_http_post_graphql(client->http_client, query_str, NULL, &response);
+    knishio_free(query_str);
     
     if (post_error != KNISHIO_SUCCESS || !response) {
         error = KNISHIO_ERROR_NETWORK;

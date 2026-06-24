@@ -11,6 +11,9 @@ set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# Emit compile_commands.json for clang-tidy (the `lint` target below) + IDE tooling.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Enable modern C safety features
 add_compile_definitions(_FORTIFY_SOURCE=2)  # Buffer overflow protection
 add_compile_options(-fstack-protector-strong)  # Stack protection
@@ -636,4 +639,31 @@ message(STATUS "  Build docs: ${KNISHIO_BUILD_DOCS}")
 message(STATUS "  Coverage: ${KNISHIO_ENABLE_COVERAGE}")
 message(STATUS "  Sanitizers: ${KNISHIO_ENABLE_SANITIZERS}")
 message(STATUS "  GraphQL Operations: Complete implementation with 15+ queries, 20+ mutations")
+
+# clang-tidy static-analysis lint gate (cycle 115; the C analog of the C++ SDK c114).
+# Lints the compiled first-party sources (KNISHIO_SOURCES minus the vendored mlkem-native
+# appended above) against the conservative .clang-tidy baseline (bugprone-/performance-*
+# real-bug checks; the readability/modernize style firehose is left off). Read-only (no
+# --fix) → cannot move the frozen self-test molecular hashes. Run: `cmake --build build --target lint`.
+find_program(CLANG_TIDY_EXE NAMES clang-tidy HINTS /opt/homebrew/opt/llvm/bin)
+if(CLANG_TIDY_EXE)
+    set(KNISHIO_LINT_SOURCES ${KNISHIO_SOURCES})
+    list(FILTER KNISHIO_LINT_SOURCES EXCLUDE REGEX "external/mlkem-native")
+    list(TRANSFORM KNISHIO_LINT_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
+    # macOS: the build uses Apple clang (/usr/bin/cc), whose implicit SDK sysroot differs
+    # from Homebrew LLVM clang-tidy → pass the SDK sysroot so <stdlib.h> etc. resolve.
+    set(KNISHIO_TIDY_EXTRA "")
+    if(APPLE)
+        execute_process(COMMAND xcrun --show-sdk-path
+            OUTPUT_VARIABLE KNISHIO_MACOS_SDK OUTPUT_STRIP_TRAILING_WHITESPACE)
+        set(KNISHIO_TIDY_EXTRA --extra-arg=-isysroot${KNISHIO_MACOS_SDK})
+    endif()
+    add_custom_target(lint
+        COMMAND ${CLANG_TIDY_EXE} ${KNISHIO_TIDY_EXTRA} -p ${CMAKE_BINARY_DIR} ${KNISHIO_LINT_SOURCES}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Running clang-tidy static analysis (lint gate)"
+        VERBATIM)
+else()
+    message(STATUS "  clang-tidy: NOT found — `lint` target unavailable")
+endif()
 message(STATUS "  Policy Engine: Advanced rule-based policy enforcement system")

@@ -665,6 +665,10 @@ bool knishio_random_hex_string(size_t length, const char* charset, char** output
     /* Seed random number generator (only once per process) */
     static int seeded = 0;
     if (!seeded) {
+        // KNOWN: non-CSPRNG seed for the position/charset salt generator (positions are public
+        // salt, not the secret). Hardening to a CSPRNG (cross-SDK parity with JS/Rust) is a
+        // separate security follow-up.
+        // NOLINTNEXTLINE(bugprone-random-generator-seed)
         srand((unsigned int)time(NULL));
         seeded = 1;
     }
