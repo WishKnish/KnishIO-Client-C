@@ -38,12 +38,17 @@ sudo apt-get install cmake liboqs-dev libwebsockets-dev libcurl4-openssl-dev lib
 #### Build Instructions
 1. Clone and build the SDK:
    ```bash
-   git clone https://github.com/WishKnish/KnishIO-Client-C.git
+   # --recursive fetches the pinned external/mlkem-native submodule (required for ML-KEM768)
+   git clone --recursive https://github.com/WishKnish/KnishIO-Client-C.git
    cd KnishIO-Client-C
+   # if you cloned without --recursive, or after pulling: fetch/realign the submodule
+   git submodule update --init external/mlkem-native
    mkdir build && cd build
    cmake ..
    make -j$(nproc)
    ```
+
+   > **Submodule pin:** `external/mlkem-native` is pinned to **cf895dd5 (v1.0.0-116)** — the commit CI builds and the cross-SDK family is aligned to. Keep your working tree at the pin with `git submodule update --init` (a `git status` showing `M external/mlkem-native` means it has drifted); don't bump it ad hoc, so local builds stay identical to what CI tests and ships.
 
 2. Install system-wide (optional):
    ```bash

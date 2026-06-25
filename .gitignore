@@ -57,6 +57,7 @@ build/
 build-*/
 cmake-build-*/
 _deps/
+.cache/
 
 ### CMake generated files
 CMakeCache.txt
