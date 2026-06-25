@@ -452,11 +452,13 @@ size_t knishio_string_replace(knishio_string_t *str, const char *search, const c
         /* Simple in-place replacement */
         char *pos = str->data;
         while ((pos = strstr(pos, search)) != NULL) {
-            /* NOLINTNEXTLINE(bugprone-not-null-terminated-result) — equal-length in-place
-             * replacement (this is the `replace_len == search_len` branch; the != branch
-             * builds a new string). memcpy overwrites within the already-NUL-terminated
-             * str->data; the terminator is untouched. (clang-tidy-22 flags it; LLVM 22.1.4 didn't.) */
-            memcpy(pos, replace, replace_len);
+            /* Equal-length in-place replacement (this is the `replace_len == search_len`
+             * branch; the != branch builds a new string). The memcpy overwrites within the
+             * already-NUL-terminated str->data, so the terminator is preserved — clang-tidy's
+             * not-null-terminated-result check is a false positive here. (clang-tidy-22 flags
+             * it; local LLVM 22.1.4 doesn't.) Same-line NOLINT so the block comment above
+             * doesn't shift the directive off the memcpy line. */
+            memcpy(pos, replace, replace_len);  // NOLINT(bugprone-not-null-terminated-result)
             pos += replace_len;
         }
     }
