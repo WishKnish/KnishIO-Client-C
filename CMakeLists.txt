@@ -18,6 +18,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 add_compile_definitions(_FORTIFY_SOURCE=2)  # Buffer overflow protection
 add_compile_options(-fstack-protector-strong)  # Stack protection
 
+# glibc (Linux) gates POSIX/GNU functions — strdup, strcasecmp, strnlen, explicit_bzero —
+# behind _GNU_SOURCE; they are declared-by-default on macOS but NOT on Linux, so the library
+# sources (fingerprint.c, policy/rule.c, utils/memory.c) fail to compile in CI without it.
+# Define it globally for ALL targets (cycle 127); the per-target `c_self_test` _GNU_SOURCE
+# below is now redundant. Harmless on macOS.
+add_compile_definitions(_GNU_SOURCE)
+
 # Build options
 option(KNISHIO_BUILD_TESTS "Build tests" ON)  # knishio_tests is fully green (SHAKE256 + molecule + wallet + cross-SDK suites, fixtures refreshed cycles 37-38). Run via ctest or ./build/knishio_tests. c_self_test (cross-SDK parity) is built unconditionally.
 option(KNISHIO_BUILD_EXAMPLES "Build examples" OFF)  # examples reference disabled subsystems (graphql/subscriptions/auth) — never linked
