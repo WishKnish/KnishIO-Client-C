@@ -1495,6 +1495,165 @@ cleanup:
 }
 
 /**
+ * Test 5b: ML-KEM768 cross-SDK VECTOR assertion (cycle 136)
+ * Asserts the committed cross-platform-test-vectors.json `vectors.mlkem768`:
+ *   keygen  → wallet ML-KEM pubkey (base64) == expectedPubkey ("nzuf1Bq2…")
+ *   decrypt → decapsulate + AES-256-GCM the frozen {cipherText,encryptedMessage} == expectedPlaintext
+ * C's AES-GCM is OpenSSL EVP (portable) → both asserts run on ARM + x86.
+ * Reads the vendored vector; SKIPS (returns pass) if absent (standalone-CI safe).
+ */
+static bool test_mlkem768_vector_assertion(test_results_t *results) {
+    (void)results;
+    log_message("\n5b. ML-KEM768 Cross-SDK Vector Assertion", COLOR_BLUE);
+
+    /* Locate the committed cross-platform-test-vectors.json (env override → vendored → shared dir) */
+    const char *candidates[3];
+    int n = 0;
+    char shared_candidate[1024];
+    const char *env_path = getenv("KNISHIO_CROSS_PLATFORM_VECTORS");
+    if (env_path) candidates[n++] = env_path;
+    candidates[n++] = "tests/fixtures/cross-platform-test-vectors.json";
+    const char *shared_dir = getenv("KNISHIO_SHARED_RESULTS");
+    if (shared_dir) {
+        snprintf(shared_candidate, sizeof(shared_candidate), "%s/cross-platform-test-vectors.json", shared_dir);
+        candidates[n++] = shared_candidate;
+    }
+
+    char *file_content = NULL;
+    for (int i = 0; i < n && !file_content; i++) {
+        FILE *f = fopen(candidates[i], "r");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz > 0) {
+            file_content = malloc((size_t)sz + 1);
+            if (file_content) {
+                size_t rd = fread(file_content, 1, (size_t)sz, f);
+                file_content[rd] = '\0';
+            }
+        }
+        fclose(f);
+    }
+    if (!file_content) {
+        log_test("ML-KEM768 vector file present", true, "SKIPPED (vector file absent — standalone CI)");
+        return true; /* skip, not fail */
+    }
+
+    /* Declare all locals up front (single cleanup label, mirrors test_mlkem768) */
+    bool ok = false;
+    bool keygen_ok = false;
+    bool decrypt_ok = false;
+    cJSON *root = NULL;
+    knishio_wallet_t *wallet = NULL;
+    char *seed_hex = NULL;
+    char *pubkey_b64 = NULL;
+    unsigned char *kem_bytes = NULL;
+    unsigned char *enc_bytes = NULL;
+    uint8_t *plaintext_out = NULL;
+    char *plaintext_str = NULL;
+    cJSON *parsed = NULL;
+    size_t kem_len = 0, enc_len = 0, plaintext_len = 0;
+    knishio_mlkem768_keypair_t keypair = {0};
+    knishio_mlkem768_ciphertext_t kem_ct = {0};
+    knishio_mlkem768_shared_secret_t ss = {0};
+    uint8_t seed_bytes[64];
+
+    root = cJSON_Parse(file_content);
+    free(file_content);
+    cJSON *mlkem = root ? cJSON_GetObjectItem(cJSON_GetObjectItem(root, "vectors"), "mlkem768") : NULL;
+    cJSON *kg = mlkem ? cJSON_GetObjectItem(mlkem, "keygen") : NULL;
+    cJSON *dec = mlkem ? cJSON_GetObjectItem(mlkem, "decrypt") : NULL;
+    if (!kg || !dec) {
+        log_test("ML-KEM768 vector parse", false, "missing vectors.mlkem768");
+        goto vcleanup;
+    }
+
+    const char *secret = cJSON_GetStringValue(cJSON_GetObjectItem(kg, "secret"));
+    const char *token = cJSON_GetStringValue(cJSON_GetObjectItem(kg, "token"));
+    const char *position = cJSON_GetStringValue(cJSON_GetObjectItem(kg, "position"));
+    const char *expected_pubkey = cJSON_GetStringValue(cJSON_GetObjectItem(kg, "expectedPubkey"));
+    const char *cipher_text_b64 = cJSON_GetStringValue(cJSON_GetObjectItem(dec, "cipherText"));
+    const char *enc_msg_b64 = cJSON_GetStringValue(cJSON_GetObjectItem(dec, "encryptedMessage"));
+    const char *expected_plaintext = cJSON_GetStringValue(cJSON_GetObjectItem(dec, "expectedPlaintext"));
+    if (!secret || !token || !position || !expected_pubkey || !cipher_text_b64 || !enc_msg_b64 || !expected_plaintext) {
+        log_test("ML-KEM768 vector fields", false, "missing field(s)");
+        goto vcleanup;
+    }
+
+    /* --- keygen assertion --- */
+    if (knishio_wallet_create_simple(&wallet, secret, token, position) != KNISHIO_SUCCESS) {
+        log_test("ML-KEM768 vector wallet create", false, "wallet create failed");
+        goto vcleanup;
+    }
+    if (!knishio_generate_secret(wallet->private_key, 128, &seed_hex) || strlen(seed_hex) != 128) {
+        log_test("ML-KEM768 vector seed derive", false, "seed derive failed");
+        goto vcleanup;
+    }
+    for (int i = 0; i < 64; i++) {
+        char hp[3] = {seed_hex[i * 2], seed_hex[i * 2 + 1], '\0'};
+        seed_bytes[i] = (uint8_t)strtol(hp, NULL, 16);
+    }
+    if (knishio_mlkem768_keypair_from_seed(&keypair, seed_bytes, 64) != KNISHIO_SUCCESS) {
+        log_test("ML-KEM768 vector keypair", false, "keygen failed");
+        goto vcleanup;
+    }
+    if (!knishio_base64_encode(keypair.public_key, 1184, &pubkey_b64)) {
+        log_test("ML-KEM768 vector pubkey encode", false, "b64 encode failed");
+        goto vcleanup;
+    }
+    keygen_ok = (strcmp(pubkey_b64, expected_pubkey) == 0);
+    log_test("ML-KEM768 keygen pubkey matches vector", keygen_ok, keygen_ok ? NULL : "pubkey mismatch");
+
+    /* --- decrypt assertion (OpenSSL EVP AES-GCM → portable) --- */
+    if (!knishio_base64_decode(cipher_text_b64, &kem_bytes, &kem_len) || kem_len != sizeof(kem_ct.ciphertext)) {
+        log_test("ML-KEM768 vector cipherText decode", false, "bad KEM ciphertext length");
+        goto vfinish;
+    }
+    memcpy(kem_ct.ciphertext, kem_bytes, kem_len);
+    if (knishio_mlkem768_decapsulate(keypair.private_key, &kem_ct, &ss) != KNISHIO_SUCCESS) {
+        log_test("ML-KEM768 vector decapsulate", false, "decapsulate failed");
+        goto vfinish;
+    }
+    if (!knishio_base64_decode(enc_msg_b64, &enc_bytes, &enc_len)) {
+        log_test("ML-KEM768 vector encryptedMessage decode", false, "b64 decode failed");
+        goto vfinish;
+    }
+    if (knishio_aes_gcm_decrypt(enc_bytes, enc_len, ss.shared_secret, &plaintext_out, &plaintext_len) != KNISHIO_SUCCESS) {
+        log_test("ML-KEM768 vector AES-GCM decrypt", false, "aes-gcm decrypt failed");
+        goto vfinish;
+    }
+    if (plaintext_out && plaintext_len > 0) {
+        plaintext_str = malloc(plaintext_len + 1);
+        if (plaintext_str) {
+            memcpy(plaintext_str, plaintext_out, plaintext_len);
+            plaintext_str[plaintext_len] = '\0';
+            parsed = cJSON_Parse(plaintext_str); /* JS JSON.stringify'd the plaintext → unwrap */
+            if (parsed && cJSON_IsString(parsed)) {
+                const char *unwrapped = cJSON_GetStringValue(parsed);
+                decrypt_ok = (unwrapped && strcmp(unwrapped, expected_plaintext) == 0);
+            }
+        }
+    }
+    log_test("ML-KEM768 frozen sample decrypts to vector plaintext", decrypt_ok, decrypt_ok ? NULL : "plaintext mismatch");
+
+vfinish:
+    ok = keygen_ok && decrypt_ok;
+
+vcleanup:
+    if (parsed) cJSON_Delete(parsed);
+    if (plaintext_str) free(plaintext_str);
+    if (plaintext_out) free(plaintext_out);
+    if (enc_bytes) free(enc_bytes);
+    if (kem_bytes) free(kem_bytes);
+    if (pubkey_b64) free(pubkey_b64);
+    if (seed_hex) free(seed_hex);
+    if (wallet) knishio_wallet_free(wallet);
+    if (root) cJSON_Delete(root);
+    return ok;
+}
+
+/**
  * Test 6: Negative Test Cases (Anti-Cheating)
  * Validates that invalid molecules properly fail validation
  */
@@ -2374,6 +2533,7 @@ int main(void) {
     bool wallet_result = test_wallet_creation(&g_results, tests_config);
     bool shadow_result = test_shadow_wallet_claim(&g_results, tests_config);
     bool mlkem768_result = test_mlkem768(&g_results, tests_config);
+    bool mlkem768_vector_result = test_mlkem768_vector_assertion(&g_results);
     bool negative_result = test_negative_cases(&g_results, tests_config);
     bool cross_sdk_result = test_cross_sdk_validation(&g_results);
 
@@ -2387,11 +2547,11 @@ int main(void) {
     display_summary();
 
     /* Exit with appropriate code */
-    int total_tests = 9; // crypto + 3 base + 3 extended (token/wallet/shadow) + ML-KEM768 + negative
+    int total_tests = 10; // crypto + 3 base + 3 extended (token/wallet/shadow) + ML-KEM768 + ML-KEM768 vector + negative
     int passed_tests = (crypto_result ? 1 : 0) + (meta_result ? 1 : 0) +
                       (simple_result ? 1 : 0) + (complex_result ? 1 : 0) +
                       (token_result ? 1 : 0) + (wallet_result ? 1 : 0) + (shadow_result ? 1 : 0) +
-                      (mlkem768_result ? 1 : 0) + (negative_result ? 1 : 0);
+                      (mlkem768_result ? 1 : 0) + (mlkem768_vector_result ? 1 : 0) + (negative_result ? 1 : 0);
 
     return (passed_tests == total_tests) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
