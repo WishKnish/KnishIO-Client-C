@@ -1917,75 +1917,85 @@ static bool test_cross_sdk_validation(test_results_t *results) {
                                             /* REAL FUNCTIONAL TEST: Attempt to decrypt their message like JavaScript does */
                                             const char* expected_plaintext = cJSON_GetStringValue(original_plaintext);
                                             
-                                            /* Create deterministic test wallet (matches JavaScript test pattern) */
-                                            const char* test_secret = "e8ffc86d60fc6a73234a834166e7436e21df6c3209dfacc8d0bd6595707872c3799abbf7deee0f9c4b58de1fd89b9abb67a207558208d5ccf550c227d197c24e9fcc3707aeb53c4031d38392020ff72bcaa0f728aa8bc3d47d95ff0afc04d8fcdb69bff638ce56646c154fc92aa517d3c40f550d2ccacbd921724e1d94b82aed2c8e172a8a7ed5a6963f5890157fe77222b97af3787741f9d3cec0b40aec6f07ae4b2b24614f0a20e035aee0df04e176175dc100eb1b00dd7ea95c28cdec47958336945333c3bef24719ed949fa56d1541f24c725d4f374a533bf255cf22f4596147bcd1ba05abcecbe9b12095e1fdddb094616894c366498be0b5785c180100efb3c5b689fc1c01131633fe1775df52a970e9472ab7bc0c19f5742b9e9436753cd16024b2d326b763eca68c414755a0d2fdbb927f007e9413f1190578b2033a03d29387f5aea71b07a2ca84534433d0a1b86cef3288e7d79e8b175a3955848cfd1dfbdcd6b5bafcf6789e56e8ef40af";
+                                            /* Build the TESTSEED wallet — all 8 SDKs share this keypair.
+                                             * (cycle 138) The old hardcoded 736-hex secret + knishio_wallet_create
+                                             * [which re-derives from a SEED] produced the WRONG ML-KEM keypair; the
+                                             * weak encrypt-to-their-pubkey check never used our keypair so it went
+                                             * unnoticed. Use generate_secret("TESTSEED") + create_simple [takes a
+                                             * SECRET directly], matching test_mlkem768 + the c136 vector test. */
                                             const char* test_token = "ENCRYPT";
                                             const char* test_position = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
-                                            
+
+                                            char* test_secret = NULL;
                                             knishio_wallet_t* test_wallet = NULL;
-                                            bool wallet_result = knishio_wallet_create(
-                                                &test_wallet, test_secret, test_token, test_position);
+                                            bool wallet_result = knishio_generate_secret("TESTSEED", 2048, &test_secret) &&
+                                                                 test_secret &&
+                                                                 knishio_wallet_create_simple(&test_wallet, test_secret, test_token, test_position) == KNISHIO_SUCCESS;
                                             
                                             if (wallet_result && test_wallet) {
-                                                /* Attempt real ML-KEM768 decryption (matches JavaScript test) */
-                                                char* decrypted_result = NULL;
-                                                
-                                                /* Test if we can encrypt FOR their public key (matches PHP/Python approach) */
-                                                printf("    🔬 Testing %s ML-KEM768 encryption compatibility...\n", sdk_names[i]);
+                                                /* STRONG cross-SDK check (cycle 138): decrypt THEIR encryptedData
+                                                 * with our TESTSEED keypair (all 8 SDKs share it) and assert the
+                                                 * plaintext — real decrypt-interop, not the old weak encrypt-to-pubkey.
+                                                 * Re-derive the keypair (the wallet doesn't store the ML-KEM privkey;
+                                                 * mirrors test_mlkem768_vector_assertion). C's AES-GCM is OpenSSL EVP
+                                                 * (portable) → no AES-NI guard needed. */
+                                                cJSON* ct_item = cJSON_GetObjectItem(encrypted_data, "cipherText");
+                                                cJSON* em_item = cJSON_GetObjectItem(encrypted_data, "encryptedMessage");
+                                                char* seed_hex = NULL;
+                                                uint8_t* ct_bytes = NULL;
+                                                uint8_t* em_bytes = NULL;
+                                                uint8_t* decrypted = NULL;
+                                                size_t ct_len = 0, em_len = 0, dec_len = 0;
+                                                knishio_mlkem768_keypair_t cv_keypair = {0};
+                                                knishio_mlkem768_ciphertext_t cv_ct = {0};
+                                                knishio_mlkem768_shared_secret_t cv_ss = {0};
 
-                                                /* Get their public key */
-                                                const char* their_public_key_b64 = cJSON_GetStringValue(public_key);
-
-                                                /* Decode their public key */
-                                                uint8_t* their_public_key = NULL;
-                                                size_t public_key_len = 0;
-
-                                                if (knishio_base64_decode(their_public_key_b64, &their_public_key, &public_key_len)) {
-                                                    if (public_key_len == 1184) {  /* ML-KEM768 public key size */
-                                                        /* Test: Can we encrypt a message FOR their public key? */
-                                                        const char* test_message = "Cross-SDK ML-KEM768 compatibility test";
-
-                                                        /* Wrap in JSON like other SDKs */
-                                                        cJSON* message_json = cJSON_CreateString(test_message);
-                                                        char* json_message = cJSON_PrintUnformatted(message_json);
-                                                        cJSON_Delete(message_json);
-
-                                                        uint8_t* encrypted_for_them = NULL;
-                                                        size_t encrypted_len = 0;
-
-                                                        /* Try to encrypt FOR their public key */
-                                                        knishio_error_t encrypt_result = knishio_mlkem768_encrypt(
-                                                            their_public_key,
-                                                            (const uint8_t*)json_message,
-                                                            strlen(json_message),
-                                                            &encrypted_for_them,
-                                                            &encrypted_len
-                                                        );
-
-                                                        free(json_message);
-
-                                                        if (encrypt_result == KNISHIO_SUCCESS && encrypted_for_them && encrypted_len > 0) {
-                                                            printf("    ✅ Successfully encrypted for %s public key\n", sdk_names[i]);
-                                                            is_valid = true;
-                                                            free(encrypted_for_them);
-                                                        } else {
-                                                            printf("    ❌ Failed to encrypt for %s public key - error: %d\n", sdk_names[i], encrypt_result);
-                                                            is_valid = false;
-                                                        }
-                                                    } else {
-                                                        printf("    ❌ Invalid public key size: %zu (expected 1184)\n", public_key_len);
-                                                        is_valid = false;
+                                                if (ct_item && cJSON_IsString(ct_item) && em_item && cJSON_IsString(em_item) &&
+                                                    knishio_generate_secret(test_wallet->private_key, 128, &seed_hex) &&
+                                                    seed_hex && strlen(seed_hex) == 128) {
+                                                    uint8_t seed_bytes[64];
+                                                    for (int b = 0; b < 64; b++) {
+                                                        char hp[3] = {seed_hex[b * 2], seed_hex[b * 2 + 1], '\0'};
+                                                        seed_bytes[b] = (uint8_t)strtol(hp, NULL, 16);
                                                     }
-                                                    free(their_public_key);
-                                                } else {
-                                                    printf("    ❌ Failed to decode public key\n");
-                                                    is_valid = false;
+                                                    if (knishio_mlkem768_keypair_from_seed(&cv_keypair, seed_bytes, 64) == KNISHIO_SUCCESS &&
+                                                        knishio_base64_decode(cJSON_GetStringValue(ct_item), &ct_bytes, &ct_len) &&
+                                                        ct_len == sizeof(cv_ct.ciphertext) &&
+                                                        knishio_base64_decode(cJSON_GetStringValue(em_item), &em_bytes, &em_len)) {
+                                                        memcpy(cv_ct.ciphertext, ct_bytes, ct_len);
+                                                        if (knishio_mlkem768_decapsulate(cv_keypair.private_key, &cv_ct, &cv_ss) == KNISHIO_SUCCESS &&
+                                                            knishio_aes_gcm_decrypt(em_bytes, em_len, cv_ss.shared_secret, &decrypted, &dec_len) == KNISHIO_SUCCESS &&
+                                                            decrypted && dec_len > 0) {
+                                                            char* dj = malloc(dec_len + 1);
+                                                            if (dj) {
+                                                                memcpy(dj, decrypted, dec_len);
+                                                                dj[dec_len] = '\0';
+                                                                cJSON* parsed = cJSON_Parse(dj); /* JS JSON.stringify'd the plaintext */
+                                                                if (parsed && cJSON_IsString(parsed)) {
+                                                                    const char* unwrapped = cJSON_GetStringValue(parsed);
+                                                                    is_valid = (unwrapped && strcmp(unwrapped, expected_plaintext) == 0);
+                                                                }
+                                                                if (parsed) cJSON_Delete(parsed);
+                                                                free(dj);
+                                                            }
+                                                        }
+                                                    }
                                                 }
+                                                if (is_valid) {
+                                                    printf("    ✅ Successfully decrypted %s's ML-KEM768 message\n", sdk_names[i]);
+                                                } else {
+                                                    printf("    ❌ Failed to decrypt %s's ML-KEM768 message\n", sdk_names[i]);
+                                                }
+                                                if (seed_hex) free(seed_hex);
+                                                if (ct_bytes) free(ct_bytes);
+                                                if (em_bytes) free(em_bytes);
+                                                if (decrypted) free(decrypted);
                                                 
                                                 knishio_wallet_free(test_wallet);
                                             } else {
                                                 is_valid = false;  /* Wallet creation failed */
                                             }
+                                            if (test_secret) free(test_secret);
                                         } else {
                                             is_valid = false;  /* Missing required JSON fields */
                                         }
