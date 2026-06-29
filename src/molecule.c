@@ -1561,12 +1561,16 @@ knishio_error_t knishio_molecule_init_authorization(
 
     /* Meta in JS order: encrypt (from caller), then pubkey + characters (setAtomWallet). */
     {
-        const char* keys[3];
-        const char* vals[3];
+        const char* keys[4];
+        const char* vals[4];
         size_t n = 0;
         keys[n] = "encrypt"; vals[n] = encrypt ? "true" : "false"; n++;
         if (sw->pubkey) {
             keys[n] = "pubkey"; vals[n] = sw->pubkey; n++;
+            /* PQ-transport Phase E: convey the AUTH source wallet's ML-KEM768 public key as a SIGNED
+             * walletPubkey U-atom meta (this U-atom is signed → MITM-proof), so the validator's
+             * extract_enc_pubkey can encrypt CipherHash responses back to THIS wallet. */
+            keys[n] = "walletPubkey"; vals[n] = sw->pubkey; n++;
         }
         if (sw->characters) {
             keys[n] = "characters"; vals[n] = sw->characters; n++;

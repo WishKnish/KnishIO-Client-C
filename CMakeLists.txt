@@ -188,7 +188,8 @@ set(KNISHIO_SOURCES
     src/crypto/bigint.c
     src/crypto/mlkem768.c
     src/crypto/aes_gcm.c
-    
+    src/crypto/cipher_hash.c
+
     # JSON handling
     src/json/parser.c
     src/json/builder.c
@@ -551,6 +552,19 @@ install(TARGETS c_self_test DESTINATION bin)
 if(KNISHIO_BUILD_TESTS)
     # Legacy validator and generator targets removed for SDK self-containment
     # C SDK now has embedded cross-validation in c_self_test executable
+
+    # PQ-transport (Phase E): live ML-KEM CipherHash round-trip test. Gated at runtime on
+    # CIPHERHASH_TEST_URL (skips cleanly → CI-safe even without a reachable validator).
+    add_executable(cipherhash_live_test tests/cipherhash_live_test.c)
+    target_link_libraries(cipherhash_live_test PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(cipherhash_live_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(cipherhash_live_test PRIVATE _GNU_SOURCE)
+    add_test(NAME CipherHashLive COMMAND cipherhash_live_test)
+    set_tests_properties(CipherHashLive PROPERTIES LABELS "integration;network;pq-transport" TIMEOUT 60)
 endif()
 
 # Documentation

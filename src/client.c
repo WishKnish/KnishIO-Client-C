@@ -7,9 +7,55 @@
 #include "knishio/graphql.h"
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
+#include "knishio/crypto/cipher_hash.h"
 #include "client_internal.h"
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
+
+/* cJSON (same include guard as src/json/parser.c) for the PQ-transport wrap/unwrap. */
+#ifdef __has_include
+  #if __has_include(<cjson/cJSON.h>)
+    #include <cjson/cJSON.h>
+  #elif __has_include(<cJSON.h>)
+    #include <cJSON.h>
+  #endif
+#else
+  #include <cjson/cJSON.h>
+#endif
+
+/* PQ-transport (Phase E): whether an outgoing operation should be wrapped in CipherHash. Bypass
+ * (plaintext): __schema/ContinuId queries, the AccessToken mutation, and the U-isotope
+ * ProposeMolecule (auth bootstrap). Mirrors the validator/other-SDK bypass set. */
+static bool cipher_should_encrypt(const knishio_graphql_operation_t* op) {
+    if (!op || !op->name) {
+        return true;
+    }
+    if (strcmp(op->name, "__schema") == 0 || strcmp(op->name, "ContinuId") == 0) {
+        return false;
+    }
+    if (strcmp(op->name, "AccessToken") == 0) {
+        return false;
+    }
+    if (strcmp(op->name, "ProposeMolecule") == 0 && op->variables_json) {
+        cJSON* v = cJSON_Parse(op->variables_json);
+        bool is_u = false;
+        if (v) {
+            cJSON* mol = cJSON_GetObjectItem(v, "molecule");
+            cJSON* atoms = mol ? cJSON_GetObjectItem(mol, "atoms") : NULL;
+            cJSON* a0 = (atoms && cJSON_IsArray(atoms)) ? cJSON_GetArrayItem(atoms, 0) : NULL;
+            cJSON* iso = a0 ? cJSON_GetObjectItem(a0, "isotope") : NULL;
+            if (cJSON_IsString(iso) && strcmp(cJSON_GetStringValue(iso), "U") == 0) {
+                is_u = true;
+            }
+            cJSON_Delete(v);
+        }
+        if (is_u) {
+            return false;
+        }
+    }
+    return true;
+}
 
 /* Client structure - expanded for authentication support */
 struct knishio_client {
@@ -20,6 +66,13 @@ struct knishio_client {
     bool insecure_tls;                  /**< Skip TLS cert verification (dev/self-signed validators) */
     bool initialized;                   /**< Initialization status */
     knishio_client_auth_state_t auth_state; /**< Authentication state */
+
+    /* PQ-transport (Phase E): ML-KEM CipherHash encrypted transport context (set at auth). */
+    bool cipher_enabled;                /**< Encrypt subsequent ops via CipherHash */
+    char *cipher_server_pubkey;         /**< Validator's ML-KEM pubkey (base64), for encrypt */
+    char *cipher_my_pubkey;             /**< This (AUTH) wallet's ML-KEM pubkey (base64), for hashShare */
+    uint8_t *cipher_my_privkey;         /**< This (AUTH) wallet's raw ML-KEM private key, for decrypt */
+    size_t cipher_my_privkey_len;       /**< Length of cipher_my_privkey */
 };
 
 /* Client management implementations */
@@ -39,6 +92,11 @@ knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_c
     new_client->auth_token = NULL;
     new_client->insecure_tls = config->insecure_tls;
     new_client->initialized = false;
+    new_client->cipher_enabled = false;
+    new_client->cipher_server_pubkey = NULL;
+    new_client->cipher_my_pubkey = NULL;
+    new_client->cipher_my_privkey = NULL;
+    new_client->cipher_my_privkey_len = 0;
     
     // Initialize authentication state
     memset(&new_client->auth_state, 0, sizeof(knishio_client_auth_state_t));
@@ -90,7 +148,12 @@ void knishio_client_destroy(knishio_client_t *client) {
     // Clean up strings
     knishio_free(client->uri);
     knishio_free(client->cell_slug);
-    
+
+    // Clean up PQ-transport cipher context
+    if (client->cipher_server_pubkey) knishio_free(client->cipher_server_pubkey);
+    if (client->cipher_my_pubkey) knishio_free(client->cipher_my_pubkey);
+    if (client->cipher_my_privkey) knishio_free(client->cipher_my_privkey);
+
     // Free the client structure
     knishio_free(client);
 }
@@ -229,8 +292,115 @@ knishio_error_t knishio_client_execute_graphql(
         knishio_graphql_client_set_auth_token(gql, client->auth_token);
     }
 
-    error = knishio_graphql_execute(gql, operation, response);
+    /* PQ-transport Phase E: wrap the operation in the ML-KEM CipherHash envelope when encryption is
+     * enabled + the operation isn't bypassed. Encrypt the FULL body string (the validator recovers
+     * it as a JSON string value and parses the inner request). */
+    bool encrypted_request = false;
+    char* body = NULL;
+    char* envelope = NULL;
+    char* cipher_vars = NULL;
+    knishio_graphql_operation_t cipher_op;
+    const knishio_graphql_operation_t* exec_op = operation;
+
+    if (client->cipher_enabled && client->cipher_server_pubkey && client->cipher_my_privkey
+        && cipher_should_encrypt(operation)) {
+        cJSON* body_json = cJSON_CreateObject();
+        if (body_json) {
+            cJSON_AddStringToObject(body_json, "query", operation->query ? operation->query : "");
+            if (operation->variables_json) {
+                cJSON* v = cJSON_Parse(operation->variables_json);
+                cJSON_AddItemToObject(body_json, "variables", v ? v : cJSON_CreateObject());
+            }
+            body = cJSON_PrintUnformatted(body_json);
+            cJSON_Delete(body_json);
+        }
+        if (body && knishio_cipher_hash_encrypt(body, client->cipher_server_pubkey, &envelope) == KNISHIO_SUCCESS) {
+            cJSON* cv = cJSON_CreateObject();
+            if (cv) {
+                cJSON_AddStringToObject(cv, "Hash", envelope);
+                cipher_vars = cJSON_PrintUnformatted(cv);
+                cJSON_Delete(cv);
+            }
+            if (cipher_vars) {
+                cipher_op.name = "CipherHash";
+                cipher_op.query = KNISHIO_CIPHER_HASH_QUERY;
+                cipher_op.variables_json = cipher_vars;
+                cipher_op.requires_auth = operation->requires_auth;
+                cipher_op.is_mutation = false;  /* CipherHash is a query op */
+                exec_op = &cipher_op;
+                encrypted_request = true;
+            }
+        }
+    }
+
+    error = knishio_graphql_execute(gql, exec_op, response);
+
+    /* Decrypt the CipherHash response envelope back to the inner GraphQL response JSON (replaces
+     * response->data for the normal downstream parse). The validator encrypts the response OBJECT,
+     * so the decrypted plaintext is the inner response JSON directly (no JSON-decode). */
+    if (error == KNISHIO_SUCCESS && encrypted_request && *response && (*response)->data) {
+        cJSON* root = cJSON_Parse((*response)->data);
+        if (root) {
+            cJSON* data = cJSON_GetObjectItem(root, "data");
+            cJSON* ch = data ? cJSON_GetObjectItem(data, "CipherHash") : NULL;
+            cJSON* hash = ch ? cJSON_GetObjectItem(ch, "hash") : NULL;
+            if (cJSON_IsString(hash)) {
+                char* inner = NULL;
+                if (knishio_cipher_hash_decrypt(cJSON_GetStringValue(hash), client->cipher_my_pubkey,
+                                                client->cipher_my_privkey, client->cipher_my_privkey_len,
+                                                &inner) == KNISHIO_SUCCESS && inner) {
+                    knishio_free((*response)->data);
+                    (*response)->data = inner;  /* ownership transferred (malloc'd) */
+                }
+            }
+            cJSON_Delete(root);
+        }
+    }
+
+    if (body) free(body);
+    if (envelope) free(envelope);
+    if (cipher_vars) free(cipher_vars);
 
     knishio_graphql_client_free(gql);
     return error;
+}
+
+knishio_error_t knishio_client_set_cipher_context(knishio_client_t* client,
+                                                  const char* server_pubkey_b64,
+                                                  const knishio_wallet_t* source_wallet) {
+    if (!client || !server_pubkey_b64 || !source_wallet) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    /* Replace any prior context. */
+    if (client->cipher_server_pubkey) { knishio_free(client->cipher_server_pubkey); client->cipher_server_pubkey = NULL; }
+    if (client->cipher_my_pubkey)     { knishio_free(client->cipher_my_pubkey);     client->cipher_my_pubkey = NULL; }
+    if (client->cipher_my_privkey)    { knishio_free(client->cipher_my_privkey);    client->cipher_my_privkey = NULL; client->cipher_my_privkey_len = 0; }
+
+    client->cipher_server_pubkey = knishio_strdup(server_pubkey_b64);
+    if (source_wallet->pubkey) {
+        client->cipher_my_pubkey = knishio_strdup(source_wallet->pubkey);
+    }
+    if (source_wallet->privkey_bytes && source_wallet->privkey_bytes_len > 0) {
+        client->cipher_my_privkey = knishio_malloc(source_wallet->privkey_bytes_len);
+        if (client->cipher_my_privkey) {
+            memcpy(client->cipher_my_privkey, source_wallet->privkey_bytes, source_wallet->privkey_bytes_len);
+            client->cipher_my_privkey_len = source_wallet->privkey_bytes_len;
+        }
+    }
+    if (!client->cipher_server_pubkey || !client->cipher_my_pubkey || !client->cipher_my_privkey) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+    return KNISHIO_SUCCESS;
+}
+
+void knishio_client_set_encryption(knishio_client_t* client, bool encrypt) {
+    if (client) {
+        client->cipher_enabled = encrypt;
+    }
+}
+
+void knishio_client_switch_encryption(knishio_client_t* client, bool encrypt) {
+    if (client) {
+        client->cipher_enabled = encrypt;
+    }
 }

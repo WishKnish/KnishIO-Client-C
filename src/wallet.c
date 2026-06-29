@@ -882,6 +882,22 @@ bool knishio_wallet_initialize_mlkem(knishio_wallet_t *wallet) {
 
     knishio_free(wallet->pubkey);
     wallet->pubkey = pubkey_b64;
+
+    /* PQ-transport Phase E: retain the raw ML-KEM768 private key so this wallet can DECRYPT messages
+     * addressed to it (CipherHash responses). Previously only the public key was stored, so the
+     * wallet could encrypt-to-others but never decrypt-for-itself. */
+    if (wallet->privkey_bytes) {
+        knishio_secure_zero(wallet->privkey_bytes, wallet->privkey_bytes_len);
+        knishio_free(wallet->privkey_bytes);
+        wallet->privkey_bytes = NULL;
+        wallet->privkey_bytes_len = 0;
+    }
+    wallet->privkey_bytes = knishio_malloc(sizeof(keypair.private_key));
+    if (wallet->privkey_bytes) {
+        memcpy(wallet->privkey_bytes, keypair.private_key, sizeof(keypair.private_key));
+        wallet->privkey_bytes_len = sizeof(keypair.private_key);
+    }
+    knishio_secure_zero(keypair.private_key, sizeof(keypair.private_key));
     return true;
 }
 

@@ -76,6 +76,10 @@ static knishio_error_t knishio_parse_profile_auth_response(
     knishio_request_profile_auth_token_result_t* result
 );
 
+/* PQ-transport Phase E: extract the validator's advertised ML-KEM pubkey
+ * (data.ProposeMolecule.payload.key) from the profile-auth response. Malloc'd (caller frees), or NULL. */
+static char* knishio_extract_server_pubkey(const char* response_data);
+
 /* Request guest authentication token */
 knishio_error_t knishio_client_request_guest_auth_token(
     knishio_client_t* client,
@@ -339,6 +343,16 @@ knishio_error_t knishio_client_request_profile_auth_token(
                 knishio_client_set_auth_token(client, auth_token);
             }
         }
+
+        /* PQ-transport Phase E: plumb the validator's advertised ML-KEM pubkey + the AUTH source
+         * wallet (which decrypts CipherHash responses) into the client, and set the session
+         * encryption flag to match the requested mode. */
+        char* server_pubkey = knishio_extract_server_pubkey(response->data);
+        if (server_pubkey) {
+            knishio_client_set_cipher_context(client, server_pubkey, source);
+            knishio_free(server_pubkey);
+        }
+        knishio_client_set_encryption(client, params->encrypt);
     } else {
         auth_result->success = false;
         auth_result->error_message = knishio_strdup(
@@ -580,6 +594,43 @@ static knishio_error_t knishio_parse_profile_auth_response(
 
     knishio_json_free(json);
     return KNISHIO_SUCCESS;
+}
+
+/* PQ-transport Phase E: extract the validator's advertised ML-KEM pubkey from the profile-auth
+ * response (data.ProposeMolecule.payload.key). Mirrors knishio_parse_profile_auth_response's
+ * navigation (copy borrowed strings out BEFORE freeing the node — get_string_path is use-after-free). */
+static char* knishio_extract_server_pubkey(const char* response_data) {
+    if (!response_data) {
+        return NULL;
+    }
+    char* result = NULL;
+    knishio_json_t* json = knishio_json_parse(response_data, NULL);
+    if (!json) {
+        return NULL;
+    }
+    knishio_json_t* payload_node = knishio_json_get_path(json, "data.ProposeMolecule.payload");
+    if (payload_node) {
+        const char* payload_str = knishio_json_get_string(payload_node);
+        char* payload_copy = payload_str ? knishio_strdup(payload_str) : NULL;
+        knishio_json_free(payload_node);
+        if (payload_copy) {
+            knishio_json_t* payload_json = knishio_json_parse(payload_copy, NULL);
+            if (payload_json) {
+                knishio_json_t* key_node = knishio_json_get_path(payload_json, "key");
+                if (key_node) {
+                    const char* key = knishio_json_get_string(key_node);
+                    if (key) {
+                        result = knishio_strdup(key);
+                    }
+                    knishio_json_free(key_node);
+                }
+                knishio_json_free(payload_json);
+            }
+            knishio_free(payload_copy);
+        }
+    }
+    knishio_json_free(json);
+    return result;
 }
 
 /* Free guest auth token result */
