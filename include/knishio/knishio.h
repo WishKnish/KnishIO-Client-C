@@ -20,9 +20,9 @@ extern "C" {
 
 /* Version information */
 #define KNISHIO_VERSION_MAJOR 0
-#define KNISHIO_VERSION_MINOR 8
-#define KNISHIO_VERSION_PATCH 1
-#define KNISHIO_VERSION_STRING "0.8.1"
+#define KNISHIO_VERSION_MINOR 9
+#define KNISHIO_VERSION_PATCH 0
+#define KNISHIO_VERSION_STRING "0.9.0"
 
 /* Forward declarations for opaque types */
 typedef struct knishio_client knishio_client_t;
