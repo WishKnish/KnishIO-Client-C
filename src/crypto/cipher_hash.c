@@ -69,7 +69,10 @@ knishio_error_t knishio_cipher_hash_encrypt(const char* body, const char* server
     cJSON* envelope = NULL;
     cJSON* inner = NULL;
 
-    /* 1. Decode the server's ML-KEM public key. */
+    /* 1. Decode + validate the server's ML-KEM public key (exactly 1184 bytes). A wrong length —
+     *    e.g. a node predating the PQ-transport build that advertised a non-ML-KEM `key` — returns a
+     *    clean KNISHIO_ERROR_INVALID_ARGS rather than failing deep inside encapsulate. This is the C
+     *    analogue of the other SDKs' encrypt guards (which throw an actionable error). */
     if (!knishio_base64_decode(server_pubkey_b64, &pubkey_raw, &pubkey_raw_len)
         || pubkey_raw_len != KNISHIO_MLKEM768_PUBKEY_BYTES) {
         err = KNISHIO_ERROR_INVALID_ARGS;
