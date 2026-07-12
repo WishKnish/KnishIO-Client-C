@@ -2435,8 +2435,47 @@ int main(void) {
                                     g_results.crypto.passed = cJSON_IsTrue(passed);
                                 }
                             }
-                            
-                            /* Copy other test results similarly - just mark as loaded */
+
+                            /* Copy each molecule test result (passed / molecularHash / atomCount)
+                             * so the Round 2 rewrite doesn't zero them out. */
+                            struct { const char* key; molecule_test_result_t* dst; } test_map[] = {
+                                { "metaCreation",      &g_results.meta_creation },
+                                { "simpleTransfer",    &g_results.simple_transfer },
+                                { "complexTransfer",   &g_results.complex_transfer },
+                                { "tokenCreation",     &g_results.token_creation },
+                                { "walletCreation",    &g_results.wallet_creation },
+                                { "shadowWalletClaim", &g_results.shadow_wallet_claim },
+                            };
+                            for (size_t tm = 0; tm < sizeof(test_map) / sizeof(test_map[0]); tm++) {
+                                cJSON* t = cJSON_GetObjectItem(existing_tests, test_map[tm].key);
+                                if (!t) continue;
+                                cJSON* tp = cJSON_GetObjectItem(t, "passed");
+                                if (tp && cJSON_IsBool(tp)) test_map[tm].dst->passed = cJSON_IsTrue(tp);
+                                cJSON* th = cJSON_GetObjectItem(t, "molecularHash");
+                                if (th && cJSON_IsString(th) && strlen(cJSON_GetStringValue(th)) > 0) {
+                                    test_map[tm].dst->molecular_hash = safe_strdup(cJSON_GetStringValue(th));
+                                }
+                                cJSON* ta = cJSON_GetObjectItem(t, "atomCount");
+                                if (ta && cJSON_IsNumber(ta)) test_map[tm].dst->atom_count = (int)cJSON_GetNumberValue(ta);
+                                cJSON* tr = cJSON_GetObjectItem(t, "hasRemainder");
+                                if (tr && cJSON_IsBool(tr)) test_map[tm].dst->has_remainder = cJSON_IsTrue(tr);
+                            }
+
+                            /* Copy mlkem768 test result */
+                            cJSON* mlkem_test = cJSON_GetObjectItem(existing_tests, "mlkem768");
+                            if (mlkem_test) {
+                                cJSON* mp = cJSON_GetObjectItem(mlkem_test, "passed");
+                                if (mp && cJSON_IsBool(mp)) g_results.mlkem768.passed = cJSON_IsTrue(mp);
+                                cJSON* mk = cJSON_GetObjectItem(mlkem_test, "publicKeyGenerated");
+                                if (mk && cJSON_IsBool(mk)) g_results.mlkem768.public_key_generated = cJSON_IsTrue(mk);
+                                cJSON* me = cJSON_GetObjectItem(mlkem_test, "encryptionSuccess");
+                                if (me && cJSON_IsBool(me)) g_results.mlkem768.encryption_success = cJSON_IsTrue(me);
+                                cJSON* md = cJSON_GetObjectItem(mlkem_test, "decryptionSuccess");
+                                if (md && cJSON_IsBool(md)) g_results.mlkem768.decryption_success = cJSON_IsTrue(md);
+                                cJSON* ml = cJSON_GetObjectItem(mlkem_test, "plaintextLength");
+                                if (ml && cJSON_IsNumber(ml)) g_results.mlkem768.plaintext_length = (int)cJSON_GetNumberValue(ml);
+                            }
+
                             loaded_existing = true;
                             printf("✅ Loaded existing Round 1 results for preservation\n");
                         }
@@ -2465,6 +2504,30 @@ int main(void) {
                                 const char* complex_str = cJSON_GetStringValue(complex);
                                 if (complex_str && strlen(complex_str) > 0) {
                                     g_results.molecules_complex_transfer = safe_strdup(complex_str);
+                                }
+                            }
+
+                            cJSON* token_creation = cJSON_GetObjectItem(existing_molecules, "tokenCreation");
+                            if (token_creation && cJSON_IsString(token_creation)) {
+                                const char* token_creation_str = cJSON_GetStringValue(token_creation);
+                                if (token_creation_str && strlen(token_creation_str) > 0) {
+                                    g_results.molecules_token_creation = safe_strdup(token_creation_str);
+                                }
+                            }
+
+                            cJSON* wallet_creation = cJSON_GetObjectItem(existing_molecules, "walletCreation");
+                            if (wallet_creation && cJSON_IsString(wallet_creation)) {
+                                const char* wallet_creation_str = cJSON_GetStringValue(wallet_creation);
+                                if (wallet_creation_str && strlen(wallet_creation_str) > 0) {
+                                    g_results.molecules_wallet_creation = safe_strdup(wallet_creation_str);
+                                }
+                            }
+
+                            cJSON* shadow_claim = cJSON_GetObjectItem(existing_molecules, "shadowWalletClaim");
+                            if (shadow_claim && cJSON_IsString(shadow_claim)) {
+                                const char* shadow_claim_str = cJSON_GetStringValue(shadow_claim);
+                                if (shadow_claim_str && strlen(shadow_claim_str) > 0) {
+                                    g_results.molecules_shadow_wallet_claim = safe_strdup(shadow_claim_str);
                                 }
                             }
 

@@ -12,7 +12,7 @@ if(NOT UNITY_FOUND)
     FetchContent_Declare(
         unity
         GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
-        GIT_TAG v2.5.2
+        GIT_TAG v2.6.1
     )
     set(UNITY_EXTENSION_FIXTURE ON CACHE BOOL "Enable Unity fixtures")
     FetchContent_MakeAvailable(unity)

@@ -17,11 +17,12 @@ Ensure you have the following dependencies installed:
 
 - **CMake** 3.16 or higher
 - **C17 compatible compiler** (GCC 9+, Clang 10+, or MSVC 2019+)
-- **liboqs** for quantum-resistant cryptography
-- **libwebsockets** for real-time subscriptions
-- **libcurl** for HTTP/GraphQL communication
-- **cjson** for JSON parsing and generation
-- **GMP** for arbitrary precision arithmetic
+- **OpenSSL** for AES-256-GCM (EVP) and hashing (required)
+- **libcurl** for HTTP/GraphQL communication (required)
+- **cjson** for JSON parsing and generation (required)
+- **GMP** for arbitrary precision arithmetic (required)
+- **liboqs** for quantum-resistant cryptography (optional — ML-KEM768 is provided by the vendored `mlkem-native` submodule; when liboqs is absent the build simply omits the liboqs code path)
+- **libwebsockets** for real-time subscriptions (optional — when absent, WebSocket subscriptions fall back to a stub implementation)
 
 ### Platform-Specific Installation
 
@@ -32,8 +33,23 @@ brew install cmake liboqs libwebsockets curl cjson gmp
 
 #### Ubuntu/Debian
 ```bash
-sudo apt-get install cmake liboqs-dev libwebsockets-dev libcurl4-openssl-dev libcjson-dev libgmp-dev
+sudo apt-get install cmake liboqs-dev libwebsockets-dev libcurl4-openssl-dev libcjson-dev libgmp-dev libssl-dev
 ```
+
+### System dependencies
+
+These libraries are resolved from the **host system** (via `pkg-config` / `find_library`) and are **not** vendored or version-pinned by the build. Because they live outside this repo, their security posture is the responsibility of the host: keep them patched with your platform package manager (`brew upgrade`, `apt upgrade`, etc.).
+
+| Library       | Role                                          | Required? | Verified on build host |
+|---------------|-----------------------------------------------|-----------|------------------------|
+| OpenSSL       | AES-256-GCM (EVP) and hashing                 | Yes       | 3.6.3                  |
+| libcurl       | HTTP / GraphQL transport                      | Yes       | 8.7.1                  |
+| libcjson      | JSON parsing and generation                   | Yes       | 1.7.19                 |
+| GMP           | Arbitrary-precision arithmetic (key derivation) | Yes     | 6.3.0                  |
+| liboqs        | Optional liboqs KEM/signature path            | No        | not installed (stub)   |
+| libwebsockets | Real-time GraphQL subscriptions               | No        | not installed (stub)   |
+
+"Verified on build host" is the version this SDK was last built and self-tested against; it is not a ceiling. Newer patch/minor releases are expected to work and should be preferred for security updates. The optional libraries are absent on the reference build host with no impact on cryptographic parity — ML-KEM768 is provided by the vendored `mlkem-native` submodule (see the Vendored crypto pin note below), not liboqs.
 
 #### Build Instructions
 1. Clone and build the SDK:
@@ -48,7 +64,7 @@ sudo apt-get install cmake liboqs-dev libwebsockets-dev libcurl4-openssl-dev lib
    make -j$(nproc)
    ```
 
-   > **Submodule pin:** `external/mlkem-native` is pinned to **cf895dd5 (v1.0.0-116)** — the commit CI builds and the cross-SDK family is aligned to. Keep your working tree at the pin with `git submodule update --init` (a `git status` showing `M external/mlkem-native` means it has drifted); don't bump it ad hoc, so local builds stay identical to what CI tests and ships.
+   > **Vendored crypto pin:** `external/mlkem-native` (ML-KEM768, FIPS 203) is pinned to **v1.2.0 (`0ba906cb`)** from [pq-code-package/mlkem-native](https://github.com/pq-code-package/mlkem-native) — the commit CI builds and the cross-SDK family is aligned to. This pin was advanced from the earlier `cf895dd5 (v1.0.0-116)` to pick up the v1.1.0 security fixes: zeroization of secret `pk`/`sk` buffers on keypair-generation failure, zeroization of the intermediate `pkpv` polynomial vector, a bounded x86_64 rejection-sampling buffer overread, and a hardened (`volatile`) value barrier. The bump is output-preserving — the self-test's ML-KEM768 keygen vector still matches byte-for-byte across all SDKs. Keep your working tree at the pin with `git submodule update --init` (a `git status` showing `M external/mlkem-native` means it has drifted); don't bump it ad hoc, so local builds stay identical to what CI tests and ships. Bump only for a genuine upstream security fix, and only after the full self-test still passes byte-identically.
 
 2. Install system-wide (optional):
    ```bash

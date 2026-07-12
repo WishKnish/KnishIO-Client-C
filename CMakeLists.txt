@@ -1,7 +1,7 @@
 # KnishIO C Client SDK
 cmake_minimum_required(VERSION 3.16)
 project(KnishIO-Client-C
-    VERSION 0.9.1
+    VERSION 0.9.2
     DESCRIPTION "KnishIO C Client SDK for post-blockchain DLT"
     LANGUAGES C
 )
@@ -458,7 +458,7 @@ if(KNISHIO_BUILD_TESTS)
     FetchContent_Declare(
         Unity
         GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
-        GIT_TAG v2.5.2
+        GIT_TAG v2.6.1
     )
     FetchContent_MakeAvailable(Unity)
     
