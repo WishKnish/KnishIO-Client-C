@@ -30,6 +30,16 @@ on:
   push:
     tags:
       - '[0-9]*'
+  # Dry run. This workflow is otherwise reachable only by pushing a tag, which publishes — so
+  # every change to it would ship unexercised. A dispatch runs the gate and the full
+  # build/self-test/package path and stops before the release, because the release job is
+  # guarded on `github.event_name == 'push'`.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version to dry-run the gate against, e.g. 0.9.3. Releases NOTHING.'
+        required: true
+        type: string
 
 permissions:
   contents: write   # create the GitHub Release; no registry auth needed
@@ -41,7 +51,7 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Two independent places declare "what version is this SDK": CMakeLists.txt's
       # project(... VERSION ...) and the hardcoded KNISHIO_VERSION_STRING literal in
@@ -51,29 +61,24 @@ jobs:
       # doesn't itself claim -- the C++ sibling SDK once let a stale binary report v0.9.1
       # after its own CMakeLists.txt had already moved to 0.9.2, undetected until an
       # external audit went looking. Fail here, before anything is built.
+      # Logic lives in .github/scripts/check-version.sh so it can be run locally and by CI on
+      # every push, not only when a tag is pushed. A gate reachable only through a release is
+      # a gate that ships unproven.
       - name: Verify tag == CMakeLists.txt VERSION == knishio.h KNISHIO_VERSION_STRING
         id: check
+        # DISPATCH_TAG arrives via env, never interpolated into the shell text
+        # (workflow-injection hygiene).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF#refs/tags/}"
-
-          CMAKE_VERSION=$(grep -A5 'project(' CMakeLists.txt | grep -oE 'VERSION[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' | head -1 | awk '{print $2}')
-          HEADER_VERSION=$(grep -oE 'KNISHIO_VERSION_STRING[[:space:]]+"[0-9]+\.[0-9]+\.[0-9]+"' include/knishio/knishio.h | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-
-          echo "tag=$TAG  CMakeLists.txt=$CMAKE_VERSION  knishio.h=$HEADER_VERSION"
-
-          mismatches=()
-          [[ "$TAG" == "$CMAKE_VERSION" ]]  || mismatches+=("tag '$TAG' != CMakeLists.txt VERSION '$CMAKE_VERSION'")
-          [[ "$TAG" == "$HEADER_VERSION" ]] || mismatches+=("tag '$TAG' != knishio.h KNISHIO_VERSION_STRING '$HEADER_VERSION'")
-
-          if [[ ${#mismatches[@]} -gt 0 ]]; then
-            echo "::error::version mismatch -- refusing to release"
-            printf '::error::%s\n' "${mismatches[@]}"
-            exit 1
+          if [ "$EVENT_NAME" = "push" ]; then
+            EXPECTED="${GITHUB_REF#refs/tags/}"
+          else
+            EXPECTED="$DISPATCH_TAG"
           fi
-
-          echo "OK: tag, CMakeLists.txt, and knishio.h all agree on $TAG"
-          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          bash .github/scripts/check-version.sh "$EXPECTED"
 
   package:
     name: build + self-test + lint + package (${{ matrix.platform }})
@@ -88,7 +93,7 @@ jobs:
             platform: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive   # fetch external/mlkem-native (vendored ML-KEM768)
 
@@ -182,7 +187,7 @@ jobs:
       - name: Create tarball
         run: tar czf "dist/${STAGE_NAME}.tar.gz" -C dist "$STAGE_NAME"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.platform }}
           path: dist/*.tar.gz
@@ -191,15 +196,16 @@ jobs:
   release:
     name: create GitHub Release
     needs: [version-gate, package]
+    if: github.event_name == 'push'   # dispatch = dry run; never creates a Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: dist/*.tar.gz
