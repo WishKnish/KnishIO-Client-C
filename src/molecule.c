@@ -513,132 +513,6 @@ knishio_error_t knishio_molecule_sign(
     return KNISHIO_SUCCESS;
 }
 
-knishio_error_t knishio_molecule_check(
-    const knishio_molecule_t* molecule,
-    const knishio_wallet_t* sender_wallet
-) {
-    if (!molecule) {
-        return KNISHIO_ERROR_INVALID_ARGS;
-    }
-
-    /* Check basic molecule validity */
-    if (molecule->atom_count == 0) {
-        return KNISHIO_ERROR_ATOMS_MISSING;
-    }
-
-    if (!molecule->molecular_hash) {
-        return KNISHIO_ERROR_MOLECULAR_HASH_MISSING;
-    }
-
-    /* Verify molecular hash matches actual atom composition */
-    knishio_molecule_t* temp_mol = knishio_malloc(sizeof(knishio_molecule_t));
-    if (!temp_mol) {
-        return KNISHIO_ERROR_MEMORY;
-    }
-    memcpy(temp_mol, molecule, sizeof(knishio_molecule_t));
-    temp_mol->molecular_hash = NULL;
-    
-    knishio_error_t error = knishio_molecule_generate_hash(temp_mol);
-    if (error != KNISHIO_SUCCESS) {
-        temp_mol->molecular_hash = NULL;  /* Don't free original hash */
-        knishio_free(temp_mol);
-        return error;
-    }
-    
-    bool hash_matches = (strcmp(temp_mol->molecular_hash, molecule->molecular_hash) == 0);
-    knishio_free(temp_mol->molecular_hash);
-    temp_mol->molecular_hash = NULL;
-    knishio_free(temp_mol);
-    
-    if (!hash_matches) {
-        return KNISHIO_ERROR_MOLECULAR_HASH_MISMATCH;
-    }
-
-    /* Check if molecule is signed (has OTS fragments) */
-    bool has_signature = false;
-    for (size_t i = 0; i < molecule->atom_count; i++) {
-        if (molecule->atoms[i]->ots_fragment && strlen(molecule->atoms[i]->ots_fragment) > 0) {
-            has_signature = true;
-            break;
-        }
-    }
-
-    if (!has_signature) {
-        /* Unsigned molecule - basic validation only */
-        return KNISHIO_SUCCESS;
-    }
-
-    /* DEBUG: Skip complex OTS verification for now - focus on basic validation */
-    /* DEBUG removed to prevent JSON corruption */
-    
-    /* Simplified V-isotope validation (matches JavaScript CheckMolecule.isotopeV) */
-    double total_value = 0.0;
-    int v_atom_count = 0;
-    
-    for (size_t i = 0; i < molecule->atom_count; i++) {
-        knishio_atom_t* atom = knishio_molecule_get_atom(molecule, i);
-        if (atom && atom->isotope == KNISHIO_ISOTOPE_V) {
-            v_atom_count++;
-            
-            if (atom->value) {
-                double value = atof(atom->value);
-                total_value += value;
-                /* DEBUG removed to prevent JSON corruption */
-            }
-        }
-    }
-    
-    /* DEBUG removed to prevent JSON corruption */
-    
-    /* All V atoms must sum to zero for balanced transaction (JavaScript logic) */
-    if (v_atom_count > 0) {
-        bool balanced = (fabs(total_value) < 0.01);
-        /* DEBUG removed to prevent JSON corruption */
-        
-        if (!balanced) {
-            /* DEBUG removed to prevent JSON corruption */
-            return KNISHIO_ERROR_INVALID_STATE;
-        }
-        
-        /* Additional sender wallet validation if provided (JavaScript logic) */
-        if (sender_wallet) {
-            knishio_atom_t* first_atom = knishio_molecule_get_atom(molecule, 0);
-            if (first_atom && first_atom->isotope == KNISHIO_ISOTOPE_V && first_atom->value) {
-                double first_value = atof(first_atom->value);
-                double remainder = sender_wallet->balance + first_value;
-                
-                /* DEBUG removed to prevent JSON corruption */
-                
-                if (remainder < 0) {
-                    /* DEBUG removed to prevent JSON corruption */
-                    return KNISHIO_ERROR_INVALID_STATE;
-                }
-                
-                /* JavaScript logic: remainder should equal total_value (which should be 0) */
-                if (fabs(remainder - total_value) > 0.01) {
-                    /* DEBUG removed to prevent JSON corruption */
-                    return KNISHIO_ERROR_INVALID_STATE;
-                }
-            }
-        }
-    }
-
-    /* For now, just verify that all atoms have consistent properties */
-    const char* first_token = molecule->atoms[0]->token;
-    for (size_t i = 1; i < molecule->atom_count; i++) {
-        if (molecule->atoms[i]->token && first_token) {
-            if (strcmp(molecule->atoms[i]->token, first_token) != 0) {
-                /* Atoms should generally have same token unless it's a fusion */
-                knishio_isotope_t isotope = molecule->atoms[i]->isotope;
-                if (isotope != KNISHIO_ISOTOPE_F) {
-                    return KNISHIO_ERROR_INVALID_ARGS;
-                }
-            }
-        }
-    }
-
-    return KNISHIO_SUCCESS;
-}
 
 /* Helper function to convert hex to base17 using proper base conversion */
 static char* hex_to_base17(const char* hex_hash) {
@@ -1996,6 +1870,173 @@ knishio_error_t knishio_molecule_init_values(
     }
 
     return KNISHIO_SUCCESS;
+}
+
+/* Attach walletBundle meta to an atom, replacing whatever is there.
+ * Mirrors the inline sequence used by init_value/init_values. */
+static void set_wallet_bundle_meta(knishio_atom_t* atom, const char* bundle_hash) {
+    if (!atom) {
+        return;
+    }
+    if (atom->meta_type) knishio_free(atom->meta_type);
+    if (atom->meta_id) knishio_free(atom->meta_id);
+    atom->meta_type = knishio_strdup("walletBundle");
+    atom->meta_id = bundle_hash ? knishio_strdup(bundle_hash) : NULL;
+}
+
+/* Shared body for the two buffer builders.
+ *
+ * Deposit and withdraw are the same three-atom shape with the isotopes swapped:
+ *   deposit  V(-balance) -> B(+amount) -> V(+remainder)
+ *   withdraw B(-balance) -> V(+amount) -> B(+remainder)
+ * so `outer` is the isotope on the source and remainder atoms, `middle` the one on the
+ * recipient/buffer atom. Writing it once keeps the two directions from drifting apart —
+ * an asymmetry between them is exactly the defect that shipped in the Rust SDK.
+ */
+static knishio_error_t init_buffer_common(
+    knishio_molecule_t* molecule,
+    knishio_wallet_t* middle_wallet,
+    int amount,
+    bool deposit
+) {
+    if (!molecule || !middle_wallet) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+
+    if (!molecule->source_wallet || !molecule->remainder_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    if (amount < 0) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+
+    if (molecule->source_wallet->balance < amount) {
+        return KNISHIO_ERROR_BALANCE_INSUFFICIENT;
+    }
+
+    const int balance = (int)molecule->source_wallet->balance;
+
+    /* Deposit moves V -> B, withdraw moves B -> V. */
+    const knishio_isotope_t outer  = deposit ? KNISHIO_ISOTOPE_V : KNISHIO_ISOTOPE_B;
+    const knishio_isotope_t middle = deposit ? KNISHIO_ISOTOPE_B : KNISHIO_ISOTOPE_V;
+
+    /* The metaId each atom carries is NOT uniformly its own wallet's bundle, and the two
+     * operations disagree — mirroring JS Molecule.initDepositBuffer/initWithdrawBuffer and
+     * the C++ port:
+     *
+     *   deposit : middle B  -> SOURCE bundle      remainder V -> SOURCE bundle
+     *   withdraw: middle V  -> RECIPIENT bundle   remainder B -> REMAINDER bundle
+     *
+     * Every wallet shares one bundle in the self-test path, so all four choices are
+     * coincidentally equal there; the difference only shows cross-SDK against a distinct
+     * recipient bundle. Likewise the withdrawn V atom takes the SOURCE token (JS uses
+     * this.sourceWallet.token), while a deposit's B atom takes the buffer wallet's. */
+    const char* middle_token = deposit ? middle_wallet->token
+                                       : molecule->source_wallet->token;
+    const char* middle_meta_id = deposit ? molecule->source_wallet->bundle_hash
+                                         : middle_wallet->bundle_hash;
+    const char* remainder_meta_id = deposit ? molecule->source_wallet->bundle_hash
+                                            : molecule->remainder_wallet->bundle_hash;
+
+    /* Source: full-balance debit, so a PARTIAL buffer op still conserves. */
+    knishio_atom_t* source_atom = NULL;
+    char source_value[32];
+    snprintf(source_value, sizeof(source_value), "-%d", balance);
+
+    knishio_error_t result = knishio_atom_create(
+        &source_atom,
+        knishio_wallet_get_position(molecule->source_wallet),
+        knishio_wallet_get_address(molecule->source_wallet),
+        outer,
+        molecule->source_wallet->token,
+        source_value,
+        molecule->source_wallet->batch_id
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+
+    /* B atoms must carry walletBundle meta; the V source in a deposit does not. */
+    if (outer == KNISHIO_ISOTOPE_B) {
+        set_wallet_bundle_meta(source_atom, molecule->source_wallet->bundle_hash);
+    }
+
+    result = knishio_molecule_add_atom(molecule, source_atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(source_atom);
+        return result;
+    }
+
+    /* Middle: the buffered (deposit) or withdrawn (withdraw) amount. */
+    knishio_atom_t* middle_atom = NULL;
+    char middle_value[32];
+    snprintf(middle_value, sizeof(middle_value), "%d", amount);
+
+    result = knishio_atom_create(
+        &middle_atom,
+        knishio_wallet_get_position(middle_wallet),
+        knishio_wallet_get_address(middle_wallet),
+        middle,
+        middle_token,
+        middle_value,
+        middle_wallet->batch_id
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+
+    set_wallet_bundle_meta(middle_atom, middle_meta_id);
+
+    result = knishio_molecule_add_atom(molecule, middle_atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(middle_atom);
+        return result;
+    }
+
+    /* Remainder: whatever the full-balance debit did not send. */
+    knishio_atom_t* remainder_atom = NULL;
+    char remainder_value[32];
+    snprintf(remainder_value, sizeof(remainder_value), "%d", balance - amount);
+
+    result = knishio_atom_create(
+        &remainder_atom,
+        knishio_wallet_get_position(molecule->remainder_wallet),
+        knishio_wallet_get_address(molecule->remainder_wallet),
+        outer,
+        molecule->remainder_wallet->token,
+        remainder_value,
+        molecule->remainder_wallet->batch_id
+    );
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+
+    set_wallet_bundle_meta(remainder_atom, remainder_meta_id);
+
+    result = knishio_molecule_add_atom(molecule, remainder_atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free(remainder_atom);
+        return result;
+    }
+
+    return KNISHIO_SUCCESS;
+}
+
+knishio_error_t knishio_molecule_init_deposit_buffer(
+    knishio_molecule_t* molecule,
+    knishio_wallet_t* buffer_wallet,
+    int amount
+) {
+    return init_buffer_common(molecule, buffer_wallet, amount, true);
+}
+
+knishio_error_t knishio_molecule_init_withdraw_buffer(
+    knishio_molecule_t* molecule,
+    knishio_wallet_t* recipient_wallet,
+    int amount
+) {
+    return init_buffer_common(molecule, recipient_wallet, amount, false);
 }
 
 /**

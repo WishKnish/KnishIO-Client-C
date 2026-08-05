@@ -152,6 +152,7 @@ typedef struct {
 
 typedef struct {
     bool passed;
+    bool skipped;          /**< true when a required fixture was absent; NEVER a pass */
     char *molecular_hash;
     int atom_count;
     bool has_remainder;
@@ -185,6 +186,8 @@ typedef struct {
     molecule_test_result_t token_creation;
     molecule_test_result_t wallet_creation;
     molecule_test_result_t shadow_wallet_claim;
+    molecule_test_result_t buffer_family;
+    molecule_test_result_t wots_roundtrip;
     mlkem768_test_result_t mlkem768;
     negative_test_result_t negative_cases;
     char *molecules_metadata;
@@ -195,6 +198,15 @@ typedef struct {
     char *molecules_shadow_wallet_claim;
     char *molecules_mlkem768;
     bool cross_sdk_compatible;
+    /* Cross-validation COVERAGE, not just its verdict.
+     *
+     * cross_sdk_compatible on its own cannot distinguish "validated all seven peers and
+     * they all passed" from "validated nothing and therefore found no failures". Both
+     * used to serialise as true. Recording how many peers were actually validated makes
+     * a vacuous pass detectable by the orchestrator and by anyone reading the file. */
+    int cross_peers_expected;
+    int cross_peers_validated;
+    bool cross_validation_ran;
 } test_results_t;
 
 /* Global test configuration and results */
@@ -1657,6 +1669,462 @@ vcleanup:
  * Test 6: Negative Test Cases (Anti-Cheating)
  * Validates that invalid molecules properly fail validation
  */
+/* ---- Shared canonical-vector helpers (used by W1 and B1) ---------------------------- */
+
+/* Read the canonical vectors: explicit override, the vendored fixture, then the
+ * orchestrator's shared directory. Returns NULL if none is readable. */
+static cJSON *load_canonical_vectors(void) {
+    const char *candidates[3];
+    int count = 0;
+    char shared_path[MAX_PATH_LENGTH];
+
+    const char *env_vectors = getenv("KNISHIO_CANONICAL_VECTORS");
+    if (env_vectors) candidates[count++] = env_vectors;
+    candidates[count++] = "tests/fixtures/canonical-patent-vectors.json";
+    const char *shared_dir = getenv("KNISHIO_SHARED_RESULTS");
+    if (shared_dir) {
+        snprintf(shared_path, sizeof(shared_path), "%s/canonical-patent-vectors.json", shared_dir);
+        candidates[count++] = shared_path;
+    }
+
+    for (int i = 0; i < count; i++) {
+        FILE *f = fopen(candidates[i], "r");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        cJSON *parsed = NULL;
+        if (size > 0) {
+            char *buf = malloc((size_t)size + 1);
+            if (buf) {
+                size_t n = fread(buf, 1, (size_t)size, f);
+                buf[n] = '\0';
+                parsed = cJSON_Parse(buf);
+                free(buf);
+            }
+        }
+        fclose(f);
+        if (parsed) return parsed;
+    }
+    return NULL;
+}
+
+static int vec_int(const cJSON *obj, const char *key) {
+    const cJSON *item = cJSON_GetObjectItem(obj, key);
+    return (item && cJSON_IsNumber(item)) ? (int)cJSON_GetNumberValue(item) : 0;
+}
+
+static const char *vec_str(const cJSON *obj, const char *key) {
+    const cJSON *item = cJSON_GetObjectItem(obj, key);
+    return (item && cJSON_IsString(item)) ? cJSON_GetStringValue(item) : "";
+}
+
+/* ---- W1. WOTS+ roundtrip, vector-driven ---------------------------------------------
+ *
+ * Asserts the OTS address primitive directly, independent of any molecule. The protocol
+ * address is a TWO-PASS derivation: hash each of the 16 key chunks 16 times, join the
+ * public fragments, digest = SHAKE256(joined, 8192), address = SHAKE256(digest, 256).
+ * A single-pass derivation produces a different, wrong address — the canonical vector was
+ * corrected for exactly that across all SDKs.
+ *
+ * This isolates the primitive from the plumbing: if this passes and CheckMolecule's OTS
+ * verification fails, the fault is in the molecule path, not the crypto. C and C++ were
+ * the only SDKs without this coverage.
+ */
+static bool test_wots_roundtrip(test_results_t *results) {
+    log_message("\nW1. WOTS+ Roundtrip Test (OTS address, vector-driven)", COLOR_BLUE);
+
+    cJSON *vectors_root = load_canonical_vectors();
+    if (!vectors_root) {
+        const char *require = getenv("KNISHIO_REQUIRE_VECTORS");
+        bool must_have = require && strcmp(require, "true") == 0;
+        results->wots_roundtrip.passed = false;
+        results->wots_roundtrip.skipped = !must_have;
+        results->wots_roundtrip.validation_error =
+            safe_strdup("canonical-patent-vectors.json absent");
+        if (must_have) {
+            log_message("  FAILED: canonical-patent-vectors.json absent "
+                        "(KNISHIO_REQUIRE_VECTORS=true)", COLOR_RED);
+            return false;
+        }
+        log_message("  SKIPPED: canonical-patent-vectors.json absent (standalone CI)", COLOR_YELLOW);
+        return true;
+    }
+
+    const cJSON *vectors = cJSON_GetObjectItem(vectors_root, "vectors");
+    const cJSON *family = cJSON_GetObjectItem(vectors, "wots_roundtrip");
+    const cJSON *tests = family ? cJSON_GetObjectItem(family, "tests") : NULL;
+    if (!tests) {
+        results->wots_roundtrip.passed = false;
+        results->wots_roundtrip.validation_error = safe_strdup("wots_roundtrip absent from vectors");
+        log_message("  FAILED: wots_roundtrip absent from vectors", COLOR_RED);
+        cJSON_Delete(vectors_root);
+        return false;
+    }
+
+    bool all_pass = true;
+    int case_count = 0;
+    char *last_address = NULL;
+
+    const cJSON *tv = NULL;
+    cJSON_ArrayForEach(tv, tests) {
+        const char *name = vec_str(tv, "name");
+        const char *secret = vec_str(tv, "secret");
+        const char *token = vec_str(tv, "token");
+        const char *position = vec_str(tv, "position");
+        const char *expected = vec_str(tv, "expectedOtsAddress");
+
+        char *private_key = NULL;
+        char *address = NULL;
+        bool ok = knishio_generate_wallet_key(secret, token, position, &private_key);
+
+        /* The key must be 2048 hex chars = 16 chunks of 128, or the chunking below is
+         * silently wrong rather than absent. */
+        ok = ok && private_key && strlen(private_key) == KNISHIO_PRIVKEY_LENGTH;
+        ok = ok && knishio_generate_address(private_key, &address);
+        ok = ok && address && strlen(address) == KNISHIO_ADDRESS_LENGTH;
+
+        bool matches = ok && safe_strcmp(address, expected);
+
+        char detail[200];
+        if (!ok) {
+            snprintf(detail, sizeof(detail), "key/address generation failed");
+        } else if (!matches) {
+            snprintf(detail, sizeof(detail), "got %s, expected %s", address, expected);
+        }
+
+        char label[160];
+        snprintf(label, sizeof(label), "%s: OTS address matches canonical vector (two-pass)", name);
+        log_test(label, matches, matches ? NULL : detail);
+        all_pass = all_pass && matches;
+        case_count++;
+
+        if (address) {
+            if (last_address) knishio_free(last_address);
+            last_address = safe_strdup(address);
+            knishio_free(address);
+        }
+        if (private_key) knishio_free(private_key);
+    }
+
+    results->wots_roundtrip.passed = all_pass;
+    results->wots_roundtrip.skipped = false;
+    results->wots_roundtrip.atom_count = case_count;
+    results->wots_roundtrip.molecular_hash = last_address;  /* the derived OTS address */
+    if (!all_pass) {
+        results->wots_roundtrip.validation_error =
+            safe_strdup("OTS address does not match the canonical vector");
+    }
+
+    cJSON_Delete(vectors_root);
+    return all_pass;
+}
+
+/* ---- B1. Buffer family (B-isotope deposit + withdraw), vector-driven ---------------- */
+
+/* A built buffer molecule and the three wallets it aliases. The molecule does NOT own the
+ * wallets (see the note in knishio_molecule_free), so the caller frees all four. */
+typedef struct {
+    knishio_molecule_t *molecule;
+    knishio_wallet_t *source;
+    knishio_wallet_t *middle;      /* buffer wallet (deposit) or recipient (withdraw) */
+    knishio_wallet_t *remainder;
+} buffer_case_t;
+
+static void buffer_case_free(buffer_case_t *c) {
+    if (c->molecule) knishio_molecule_free(c->molecule);
+    if (c->source) knishio_wallet_free(c->source);
+    if (c->middle) knishio_wallet_free(c->middle);
+    if (c->remainder) knishio_wallet_free(c->remainder);
+    memset(c, 0, sizeof(*c));
+}
+
+/* Build (but do not sign) a buffer molecule using the SDK's own builders. Fresh positions
+ * throughout, so each wallet has a usable OTS key and molecular hashes are not frozen. */
+static bool buffer_case_build(buffer_case_t *c, const char *secret, const char *bundle,
+                              const char *token, bool deposit, int balance, int amount) {
+    memset(c, 0, sizeof(*c));
+    char *p1 = NULL, *p2 = NULL, *p3 = NULL;
+    bool ok = false;
+
+    if (!knishio_generate_position(&p1) || !knishio_generate_position(&p2) ||
+        !knishio_generate_position(&p3)) {
+        goto done;
+    }
+    if (knishio_wallet_create_simple(&c->source, secret, token, p1) != KNISHIO_SUCCESS ||
+        knishio_wallet_create_simple(&c->middle, secret, token, p2) != KNISHIO_SUCCESS ||
+        knishio_wallet_create_simple(&c->remainder, secret, token, p3) != KNISHIO_SUCCESS) {
+        goto done;
+    }
+    c->source->balance = balance;
+
+    if (knishio_molecule_create(&c->molecule, secret, bundle, c->source, c->remainder,
+                                NULL, "V4") != KNISHIO_SUCCESS) {
+        goto done;
+    }
+    knishio_error_t e = deposit
+        ? knishio_molecule_init_deposit_buffer(c->molecule, c->middle, amount)
+        : knishio_molecule_init_withdraw_buffer(c->molecule, c->middle, amount);
+    if (e != KNISHIO_SUCCESS) {
+        goto done;
+    }
+    set_canonical_timestamps(c->molecule);
+    ok = true;
+
+done:
+    if (p1) knishio_free(p1);
+    if (p2) knishio_free(p2);
+    if (p3) knishio_free(p3);
+    if (!ok) buffer_case_free(c);
+    return ok;
+}
+
+/* First (or last) atom of a given isotope, in emission order — the tamper targets the
+ * buffer_conservation_negative vector names. */
+static knishio_atom_t *buffer_pick_atom(knishio_molecule_t *m, knishio_isotope_t iso, bool first) {
+    knishio_atom_t *found = NULL;
+    for (size_t i = 0; i < m->atom_count; i++) {
+        knishio_atom_t *a = knishio_molecule_get_atom(m, i);
+        if (!a || a->isotope != iso) continue;
+        if (first) return a;
+        found = a;
+    }
+    return found;
+}
+
+/**
+ * B1. Buffer family: the three-atom V->B->V deposit and B->V->B withdraw every other SDK
+ * builds. For each vector case we build + sign with the real builders and assert the atom
+ * shape and values match, the combined V+B sum is 0 (the full-balance debit conserves even
+ * for a PARTIAL operation), and knishio_molecule_check accepts — which exercises the
+ * cross-isotope bypass, since a buffer molecule's V atoms alone do NOT sum to zero.
+ *
+ * The negative cases then tamper one field of a valid molecule and require rejection with
+ * KNISHIO_ERROR_INVALID_STATE specifically. That code is precise here: every other path
+ * returning it now sits inside the !cross_isotope branch, and a hash mismatch has its own
+ * code — so for a buffer molecule it can only have come from the conservation delegate. A
+ * bare "was rejected" would also pass if some unrelated check happened to fire.
+ *
+ * Molecular hashes are NOT frozen (positions are random). Skips if the fixture is absent,
+ * and fails hard instead when KNISHIO_REQUIRE_VECTORS=true.
+ */
+static bool test_buffer_family(test_results_t *results) {
+    log_message("\nB1. Buffer Family Test (deposit + withdraw, vector-driven)", COLOR_BLUE);
+
+    cJSON *vectors_root = load_canonical_vectors();
+    if (!vectors_root) {
+        /* In an orchestrated cross-SDK run the vectors are mandatory: silently skipping
+         * parity coverage is the false green this gate exists to stop. */
+        const char *require = getenv("KNISHIO_REQUIRE_VECTORS");
+        bool must_have = require && strcmp(require, "true") == 0;
+        results->buffer_family.passed = false;
+        results->buffer_family.skipped = !must_have;
+        results->buffer_family.validation_error =
+            safe_strdup("canonical-patent-vectors.json absent");
+        if (must_have) {
+            log_message("  FAILED: canonical-patent-vectors.json absent "
+                        "(KNISHIO_REQUIRE_VECTORS=true)", COLOR_RED);
+            return false;
+        }
+        log_message("  SKIPPED: canonical-patent-vectors.json absent (standalone CI)", COLOR_YELLOW);
+        return true;  /* skipped and recorded as such — never counted as a pass */
+    }
+
+    const cJSON *vectors = cJSON_GetObjectItem(vectors_root, "vectors");
+    const char *token = "BUFTOK";
+    char *secret = NULL;
+    char *bundle = NULL;
+    bool all_pass = true;
+    int atom_total = 0;
+    char *last_hash = NULL;
+
+    if (!knishio_generate_secret("buffer-family-self-test-seed", 2048, &secret) ||
+        !knishio_generate_bundle_hash(secret, NULL, NULL, &bundle)) {
+        results->buffer_family.passed = false;
+        results->buffer_family.validation_error = safe_strdup("secret/bundle generation failed");
+        if (secret) knishio_free(secret);
+        cJSON_Delete(vectors_root);
+        return false;
+    }
+
+    /* ---- Positive cases: deposit (V -> B -> V) then withdraw (B -> V -> B) ---- */
+    const struct { const char *key; bool deposit; const char *middle_field; } families[] = {
+        { "buffer_deposit_conservation",  true,  "expectedBufferValue" },
+        { "buffer_withdraw_conservation", false, "expectedRecipientValue" },
+    };
+
+    for (size_t fam = 0; fam < sizeof(families) / sizeof(families[0]); fam++) {
+        const cJSON *family = cJSON_GetObjectItem(vectors, families[fam].key);
+        const cJSON *tests = family ? cJSON_GetObjectItem(family, "tests") : NULL;
+        if (!tests) {
+            printf("  %s✗%s %s absent from vectors\n", COLOR_RED, COLOR_RESET, families[fam].key);
+            all_pass = false;
+            continue;
+        }
+
+        const cJSON *tv = NULL;
+        cJSON_ArrayForEach(tv, tests) {
+            const char *name = vec_str(tv, "name");
+            int balance = vec_int(tv, "sourceBalance");
+            int amount = vec_int(tv, "amount");
+
+            buffer_case_t c;
+            if (!buffer_case_build(&c, secret, bundle, token, families[fam].deposit,
+                                   balance, amount)) {
+                log_test(name, false, "builder setup failed");
+                all_pass = false;
+                continue;
+            }
+
+            bool ok = (knishio_molecule_sign(c.molecule, bundle, false, true) == KNISHIO_SUCCESS);
+
+            /* Shape: exactly three atoms, isotopes and values as the vector states. */
+            const knishio_isotope_t outer = families[fam].deposit
+                ? KNISHIO_ISOTOPE_V : KNISHIO_ISOTOPE_B;
+            const knishio_isotope_t middle = families[fam].deposit
+                ? KNISHIO_ISOTOPE_B : KNISHIO_ISOTOPE_V;
+            ok = ok && c.molecule->atom_count == 3;
+
+            long long sum = 0;
+            if (ok) {
+                const knishio_atom_t *a0 = knishio_molecule_get_atom(c.molecule, 0);
+                const knishio_atom_t *a1 = knishio_molecule_get_atom(c.molecule, 1);
+                const knishio_atom_t *a2 = knishio_molecule_get_atom(c.molecule, 2);
+                ok = a0 && a1 && a2 &&
+                     a0->isotope == outer  && safe_strcmp(a0->value, vec_str(tv, "expectedSourceValue")) &&
+                     a1->isotope == middle && safe_strcmp(a1->value, vec_str(tv, families[fam].middle_field)) &&
+                     a2->isotope == outer  && safe_strcmp(a2->value, vec_str(tv, "expectedRemainderValue"));
+                for (size_t i = 0; i < c.molecule->atom_count; i++) {
+                    const knishio_atom_t *a = knishio_molecule_get_atom(c.molecule, i);
+                    if (a && a->value &&
+                        (a->isotope == KNISHIO_ISOTOPE_V || a->isotope == KNISHIO_ISOTOPE_B)) {
+                        sum += strtoll(a->value, NULL, 10);
+                    }
+                }
+            }
+
+            char sum_str[32];
+            snprintf(sum_str, sizeof(sum_str), "%lld", sum);
+            ok = ok && safe_strcmp(sum_str, vec_str(tv, "expectedSum"));
+
+            /* And the verifier must ACCEPT it — the cross-isotope bypass in action. */
+            ok = ok && (knishio_molecule_check(c.molecule, c.source) == KNISHIO_SUCCESS);
+
+            char label[160];
+            snprintf(label, sizeof(label), "%s %s conserves (V+B sum 0; cross-isotope bypass)",
+                     families[fam].deposit ? "deposit" : "withdraw", name);
+            log_test(label, ok, ok ? NULL : "shape, sum or verification failed");
+            all_pass = all_pass && ok;
+
+            atom_total += (int)c.molecule->atom_count;
+            if (c.molecule->molecular_hash) {
+                if (last_hash) knishio_free(last_hash);
+                last_hash = safe_strdup(c.molecule->molecular_hash);
+            }
+            buffer_case_free(&c);
+        }
+    }
+
+    /* ---- Negative cases: tampered molecules the verifier MUST reject ----
+     * A positive-only suite never observes a rejection, so it cannot tell a real
+     * conservation check apart from an absent one. */
+    const cJSON *negative = cJSON_GetObjectItem(vectors, "buffer_conservation_negative");
+    const cJSON *negative_tests = negative ? cJSON_GetObjectItem(negative, "tests") : NULL;
+    if (negative_tests) {
+        const cJSON *tv = NULL;
+        cJSON_ArrayForEach(tv, negative_tests) {
+            const char *name = vec_str(tv, "name");
+            const cJSON *tamper = cJSON_GetObjectItem(tv, "tamper");
+            const char *target = vec_str(tamper, "target");
+            const char *field = vec_str(tamper, "field");
+            const char *to = vec_str(tamper, "to");
+            bool deposit = strcmp(vec_str(tv, "buildFrom"), "deposit") == 0;
+
+            buffer_case_t c;
+            if (!buffer_case_build(&c, secret, bundle, token, deposit,
+                                   vec_int(tv, "sourceBalance"), vec_int(tv, "amount"))) {
+                log_test(name, false, "builder setup failed");
+                all_pass = false;
+                continue;
+            }
+
+            /* Follow the vector's recipe: build valid, mutate ONE field, re-sign. */
+            knishio_isotope_t iso = (target[strlen(target) - 1] == 'V')
+                ? KNISHIO_ISOTOPE_V : KNISHIO_ISOTOPE_B;
+            knishio_atom_t *victim = buffer_pick_atom(c.molecule, iso,
+                                                      strncmp(target, "first", 5) == 0);
+            bool tampered = false;
+            if (victim) {
+                if (strcmp(field, "value") == 0) {
+                    knishio_free(victim->value);
+                    victim->value = knishio_strdup(to);
+                    tampered = true;
+                } else if (strcmp(field, "metaType") == 0) {
+                    knishio_free(victim->meta_type);
+                    victim->meta_type = knishio_strdup(to);
+                    tampered = true;
+                }
+            }
+
+            bool ok = false;
+            char detail[160];
+            if (!tampered) {
+                snprintf(detail, sizeof(detail), "could not apply tamper %s/%s", target, field);
+            } else {
+                knishio_molecule_sign(c.molecule, bundle, false, true);
+                knishio_error_t verdict = knishio_molecule_check(c.molecule, c.source);
+
+                /* Require the code the tampered field should produce, not merely "rejected".
+                 * A value tamper must break conservation; a metaType tamper must break the
+                 * B/F meta shape. Accepting any rejection would let an unrelated check —
+                 * OTS, ContinuID — pass this test while conservation did nothing. */
+                knishio_error_t want = (strcmp(field, "metaType") == 0)
+                    ? KNISHIO_ERROR_META_MISSING
+                    : KNISHIO_ERROR_TRANSFER_UNBALANCED;
+                ok = (verdict == want);
+                if (verdict == KNISHIO_SUCCESS) {
+                    snprintf(detail, sizeof(detail), "ACCEPTED a molecule that %s",
+                             vec_str(tv, "reason"));
+                } else {
+                    snprintf(detail, sizeof(detail),
+                             "rejected with error %d, but the %s tamper should give %d",
+                             (int)verdict, field, (int)want);
+                }
+            }
+
+            char label[160];
+            snprintf(label, sizeof(label), "negative %s rejected", name);
+            log_test(label, ok, ok ? NULL : detail);
+            all_pass = all_pass && ok;
+            buffer_case_free(&c);
+        }
+    } else {
+        const char *require = getenv("KNISHIO_REQUIRE_VECTORS");
+        if (require && strcmp(require, "true") == 0) {
+            log_message("  FAILED: buffer_conservation_negative absent "
+                        "(KNISHIO_REQUIRE_VECTORS=true)", COLOR_RED);
+            all_pass = false;
+        } else {
+            log_message("  SKIPPED: buffer_conservation_negative absent "
+                        "(vector not yet vendored)", COLOR_YELLOW);
+        }
+    }
+
+    results->buffer_family.passed = all_pass;
+    results->buffer_family.skipped = false;
+    results->buffer_family.atom_count = atom_total;
+    results->buffer_family.molecular_hash = last_hash;
+    if (!all_pass) {
+        results->buffer_family.validation_error =
+            safe_strdup("buffer family conservation or rejection assertions failed");
+    }
+
+    knishio_free(secret);
+    knishio_free(bundle);
+    cJSON_Delete(vectors_root);
+    return all_pass;
+}
+
 static bool test_negative_cases(test_results_t *results, const cJSON *config) {
     log_message("\n6. Negative Test Cases (Anti-Cheating)", COLOR_BLUE);
 
@@ -1819,11 +2287,21 @@ static bool test_negative_cases(test_results_t *results, const cJSON *config) {
 static bool test_cross_sdk_validation(test_results_t *results) {
     log_message("\n6. Cross-SDK Validation", COLOR_BLUE);
     
-    /* Check if cross-validation is disabled (Round 1 molecule generation only) */
+    /* Round 1 generates molecules and does not cross-validate. It therefore has NO
+     * opinion on cross-SDK compatibility, and must not assert one.
+     *
+     * This used to set cross_sdk_compatible = true, so a round-1 results file claimed
+     * full cross-SDK compatibility having validated nothing at all. Round 2 normally
+     * overwrites the file and corrects it, which hid the problem — but any consumer
+     * reading a round-1 file, or reading after a standalone round-1 run, was handed a
+     * fabricated pass. Leave the verdict unset and mark that no cross-validation ran. */
     const char* disable_cross_validation = getenv("KNISHIO_DISABLE_CROSS_VALIDATION");
     if (disable_cross_validation && strcmp(disable_cross_validation, "true") == 0) {
         log_message("  ⏭️  Cross-validation disabled for Round 1 (molecule generation only)", COLOR_YELLOW);
-        results->cross_sdk_compatible = true;
+        results->cross_validation_ran = false;
+        results->cross_sdk_compatible = false;
+        results->cross_peers_validated = 0;
+        results->cross_peers_expected = 0;
         return true;
     }
 
@@ -1840,11 +2318,21 @@ static bool test_cross_sdk_validation(test_results_t *results) {
     results_dir_path[MAX_PATH_LENGTH - 1] = '\0';
     
     struct stat st = {0};
-    
+
+    /* No shared results directory in Round 2 is a HARD FAILURE, not a skip.
+     *
+     * This returned true — "compatible" — when it could not find a single peer molecule
+     * to check. Absence of evidence was reported as evidence of compatibility, which is
+     * the one thing a cross-validation test must never do. Round 2 exists to check peers;
+     * if the peers are not there, the check did not happen and cannot have passed. */
+    results->cross_validation_ran = true;
     if (stat(results_dir_path, &st) == -1) {
-        log_message("  ⏭️  No other SDK results found for cross-validation", COLOR_YELLOW);
-        results->cross_sdk_compatible = true;
-        return true;
+        log_message("  ❌ Shared results directory not found — cross-validation CANNOT run", COLOR_RED);
+        log_message("     Round 2 requires peer molecules. Reporting failure, not a skip.", COLOR_RED);
+        results->cross_sdk_compatible = false;
+        results->cross_peers_validated = 0;
+        results->cross_peers_expected = 7;
+        return false;
     }
     
     /* Implement actual cross-SDK validation following JavaScript pattern */
@@ -1860,17 +2348,27 @@ static bool test_cross_sdk_validation(test_results_t *results) {
     int num_sdks = sizeof(sdk_files) / sizeof(sdk_files[0]);
     int passed_validations = 0;
     int total_validations = 0;
-    
+    int peers_seen = 0;
+
+    results->cross_peers_expected = num_sdks;
+
     printf("\n");
     for (int i = 0; i < num_sdks; i++) {
         printf("  🧪 Validating %s SDK molecules:\n", sdk_names[i]);
-        
-        /* Try to load and validate this SDK's molecules */
+
+        /* A peer whose results file is absent is an UNVALIDATED peer, not an absent one.
+         *
+         * This used to `continue` silently, contributing nothing to either counter, so six
+         * missing peers left total_validations reflecting only the one file that happened
+         * to be present — and all_valid below then compared that truncated count against
+         * itself and passed. Count the peer as seen-and-failed so the coverage check at the
+         * end can tell that we did not look at everything we were supposed to. */
         FILE* file = fopen(sdk_files[i], "r");
         if (!file) {
-            printf("    ⏭️  Results file not found, skipping %s\n", sdk_names[i]);
+            printf("    ❌ Results file not found for %s — peer NOT validated\n", sdk_names[i]);
             continue;
         }
+        peers_seen++;
         
         /* Read file content (simplified approach) */
         fseek(file, 0, SEEK_END);
@@ -2035,16 +2533,44 @@ static bool test_cross_sdk_validation(test_results_t *results) {
         printf("\n");
     }
     
-    bool all_valid = (passed_validations == total_validations);
-    
+    /* COVERAGE FLOOR.
+     *
+     * `passed_validations == total_validations` is vacuously true when both are zero, and
+     * both are initialised to zero. Validating nothing therefore reported full cross-SDK
+     * compatibility. Every counter-based check of this shape needs a floor: it is not
+     * enough that nothing failed, something has to have actually been checked.
+     *
+     * Two independent conditions now have to hold:
+     *   1. every peer we were supposed to validate was present and validated
+     *   2. every individual molecule validation that ran, passed
+     * Condition 1 is the one that was missing, and it is the reason this test could not
+     * turn red no matter how badly cross-SDK compatibility had regressed. */
+    results->cross_peers_validated = peers_seen;
+
+    bool full_coverage = (peers_seen == results->cross_peers_expected);
+    bool nothing_failed = (total_validations > 0 && passed_validations == total_validations);
+    bool all_valid = full_coverage && nothing_failed;
+
+    printf("\n");
+    printf("  📊 Cross-validation coverage: %d/%d peer SDKs, %d/%d molecule checks passed\n",
+           peers_seen, results->cross_peers_expected, passed_validations, total_validations);
+
+    if (!full_coverage) {
+        log_message("  ❌ Incomplete coverage — not every peer SDK was validated", COLOR_RED);
+    }
+    if (total_validations == 0) {
+        log_message("  ❌ Zero molecule validations ran — nothing was actually checked", COLOR_RED);
+    } else if (passed_validations != total_validations) {
+        log_message("  ❌ Some cross-SDK molecules failed validation", COLOR_RED);
+    }
+
     if (all_valid) {
         log_message("  ✅ All cross-SDK molecules validated successfully", COLOR_GREEN);
         log_message("  ✅ Cross-SDK Compatible: YES", COLOR_GREEN);
     } else {
-        log_message("  ❌ Some cross-SDK molecules failed validation", COLOR_RED);
         log_message("  ❌ Cross-SDK Compatible: NO", COLOR_RED);
     }
-    
+
     results->cross_sdk_compatible = all_valid;
     return all_valid;
 }
@@ -2203,6 +2729,27 @@ static bool save_results(void) {
     cJSON_AddItemToObject(shadow_wallet_claim, "validationError", cJSON_CreateString(g_results.shadow_wallet_claim.validation_error ? g_results.shadow_wallet_claim.validation_error : "null"));
     cJSON_AddItemToObject(tests, "shadowWalletClaim", shadow_wallet_claim);
 
+    /* WOTS+ roundtrip. molecularHash carries the derived OTS address; atomCount the number
+     * of vector cases run. */
+    cJSON *wots_roundtrip = cJSON_CreateObject();
+    cJSON_AddItemToObject(wots_roundtrip, "passed", cJSON_CreateBool(g_results.wots_roundtrip.passed));
+    cJSON_AddItemToObject(wots_roundtrip, "skipped", cJSON_CreateBool(g_results.wots_roundtrip.skipped));
+    cJSON_AddItemToObject(wots_roundtrip, "molecularHash", cJSON_CreateString(g_results.wots_roundtrip.molecular_hash ? g_results.wots_roundtrip.molecular_hash : ""));
+    cJSON_AddItemToObject(wots_roundtrip, "atomCount", cJSON_CreateNumber(g_results.wots_roundtrip.atom_count));
+    cJSON_AddItemToObject(wots_roundtrip, "validationError", cJSON_CreateString(g_results.wots_roundtrip.validation_error ? g_results.wots_roundtrip.validation_error : "null"));
+    cJSON_AddItemToObject(tests, "wotsRoundtrip", wots_roundtrip);
+
+    /* Buffer family test (B-isotope deposit + withdraw). "skipped" is serialised so a
+     * missing fixture is visibly distinct from a pass — the two were indistinguishable
+     * when this key was silently dropped altogether. */
+    cJSON *buffer_family = cJSON_CreateObject();
+    cJSON_AddItemToObject(buffer_family, "passed", cJSON_CreateBool(g_results.buffer_family.passed));
+    cJSON_AddItemToObject(buffer_family, "skipped", cJSON_CreateBool(g_results.buffer_family.skipped));
+    cJSON_AddItemToObject(buffer_family, "molecularHash", cJSON_CreateString(g_results.buffer_family.molecular_hash ? g_results.buffer_family.molecular_hash : ""));
+    cJSON_AddItemToObject(buffer_family, "atomCount", cJSON_CreateNumber(g_results.buffer_family.atom_count));
+    cJSON_AddItemToObject(buffer_family, "validationError", cJSON_CreateString(g_results.buffer_family.validation_error ? g_results.buffer_family.validation_error : "null"));
+    cJSON_AddItemToObject(tests, "bufferFamily", buffer_family);
+
     /* ML-KEM768 test */
     cJSON *mlkem768 = cJSON_CreateObject();
     cJSON_AddItemToObject(mlkem768, "passed", cJSON_CreateBool(g_results.mlkem768.passed));
@@ -2240,9 +2787,28 @@ static bool save_results(void) {
     cJSON_AddItemToObject(molecules, "mlkem768", cJSON_CreateString(g_results.molecules_mlkem768 ? g_results.molecules_mlkem768 : ""));
     cJSON_AddItemToObject(root, "molecules", molecules);
     
-    /* Cross-SDK compatibility */
+    /* Cross-SDK compatibility, plus the coverage behind the verdict.
+     *
+     * crossSdkCompatible alone is not falsifiable by a reader: true could mean "checked
+     * seven peers, all good" or "checked nothing". crossValidation.targetsValidated makes
+     * the difference visible, and lets the orchestrator assert a floor. */
     cJSON_AddItemToObject(root, "crossSdkCompatible", cJSON_CreateBool(g_results.cross_sdk_compatible));
-    
+
+    cJSON *cross_validation = cJSON_CreateObject();
+    cJSON_AddItemToObject(cross_validation, "ran", cJSON_CreateBool(g_results.cross_validation_ran));
+    cJSON_AddItemToObject(cross_validation, "targetsExpected", cJSON_CreateNumber(g_results.cross_peers_expected));
+    cJSON_AddItemToObject(cross_validation, "targetsValidated", cJSON_CreateNumber(g_results.cross_peers_validated));
+    cJSON_AddItemToObject(root, "crossValidation", cross_validation);
+
+    /* Run identity. The shared results directory holds one mutable file per SDK with no
+     * record of which run wrote it, so a later standalone run silently replaces the
+     * evidence an already-published report was built from. Stamping the orchestrator's
+     * run id lets the coherence gate assert identity instead of guessing from mtimes. */
+    const char *run_id = getenv("KNISHIO_RUN_ID");
+    cJSON_AddItemToObject(root, "runId", run_id && *run_id
+        ? cJSON_CreateString(run_id)
+        : cJSON_CreateNull());
+
     /* Convert to string and write to file */
     char *json_string = cJSON_Print(root);
     if (!json_string) {
@@ -2281,7 +2847,7 @@ static void display_summary(void) {
     printf("Timestamp: %s\n", g_results.timestamp);
     
     /* Count passed tests */
-    int total_tests = 9; // crypto + 3 base + 3 extended (token/wallet/shadow) + ML-KEM768 + negative
+    int total_tests = 11; // crypto + 3 base + 3 extended (token/wallet/shadow) + WOTS + buffer family + ML-KEM768 + negative
     int passed_tests = 0;
     if (g_results.crypto.passed) passed_tests++;
     if (g_results.meta_creation.passed) passed_tests++;
@@ -2290,6 +2856,8 @@ static void display_summary(void) {
     if (g_results.token_creation.passed) passed_tests++;
     if (g_results.wallet_creation.passed) passed_tests++;
     if (g_results.shadow_wallet_claim.passed) passed_tests++;
+    if (g_results.wots_roundtrip.passed) passed_tests++;
+    if (g_results.buffer_family.passed) passed_tests++;
     if (g_results.mlkem768.passed) passed_tests++;
     if (g_results.negative_cases.passed) passed_tests++;
     
@@ -2319,6 +2887,16 @@ static void display_summary(void) {
         }
         if (!g_results.shadow_wallet_claim.passed) {
             printf("  - shadowWalletClaim: Validation failed\n");
+        }
+        if (!g_results.wots_roundtrip.passed) {
+            printf("  - wotsRoundtrip: %s%s\n",
+                   g_results.wots_roundtrip.validation_error ? g_results.wots_roundtrip.validation_error : "Validation failed",
+                   g_results.wots_roundtrip.skipped ? " (SKIPPED — missing coverage, not a pass)" : "");
+        }
+        if (!g_results.buffer_family.passed) {
+            printf("  - bufferFamily: %s%s\n",
+                   g_results.buffer_family.validation_error ? g_results.buffer_family.validation_error : "Validation failed",
+                   g_results.buffer_family.skipped ? " (SKIPPED — missing coverage, not a pass)" : "");
         }
         if (!g_results.mlkem768.passed) {
             printf("  - mlkem768: %s\n", g_results.mlkem768.error ? g_results.mlkem768.error : "Validation failed");
@@ -2445,12 +3023,23 @@ int main(void) {
                                 { "tokenCreation",     &g_results.token_creation },
                                 { "walletCreation",    &g_results.wallet_creation },
                                 { "shadowWalletClaim", &g_results.shadow_wallet_claim },
+                                { "bufferFamily",      &g_results.buffer_family },
+                                { "wotsRoundtrip",     &g_results.wots_roundtrip },
                             };
                             for (size_t tm = 0; tm < sizeof(test_map) / sizeof(test_map[0]); tm++) {
                                 cJSON* t = cJSON_GetObjectItem(existing_tests, test_map[tm].key);
                                 if (!t) continue;
                                 cJSON* tp = cJSON_GetObjectItem(t, "passed");
                                 if (tp && cJSON_IsBool(tp)) test_map[tm].dst->passed = cJSON_IsTrue(tp);
+                                /* Only bufferFamily emits "skipped"; absent elsewhere, so this
+                                 * is a no-op for the others. Losing it would turn a Round 1
+                                 * skip into what reads as a Round 2 failure. */
+                                cJSON* ts = cJSON_GetObjectItem(t, "skipped");
+                                if (ts && cJSON_IsBool(ts)) test_map[tm].dst->skipped = cJSON_IsTrue(ts);
+                                cJSON* tve = cJSON_GetObjectItem(t, "validationError");
+                                if (tve && cJSON_IsString(tve) && strcmp(cJSON_GetStringValue(tve), "null") != 0) {
+                                    test_map[tm].dst->validation_error = safe_strdup(cJSON_GetStringValue(tve));
+                                }
                                 cJSON* th = cJSON_GetObjectItem(t, "molecularHash");
                                 if (th && cJSON_IsString(th) && strlen(cJSON_GetStringValue(th)) > 0) {
                                     test_map[tm].dst->molecular_hash = safe_strdup(cJSON_GetStringValue(th));
@@ -2474,6 +3063,25 @@ int main(void) {
                                 if (md && cJSON_IsBool(md)) g_results.mlkem768.decryption_success = cJSON_IsTrue(md);
                                 cJSON* ml = cJSON_GetObjectItem(mlkem_test, "plaintextLength");
                                 if (ml && cJSON_IsNumber(ml)) g_results.mlkem768.plaintext_length = (int)cJSON_GetNumberValue(ml);
+                            }
+
+                            /* Preserve negative-case results. Omitted from test_map above
+                             * because negative_test_result_t is a different struct type, and
+                             * so it was silently dropped on every Round-2 rewrite: C's log
+                             * printed "Tests Passed: 9/9" while the results file it wrote said
+                             * negativeCases {passed:false, testCount:0}. The summary and the
+                             * serialized results disagreed, which is the whole class of defect
+                             * this harness now gates against. */
+                            cJSON* negative_test = cJSON_GetObjectItem(existing_tests, "negativeCases");
+                            if (negative_test) {
+                                cJSON* np = cJSON_GetObjectItem(negative_test, "passed");
+                                if (np && cJSON_IsBool(np)) g_results.negative_cases.passed = cJSON_IsTrue(np);
+                                cJSON* nd = cJSON_GetObjectItem(negative_test, "description");
+                                if (nd && cJSON_IsString(nd) && strlen(cJSON_GetStringValue(nd)) > 0) {
+                                    g_results.negative_cases.description = safe_strdup(cJSON_GetStringValue(nd));
+                                }
+                                cJSON* nc = cJSON_GetObjectItem(negative_test, "testCount");
+                                if (nc && cJSON_IsNumber(nc)) g_results.negative_cases.test_count = (int)cJSON_GetNumberValue(nc);
                             }
 
                             loaded_existing = true;
@@ -2605,6 +3213,8 @@ int main(void) {
     bool token_result = test_token_creation(&g_results, tests_config);
     bool wallet_result = test_wallet_creation(&g_results, tests_config);
     bool shadow_result = test_shadow_wallet_claim(&g_results, tests_config);
+    bool wots_result = test_wots_roundtrip(&g_results);
+    bool buffer_result = test_buffer_family(&g_results);
     bool mlkem768_result = test_mlkem768(&g_results, tests_config);
     bool mlkem768_vector_result = test_mlkem768_vector_assertion(&g_results);
     bool negative_result = test_negative_cases(&g_results, tests_config);
@@ -2620,10 +3230,11 @@ int main(void) {
     display_summary();
 
     /* Exit with appropriate code */
-    int total_tests = 10; // crypto + 3 base + 3 extended (token/wallet/shadow) + ML-KEM768 + ML-KEM768 vector + negative
+    int total_tests = 12; // crypto + 3 base + 3 extended (token/wallet/shadow) + WOTS + buffer family + ML-KEM768 + ML-KEM768 vector + negative
     int passed_tests = (crypto_result ? 1 : 0) + (meta_result ? 1 : 0) +
                       (simple_result ? 1 : 0) + (complex_result ? 1 : 0) +
                       (token_result ? 1 : 0) + (wallet_result ? 1 : 0) + (shadow_result ? 1 : 0) +
+                      (wots_result ? 1 : 0) + (buffer_result ? 1 : 0) +
                       (mlkem768_result ? 1 : 0) + (mlkem768_vector_result ? 1 : 0) + (negative_result ? 1 : 0);
 
     return (passed_tests == total_tests) ? EXIT_SUCCESS : EXIT_FAILURE;

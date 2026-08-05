@@ -178,39 +178,51 @@ knishio_error_t knishio_client_burn_tokens(
 
 /**
  * @brief Deposit tokens to buffer
- * Equivalent to JavaScript: client.depositBufferToken({ token, amount, bufferId })
- * 
+ * Equivalent to JavaScript: client.depositBufferToken({ tokenSlug, amount })
+ *
+ * Emits the canonical V(-balance) -> B(+amount) -> V(+remainder) buffer molecule.
+ *
+ * @warning Breaking signature change, unreleased — see CHANGELOG.md. `amount` was `double`
+ * and is now `int`, and the
+ * `buffer_id` parameter is gone. KnishIO amounts are integer strings, and buffer_id had no
+ * analogue in the cross-SDK protocol — the buffer wallet is derived internally, as every
+ * other SDK derives it. The molecule this produced before was not interoperable.
+ *
  * @param client KnishIO client instance
  * @param token Token slug to deposit
- * @param amount Amount to deposit
- * @param buffer_id Buffer identifier
+ * @param amount Amount to deposit (positive integer)
  * @param result Output deposit result (allocated, must be freed)
  * @return KNISHIO_SUCCESS on success, error code on failure
  */
 knishio_error_t knishio_client_deposit_buffer_token(
     knishio_client_t* client,
     const char* token,
-    double amount,
-    const char* buffer_id,
+    int amount,
     knishio_transfer_result_t** result
 );
 
 /**
- * @brief Withdraw tokens from buffer
- * Equivalent to JavaScript: client.withdrawBufferToken({ token, amount, bufferId })
- * 
+ * @brief Withdraw tokens from buffer to a recipient bundle
+ * Equivalent to JavaScript: client.withdrawBufferToken({ tokenSlug, amount, recipients })
+ *
+ * Emits the canonical B(-balance) -> V(+amount) -> B(+remainder) buffer molecule.
+ *
+ * @warning Breaking signature change, unreleased — see the deposit above. `buffer_id` is replaced by
+ * `recipient_bundle`, which the protocol requires: the withdrawn V atom carries the
+ * recipient's bundle as its metaId.
+ *
  * @param client KnishIO client instance
  * @param token Token slug to withdraw
- * @param amount Amount to withdraw
- * @param buffer_id Buffer identifier
+ * @param amount Amount to withdraw (positive integer)
+ * @param recipient_bundle Bundle hash receiving the withdrawn amount
  * @param result Output withdrawal result (allocated, must be freed)
  * @return KNISHIO_SUCCESS on success, error code on failure
  */
 knishio_error_t knishio_client_withdraw_buffer_token(
     knishio_client_t* client,
     const char* token,
-    double amount,
-    const char* buffer_id,
+    int amount,
+    const char* recipient_bundle,
     knishio_transfer_result_t** result
 );
 

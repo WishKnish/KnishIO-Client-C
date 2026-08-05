@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 /* Legacy function definitions updated to support ContinuID structures */
 
@@ -84,14 +85,36 @@ bool knishio_use_fixed_position(char** position) {
 
 /* Wallet Key Derivation */
 
-bool knishio_generate_wallet_key(const char* secret, const char* token, 
+/* knishio/utils/string.h declares knishio_is_hex_string() but nothing defines it (as with
+ * knishio_string_split, _is_base and _chunk) — so it cannot be used here. */
+static bool secret_is_hex(const char* s) {
+    for (const char* p = s; *p; p++) {
+        if (!isxdigit((unsigned char)*p)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool knishio_generate_wallet_key(const char* secret, const char* token,
                                 const char* position, char** private_key) {
     if (secret == NULL || position == NULL || private_key == NULL) {
         return false;
     }
     
-    /* Validate input lengths */
-    if (strlen(secret) != KNISHIO_SECRET_LENGTH || 
+    /* The secret may be ANY non-empty hex string. It is consumed as a BigInt below, which
+     * has no width requirement, and JS Wallet.generateKey imposes none either — it takes
+     * `isHex(secret) ? secret : shake256(secret, 1024)`.
+     *
+     * This previously demanded exactly KNISHIO_SECRET_LENGTH (2048), which made C unable to
+     * derive a wallet from a secret any of JS, TypeScript or Rust produces: those emit 1024
+     * hex chars, so every such secret was rejected outright. C-only use never noticed,
+     * because C's own knishio_generate_secret emits 2048.
+     *
+     * The canonical wots_roundtrip vector pins the result — a 64-char secret must derive
+     * OTS address fbf42152398e00c86534e719af1fc8914297d1979a763314b1f83e887c6ac808, the
+     * same address five other SDKs derive from it. */
+    if (strlen(secret) == 0 || !secret_is_hex(secret) ||
         strlen(position) != KNISHIO_POSITION_LENGTH) {
         return false;
     }

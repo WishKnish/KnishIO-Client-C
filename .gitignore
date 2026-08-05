@@ -87,3 +87,5 @@ debug_shake256
 .idea/
 # macOS
 **/.DS_Store
+compile_commands.json
+cipherhash_live_test

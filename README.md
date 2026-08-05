@@ -324,36 +324,48 @@ This document will explain both ways.
   ```
 
 - Working with **Buffer Tokens**:
+
+  A deposit emits `V(-balance) -> B(+amount) -> V(+remainder)`; a withdraw emits
+  `B(-balance) -> V(+amount) -> B(+remainder)`. The full source balance is always debited,
+  with the change routed to a remainder atom, so a partial operation still conserves.
+  Amounts are integers — KnishIO values are integer strings and `"100.0"` is rejected.
+
   ```c
   // Deposit to buffer
-  char* deposit_result = NULL;
+  knishio_transfer_result_t* deposit_result = NULL;
   knishio_error_t error = knishio_client_deposit_buffer_token(
       client,
-      "CRZY",          // tokenSlug
-      "100",           // amount
-      "{\"OTHER_TOKEN\": \"0.5\"}", // tradeRates as JSON
+      "CRZY",          // token slug
+      100,             // amount
       &deposit_result
   );
-  
-  if (error == KNISHIO_SUCCESS && deposit_result != NULL) {
-      printf("Deposit result: %s\n", deposit_result);
-      free(deposit_result);
+
+  if (error == KNISHIO_SUCCESS && deposit_result->success) {
+      printf("Deposit molecule: %s\n", deposit_result->molecular_hash);
   }
-  
-  // Withdraw from buffer
-  char* withdraw_result = NULL;
+  knishio_transfer_result_free(deposit_result);
+
+  // Withdraw from buffer to a recipient bundle
+  knishio_transfer_result_t* withdraw_result = NULL;
   error = knishio_client_withdraw_buffer_token(
       client,
-      "CRZY",          // tokenSlug
-      "50",            // amount
+      "CRZY",          // token slug
+      50,              // amount
+      recipient_bundle_hash,
       &withdraw_result
   );
-  
-  if (error == KNISHIO_SUCCESS && withdraw_result != NULL) {
-      printf("Withdraw result: %s\n", withdraw_result);
-      free(withdraw_result);
+
+  if (error == KNISHIO_SUCCESS && withdraw_result->success) {
+      printf("Withdraw molecule: %s\n", withdraw_result->molecular_hash);
   }
+  knishio_transfer_result_free(withdraw_result);
   ```
+
+  > **Breaking change, unreleased** (see `CHANGELOG.md`). Both functions previously took a `double amount` and a
+  > `buffer_id`, and built a single `V` atom with `metaType: "buffer"`. That molecule used
+  > no `B` isotope, did not conserve, and formatted its amount as `"100.00000000"` — it was
+  > never interoperable with the other SDKs. `buffer_id` has no analogue in the protocol;
+  > the buffer wallet is now derived internally, and withdraw takes the recipient bundle.
 
 - Getting client fingerprint:
   ```c

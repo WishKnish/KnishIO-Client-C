@@ -1,7 +1,7 @@
 # KnishIO C Client SDK
 cmake_minimum_required(VERSION 3.16)
 project(KnishIO-Client-C
-    VERSION 0.9.2
+    VERSION 0.9.3
     DESCRIPTION "KnishIO C Client SDK for post-blockchain DLT"
     LANGUAGES C
 )
@@ -226,8 +226,11 @@ set(KNISHIO_SOURCES
     src/error/exceptions.c
     
     # Libraries (utilities)
-    # check_molecule.c omitted: its only export (knishio_molecule_check) duplicates
-    # molecule.c's definition (macOS ld64 rejects the duplicate); molecule.c's is canonical.
+    # check_molecule.c is the molecule verifier — the full CheckMolecule.js port (OTS,
+    # ContinuID, batch ID, all isotope checks). It was omitted here for years because
+    # molecule.c defined a competing knishio_molecule_check and ld64 rejects duplicates;
+    # molecule.c's subset has been removed, so this is now the sole definition.
+    src/libraries/check_molecule.c
     src/libraries/base64.c
     
     # Version handling

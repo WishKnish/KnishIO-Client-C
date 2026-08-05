@@ -302,6 +302,54 @@ knishio_error_t knishio_molecule_init_values(
 );
 
 /**
+ * @brief Initialize a buffer-DEPOSIT molecule (B-isotope), matching initDepositBuffer
+ * across the other SDKs.
+ *
+ * Emits three atoms in order:
+ *   V  source    = -(full source balance)
+ *   B  buffer    = +amount            (metaType "walletBundle", metaId buffer bundle)
+ *   V  remainder = +(balance - amount) (metaType "walletBundle", metaId remainder bundle)
+ *
+ * The source is debited its FULL balance, not just `amount`, so a partial deposit still
+ * conserves: the V and B atom values sum to zero. Cross-isotope conservation is validated
+ * by check_molecule's B/F check, not by the V-only sum (which is skipped when B/F atoms
+ * are present).
+ *
+ * @param molecule Molecule to initialize (source_wallet and remainder_wallet must be set)
+ * @param buffer_wallet Wallet receiving the buffered amount (B atom)
+ * @param amount Amount to move into the buffer
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_molecule_init_deposit_buffer(
+    knishio_molecule_t* molecule,
+    knishio_wallet_t* buffer_wallet,
+    int amount
+);
+
+/**
+ * @brief Initialize a buffer-WITHDRAW molecule (B-isotope), matching initWithdrawBuffer
+ * across the other SDKs.
+ *
+ * Emits three atoms in order:
+ *   B  source    = -(full source balance) (metaType "walletBundle", metaId source bundle)
+ *   V  recipient = +amount                (metaType "walletBundle", metaId recipient bundle)
+ *   B  remainder = +(balance - amount)    (metaType "walletBundle", metaId remainder bundle)
+ *
+ * The mirror of init_deposit_buffer: the buffer is the source here, so the outer atoms are
+ * B and the recipient is V. Same full-balance debit, same conservation requirement.
+ *
+ * @param molecule Molecule to initialize (source_wallet and remainder_wallet must be set)
+ * @param recipient_wallet Wallet receiving the withdrawn amount (V atom)
+ * @param amount Amount to withdraw from the buffer
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_molecule_init_withdraw_buffer(
+    knishio_molecule_t* molecule,
+    knishio_wallet_t* recipient_wallet,
+    int amount
+);
+
+/**
  * @brief Initialize a token-burn molecule (canonical 3 V-atoms, zero-sum).
  * Source debits full balance; the burn-target atom credits `amount` to the all-zeros burn
  * bundle (empty position/address, metaType 'walletBundle', metaId all-zeros = destruction);

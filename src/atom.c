@@ -26,7 +26,16 @@ static void free_string_field(char** field);
 static knishio_error_t resize_meta_array(knishio_atom_t* atom);
 static int compare_atoms_by_index(const void* a, const void* b);
 
-/* Isotope string mapping */
+/* Isotope string mapping.
+ *
+ * Indexed directly by knishio_isotope_t, so the order here must match the enum exactly
+ * and every member must have an entry. The _Static_assert below enforces that.
+ *
+ * It was previously missing "F": the enum had 11 members, this table had 10, so
+ * KNISHIO_ISOTOPE_F (index 10) failed the bounds check in knishio_isotope_to_string(),
+ * returned NULL, and the serializer's `if (isotope_str)` silently dropped the field.
+ * Since isotope is a hashed property, C's fusion molecules hashed differently from every
+ * other SDK's. Nothing failed loudly — the data just went missing. */
 static const char* isotope_strings[] = {
     NULL,    /* KNISHIO_ISOTOPE_UNKNOWN */
     "V",     /* KNISHIO_ISOTOPE_V */
@@ -37,8 +46,17 @@ static const char* isotope_strings[] = {
     "R",     /* KNISHIO_ISOTOPE_R */
     "T",     /* KNISHIO_ISOTOPE_T */
     "L",     /* KNISHIO_ISOTOPE_L */
-    "S"      /* KNISHIO_ISOTOPE_S */
+    "S",     /* KNISHIO_ISOTOPE_S */
+    "F",     /* KNISHIO_ISOTOPE_F */
+    "B"      /* KNISHIO_ISOTOPE_B */
 };
+
+/* Adding an isotope to the enum without adding its string here is a compile error. */
+_Static_assert(
+    sizeof(isotope_strings) / sizeof(isotope_strings[0]) == KNISHIO_ISOTOPE_COUNT,
+    "isotope_strings[] is out of sync with knishio_isotope_t — every enum member needs an "
+    "entry, in the same order. See the comment on KNISHIO_ISOTOPE_COUNT in atom.h."
+);
 
 /* Atom lifecycle functions */
 

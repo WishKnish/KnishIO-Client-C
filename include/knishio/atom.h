@@ -45,7 +45,23 @@ typedef enum {
     KNISHIO_ISOTOPE_T,            /**< Token isotope */
     KNISHIO_ISOTOPE_L,            /**< Link isotope */
     KNISHIO_ISOTOPE_S,            /**< Shadow isotope */
-    KNISHIO_ISOTOPE_F             /**< Fusion isotope */
+    KNISHIO_ISOTOPE_F,            /**< Fusion isotope */
+    KNISHIO_ISOTOPE_B,            /**< Buffer isotope (buffer deposit/withdraw) */
+
+    /* Sentinel. Keep last.
+     *
+     * New members MUST be appended here, never inserted: the values are implicit and
+     * sequential, knishio_isotope_to_string() indexes isotope_strings[] by them, and
+     * knishio_isotope_from_string() returns the table index AS the enum value. Inserting
+     * mid-list silently renumbers every isotope after the insertion point.
+     *
+     * Adding a member here without adding its string to isotope_strings[] in src/atom.c
+     * is now a compile error (see the _Static_assert beside that table). It was not
+     * always: KNISHIO_ISOTOPE_F was added without a table entry, so it fell outside the
+     * bounds check, knishio_isotope_to_string() returned NULL, the JSON serializer
+     * silently omitted the "isotope" field, and — because isotope is a hashed property —
+     * every C-built fusion molecule hashed differently from every other SDK's. */
+    KNISHIO_ISOTOPE_COUNT
 } knishio_isotope_t;
 
 /* Atom structure with C17 static assertions */
