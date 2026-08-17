@@ -261,7 +261,10 @@ file(GLOB MLKEM_NATIVE_CORE_SOURCES
     external/mlkem-native/mlkem/src/fips202/fips202.c
     external/mlkem-native/mlkem/src/fips202/keccakf1600.c
     external/mlkem-native/mlkem/src/fips202/fips202x4.c
-    external/mlkem-native/test/notrandombytes/notrandombytes.c
+    # NOTE: external/mlkem-native/test/notrandombytes/notrandombytes.c is deliberately
+    # NOT compiled. It is a constant-seed TEST RNG. Encapsulation uses the derandomized
+    # API with CSPRNG coins (src/crypto/mlkem768.c), and MLK_CONFIG_NO_RANDOMIZED_API
+    # (below) compiles out the randomized path that would have required randombytes().
 )
 
 # Add mlkem-native sources to our main libraries
@@ -314,7 +317,7 @@ target_compile_definitions(knishio-client-static PUBLIC
 # Configure mlkem-native source files with specific compiler definitions
 foreach(MLKEM_FILE ${MLKEM_NATIVE_CORE_SOURCES})
     set_source_files_properties(${MLKEM_FILE} PROPERTIES
-        COMPILE_DEFINITIONS "MLK_CONFIG_PARAMETER_SET=768;MLK_CONFIG_NAMESPACE_PREFIX=mlkem"
+        COMPILE_DEFINITIONS "MLK_CONFIG_PARAMETER_SET=768;MLK_CONFIG_NAMESPACE_PREFIX=mlkem;MLK_CONFIG_NO_RANDOMIZED_API"
     )
 endforeach()
 
@@ -568,6 +571,22 @@ if(KNISHIO_BUILD_TESTS)
     target_compile_definitions(cipherhash_live_test PRIVATE _GNU_SOURCE)
     add_test(NAME CipherHashLive COMMAND cipherhash_live_test)
     set_tests_properties(CipherHashLive PROPERTIES LABELS "integration;network;pq-transport" TIMEOUT 60)
+
+    # Prove-the-gate: ML-KEM encapsulation must draw its message m from a fresh CSPRNG,
+    # not the mlkem-native test RNG stub. Cross-process determinism = the bug.
+    # See tests/run_encaps_entropy_twice.cmake.
+    add_executable(mlkem_encaps_entropy tests/mlkem_encaps_entropy.c)
+    target_link_libraries(mlkem_encaps_entropy PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(mlkem_encaps_entropy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(mlkem_encaps_entropy PRIVATE _GNU_SOURCE)
+    add_test(NAME MlkemEncapsEntropy
+             COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:mlkem_encaps_entropy>
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_encaps_entropy_twice.cmake)
+    set_tests_properties(MlkemEncapsEntropy PROPERTIES LABELS "crypto;rng;pq")
 endif()
 
 # Documentation

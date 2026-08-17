@@ -22,6 +22,7 @@
 #include "knishio/crypto/aes_gcm.h"
 #include "knishio/utils/memory.h"
 #include "knishio/utils/string.h"
+#include "knishio/utils/security.h"
 #include "knishio/error/context.h"
 
 #include <stdio.h>
@@ -236,18 +237,30 @@ knishio_error_t knishio_mlkem768_encapsulate(const uint8_t *public_key,
     }
 
 #ifdef HAVE_MLKEM_NATIVE
-    /* mlkem-native encapsulation implementation */
-    int result = crypto_kem_enc(
+    /* mlkem-native encapsulation. Draw the 32-byte KEM message m from the platform
+     * CSPRNG and use the DERANDOMIZED API. The randomized crypto_kem_enc() (which would
+     * pull m from the mlkem-native test RNG stub) is compiled out via
+     * MLK_CONFIG_NO_RANDOMIZED_API, so it can never be linked into the shipped library. */
+    uint8_t coins[32];  /* MLKEM_SYMBYTES: the KEM message m */
+    if (!knishio_secure_random(coins, sizeof(coins))) {
+        secure_zero(coins, sizeof(coins));
+        secure_zero(shared_secret->shared_secret, MLKEM768_SHARED_SECRET_BYTES);
+        return KNISHIO_ERROR_CRYPTO;
+    }
+
+    int result = crypto_kem_enc_derand(
         ciphertext->ciphertext,
         shared_secret->shared_secret,
-        public_key
+        public_key,
+        coins
     );
-    
+    secure_zero(coins, sizeof(coins));
+
     if (result != 0) {
         secure_zero(shared_secret->shared_secret, MLKEM768_SHARED_SECRET_BYTES);
         return KNISHIO_ERROR_CRYPTO;
     }
-    
+
     return KNISHIO_SUCCESS;
 
 #elif defined(HAVE_LIBOQS)
