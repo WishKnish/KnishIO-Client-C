@@ -24,8 +24,8 @@ extern "C" {
  * KNISHIO_VERSION_STRING into its results file, and the gauntlet's snapshot coherence
  * gate fails an SDK whose reported version disagrees with its manifest. */
 #define KNISHIO_VERSION_MINOR 9
-#define KNISHIO_VERSION_PATCH 3
-#define KNISHIO_VERSION_STRING "0.9.3"
+#define KNISHIO_VERSION_PATCH 4
+#define KNISHIO_VERSION_STRING "0.9.4"
 
 /* Forward declarations for opaque types */
 typedef struct knishio_client knishio_client_t;
