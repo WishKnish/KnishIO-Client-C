@@ -1,5 +1,5 @@
 /**
- * @file mlkem768.c
+ * @file mlkem.c
  * @brief ML-KEM post-quantum cryptography implementation (FIPS 203) for KnishIO SDK.
  * Supports both ML-KEM-1024 (default) and ML-KEM-768 (opt-in step-back).
  */

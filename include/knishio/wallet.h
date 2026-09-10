@@ -72,8 +72,8 @@ struct knishio_wallet {
     /* Cryptographic keys */
     char *private_key;              /**< Private key (2048 chars) */
     char *address;                  /**< Wallet address (64 chars) */
-    char *pubkey;                   /**< ML-KEM768 public key */
-    uint8_t *privkey_bytes;         /**< ML-KEM768 private key bytes */
+    char *pubkey;                   /**< ML-KEM public key (base64, configured parameter set) */
+    uint8_t *privkey_bytes;         /**< ML-KEM private key bytes (configured parameter set) */
     size_t privkey_bytes_len;       /**< Private key bytes length */
     knishio_mlkem_param_t mlkem_param; /**< ML-KEM parameter set (1024 default, 768 step-back) */
     
@@ -263,7 +263,8 @@ bool knishio_wallet_create_remainder(knishio_wallet_t *source_wallet,
 bool knishio_wallet_is_shadow(knishio_wallet_t *wallet);
 
 /**
- * @brief Initialize ML-KEM768 keys for wallet
+ * @brief Initialize the wallet's ML-KEM keypair at its configured parameter set
+ *        (ML-KEM-1024 by default, ML-KEM-768 as the opt-in step-back)
  * @param wallet Wallet to initialize
  * @return True on success, false on failure
  */

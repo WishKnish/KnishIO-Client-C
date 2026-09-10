@@ -14,8 +14,20 @@
 #include "knishio/wallet.h"
 #include "knishio/utils/memory.h"
 #include "knishio/utils/string.h"
+#include "knishio/utils/encoding.h"
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
+
+/* cJSON (same include guard as src/json/parser.c) for the nested snapshot object. */
+#ifdef __has_include
+  #if __has_include(<cjson/cJSON.h>)
+    #include <cjson/cJSON.h>
+  #elif __has_include(<cJSON.h>)
+    #include <cJSON.h>
+  #endif
+#else
+  #include <cjson/cJSON.h>
+#endif
 
 /* Internal helper functions */
 static char* knishio_auth_token_strdup_safe(const char* str);
@@ -113,6 +125,29 @@ knishio_error_t knishio_auth_token_restore(knishio_auth_token_t** auth_token,
         return KNISHIO_ERROR_INVALID_JSON;
     }
     
+    /* Resolve the wallet's ML-KEM parameter set — three tiers, identical in every SDK:
+     *   1. the snapshot carries it explicitly            -> use it
+     *   2. else decode `pubkey`: 1184 raw bytes -> 768, 1568 -> 1024
+     *   3. else                                          -> 768
+     * Tier 3 is deliberately NOT the constructor default: a snapshot with neither an explicit
+     * field nor a recognisable key can only have come from a pre-bump build, and every pre-bump
+     * build was ML-KEM-768-only. Falling back to the default is precisely the defect. */
+    knishio_mlkem_param_t resolved_param = KNISHIO_MLKEM_768;
+    double snapshot_param = 0.0;
+    if (knishio_json_get_number_path(json, "wallet.mlKemParameterSet", &snapshot_param)
+        && ((int)snapshot_param == 1024 || (int)snapshot_param == 768)) {
+        resolved_param = ((int)snapshot_param == 1024) ? KNISHIO_MLKEM_1024 : KNISHIO_MLKEM_768;
+    } else if (pubkey_str) {
+        unsigned char* pubkey_raw = NULL;
+        size_t pubkey_raw_len = 0;
+        if (knishio_base64_decode(pubkey_str, &pubkey_raw, &pubkey_raw_len)) {
+            if (pubkey_raw_len == KNISHIO_PUBKEY_LENGTH_1024) {
+                resolved_param = KNISHIO_MLKEM_1024;
+            }
+            free(pubkey_raw);
+        }
+    }
+
     /* Create wallet from snapshot data */
     knishio_wallet_t* wallet = NULL;
     bool wallet_success = knishio_wallet_from_secret(&wallet, secret, "AUTH", position_str);
@@ -120,6 +155,12 @@ knishio_error_t knishio_auth_token_restore(knishio_auth_token_t** auth_token,
     if (error != KNISHIO_SUCCESS) {
         knishio_json_free(json);
         return error;
+    }
+    if (knishio_wallet_get_mlkem_param(wallet) != resolved_param
+        && !knishio_wallet_set_mlkem_param(wallet, resolved_param)) {
+        knishio_wallet_free(wallet);
+        knishio_json_free(json);
+        return KNISHIO_ERROR_CRYPTO;
     }
     
     /* Verify wallet characters match */
@@ -242,75 +283,56 @@ knishio_error_t knishio_auth_token_get_snapshot(const knishio_auth_token_t* auth
     if (!auth_token || !snapshot_json) {
         return KNISHIO_ERROR_NULL_POINTER;
     }
-    
-    /* Create JSON builder for snapshot */
-    knishio_json_builder_t* builder = knishio_json_builder_create();
-    if (!builder) {
+    *snapshot_json = NULL;
+
+    /* Built with cJSON directly: knishio_json_builder_start_object() DISCARDS the object under
+     * construction, so the streaming builder cannot emit the nested `wallet` object this snapshot
+     * shape requires — it used to serialize the wallet sub-object ALONE, dropping token/expiresAt/
+     * pubkey/encrypt, and knishio_auth_token_restore() then rejected its own output. */
+    cJSON* root = cJSON_CreateObject();
+    cJSON* wallet = NULL;
+    if (!root) {
         return KNISHIO_ERROR_MEMORY;
     }
-    
-    /* Start object */
-    knishio_error_t error = knishio_json_builder_start_object(builder);
-    if (error != KNISHIO_SUCCESS) {
-        knishio_json_builder_free(builder);
-        return error;
+
+    knishio_error_t error = KNISHIO_SUCCESS;
+    if (!cJSON_AddStringToObject(root, "token", auth_token->token ? auth_token->token : "")
+        || !cJSON_AddNumberToObject(root, "expiresAt", (double)auth_token->expires_at)
+        || !cJSON_AddStringToObject(root, "pubkey", auth_token->pubkey ? auth_token->pubkey : "")
+        || !cJSON_AddBoolToObject(root, "encrypt", auth_token->encrypt)) {
+        error = KNISHIO_ERROR_MEMORY;
+        goto done;
     }
-    
-    /* Add token fields */
-    error = knishio_json_builder_add_string(builder, "token", auth_token->token ? auth_token->token : "");
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_add_number(builder, "expiresAt", (double)auth_token->expires_at);
-    }
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_add_string(builder, "pubkey", auth_token->pubkey ? auth_token->pubkey : "");
-    }
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_add_boolean(builder, "encrypt", auth_token->encrypt);
-    }
-    
-    /* Add wallet object */
-    if (error == KNISHIO_SUCCESS && auth_token->wallet) {
-        error = knishio_json_builder_add_key(builder, "wallet");
-        if (error == KNISHIO_SUCCESS) {
-            error = knishio_json_builder_start_object(builder);
-        }
-        
-        if (error == KNISHIO_SUCCESS) {
-            const char* position = knishio_wallet_get_position(auth_token->wallet);
-            error = knishio_json_builder_add_string(builder, "position", position ? position : "");
-        }
-        
-        if (error == KNISHIO_SUCCESS) {
-            const char* characters = knishio_wallet_get_characters(auth_token->wallet);
-            error = knishio_json_builder_add_string(builder, "characters", characters ? characters : "");
-        }
-        
-        if (error == KNISHIO_SUCCESS) {
-            error = knishio_json_builder_end_object(builder);
-        }
-    } else if (error == KNISHIO_SUCCESS) {
-        /* Add null wallet */
-        error = knishio_json_builder_add_null(builder, "wallet");
-    }
-    
-    /* End main object */
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_end_object(builder);
-    }
-    
-    /* Build JSON string */
-    if (error == KNISHIO_SUCCESS) {
-        knishio_json_t *json_result = knishio_json_builder_build(builder);
-        if (!json_result) {
+
+    if (auth_token->wallet) {
+        wallet = cJSON_CreateObject();
+        if (!wallet) { error = KNISHIO_ERROR_MEMORY; goto done; }
+        const char* position = knishio_wallet_get_position(auth_token->wallet);
+        const char* characters = knishio_wallet_get_characters(auth_token->wallet);
+        if (!cJSON_AddStringToObject(wallet, "position", position ? position : "")
+            || !cJSON_AddStringToObject(wallet, "characters", characters ? characters : "")
+            /* Persist the parameter set beside position/characters so a restored session keeps the
+             * set it authenticated with instead of taking the (now 1024) constructor default. */
+            || !cJSON_AddNumberToObject(wallet, "mlKemParameterSet",
+                                        (double)knishio_wallet_get_mlkem_param(auth_token->wallet))) {
             error = KNISHIO_ERROR_MEMORY;
-        } else {
-            *snapshot_json = knishio_json_builder_to_string(builder, false);
-            knishio_json_free(json_result);
-            error = *snapshot_json ? KNISHIO_SUCCESS : KNISHIO_ERROR_MEMORY;
+            goto done;
         }
+        cJSON_AddItemToObject(root, "wallet", wallet);
+        wallet = NULL;  /* ownership moved into `root` */
+    } else if (!cJSON_AddNullToObject(root, "wallet")) {
+        error = KNISHIO_ERROR_MEMORY;
+        goto done;
     }
-    
-    knishio_json_builder_free(builder);
+
+    *snapshot_json = cJSON_PrintUnformatted(root);
+    if (!*snapshot_json) {
+        error = KNISHIO_ERROR_MEMORY;
+    }
+
+done:
+    if (wallet) cJSON_Delete(wallet);
+    cJSON_Delete(root);
     return error;
 }
 
@@ -411,9 +433,11 @@ knishio_error_t knishio_auth_token_create_snapshot(const knishio_auth_token_t* a
         
         snap->wallet.position = knishio_auth_token_strdup_safe(position);
         snap->wallet.characters = knishio_auth_token_strdup_safe(characters);
+        snap->wallet.mlkem_parameter_set = (int)knishio_wallet_get_mlkem_param(auth_token->wallet);
     } else {
         snap->wallet.position = NULL;
         snap->wallet.characters = NULL;
+        snap->wallet.mlkem_parameter_set = 0;
     }
     
     *snapshot = snap;

@@ -58,6 +58,9 @@ typedef struct {
     struct {
         char* position;             /**< Wallet position */
         char* characters;           /**< Wallet characters */
+        int mlkem_parameter_set;    /**< Wallet ML-KEM parameter set (1024 / 768); serialized as
+                                     *   `wallet.mlKemParameterSet`. A snapshot without it can only
+                                     *   have come from a pre-bump (ML-KEM-768-only) build. */
     } wallet;
 } knishio_auth_token_snapshot_t;
 

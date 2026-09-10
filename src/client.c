@@ -70,9 +70,9 @@ struct knishio_client {
     /* PQ-transport (Phase E): ML-KEM CipherHash encrypted transport context (set at auth). */
     bool cipher_enabled;                /**< Encrypt subsequent ops via CipherHash */
     char *cipher_server_pubkey;         /**< Validator's ML-KEM pubkey (base64), for encrypt */
-    char *cipher_my_pubkey;             /**< This (AUTH) wallet's ML-KEM pubkey (base64), for hashShare */
-    uint8_t *cipher_my_privkey;         /**< This (AUTH) wallet's raw ML-KEM private key, for decrypt */
-    size_t cipher_my_privkey_len;       /**< Length of cipher_my_privkey */
+    knishio_wallet_t *cipher_wallet;    /**< Owned copy of the AUTH wallet's identity: supplies the
+                                         *   hashShare keys AND lets an inbound envelope at the
+                                         *   OTHER ML-KEM parameter set be decapsulated. */
     int mlkem_parameter_set;            /**< ML-KEM parameter set: 1024 or 768 */
 };
 
@@ -100,9 +100,7 @@ knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_c
     new_client->initialized = false;
     new_client->cipher_enabled = false;
     new_client->cipher_server_pubkey = NULL;
-    new_client->cipher_my_pubkey = NULL;
-    new_client->cipher_my_privkey = NULL;
-    new_client->cipher_my_privkey_len = 0;
+    new_client->cipher_wallet = NULL;
     new_client->mlkem_parameter_set = (config->mlkem_parameter_set == 768) ? 768 : 1024;
     knishio_wallet_set_default_mlkem_param(new_client->mlkem_parameter_set == 768 ? KNISHIO_MLKEM_768 : KNISHIO_MLKEM_1024);
     // Initialize authentication state
@@ -158,8 +156,7 @@ void knishio_client_destroy(knishio_client_t *client) {
 
     // Clean up PQ-transport cipher context
     if (client->cipher_server_pubkey) knishio_free(client->cipher_server_pubkey);
-    if (client->cipher_my_pubkey) knishio_free(client->cipher_my_pubkey);
-    if (client->cipher_my_privkey) knishio_free(client->cipher_my_privkey);
+    if (client->cipher_wallet) knishio_wallet_free(client->cipher_wallet);
 
     // Free the client structure
     knishio_free(client);
@@ -309,7 +306,7 @@ knishio_error_t knishio_client_execute_graphql(
     knishio_graphql_operation_t cipher_op;
     const knishio_graphql_operation_t* exec_op = operation;
 
-    if (client->cipher_enabled && client->cipher_server_pubkey && client->cipher_my_privkey
+    if (client->cipher_enabled && client->cipher_server_pubkey && client->cipher_wallet
         && cipher_should_encrypt(operation)) {
         cJSON* body_json = cJSON_CreateObject();
         if (body_json) {
@@ -353,8 +350,7 @@ knishio_error_t knishio_client_execute_graphql(
             cJSON* hash = ch ? cJSON_GetObjectItem(ch, "hash") : NULL;
             if (cJSON_IsString(hash)) {
                 char* inner = NULL;
-                if (knishio_cipher_hash_decrypt(cJSON_GetStringValue(hash), client->cipher_my_pubkey,
-                                                client->cipher_my_privkey, client->cipher_my_privkey_len,
+                if (knishio_cipher_hash_decrypt(cJSON_GetStringValue(hash), client->cipher_wallet,
                                                 &inner) == KNISHIO_SUCCESS && inner) {
                     knishio_free((*response)->data);
                     (*response)->data = inner;  /* ownership transferred (malloc'd) */
@@ -380,22 +376,36 @@ knishio_error_t knishio_client_set_cipher_context(knishio_client_t* client,
     }
     /* Replace any prior context. */
     if (client->cipher_server_pubkey) { knishio_free(client->cipher_server_pubkey); client->cipher_server_pubkey = NULL; }
-    if (client->cipher_my_pubkey)     { knishio_free(client->cipher_my_pubkey);     client->cipher_my_pubkey = NULL; }
-    if (client->cipher_my_privkey)    { knishio_free(client->cipher_my_privkey);    client->cipher_my_privkey = NULL; client->cipher_my_privkey_len = 0; }
+    if (client->cipher_wallet)        { knishio_wallet_free(client->cipher_wallet);  client->cipher_wallet = NULL; }
 
     client->cipher_server_pubkey = knishio_strdup(server_pubkey_b64);
-    if (source_wallet->pubkey) {
-        client->cipher_my_pubkey = knishio_strdup(source_wallet->pubkey);
-    }
-    if (source_wallet->privkey_bytes && source_wallet->privkey_bytes_len > 0) {
-        client->cipher_my_privkey = knishio_malloc(source_wallet->privkey_bytes_len);
-        if (client->cipher_my_privkey) {
-            memcpy(client->cipher_my_privkey, source_wallet->privkey_bytes, source_wallet->privkey_bytes_len);
-            client->cipher_my_privkey_len = source_wallet->privkey_bytes_len;
-        }
-    }
-    if (!client->cipher_server_pubkey || !client->cipher_my_pubkey || !client->cipher_my_privkey) {
+    if (!client->cipher_server_pubkey) {
         return KNISHIO_ERROR_MEMORY;
+    }
+
+    /* Own a copy of the AUTH wallet's identity. Re-deriving from (secret, token, position) is
+     * deterministic, so the copy's ML-KEM keypair is byte-identical to the source wallet's — and
+     * unlike a bare pubkey/privkey pair it also carries the KnishIO key the transport needs to
+     * derive this wallet's OTHER ML-KEM identity for a legacy inbound envelope. */
+    if (!source_wallet->secret || !source_wallet->token || !source_wallet->position) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    knishio_error_t error = knishio_wallet_create_simple(&client->cipher_wallet,
+                                                         source_wallet->secret,
+                                                         source_wallet->token,
+                                                         source_wallet->position);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
+    if (knishio_wallet_get_mlkem_param(client->cipher_wallet)
+        != knishio_wallet_get_mlkem_param(source_wallet)) {
+        knishio_wallet_set_mlkem_param(client->cipher_wallet,
+                                       knishio_wallet_get_mlkem_param(source_wallet));
+    }
+    if (!client->cipher_wallet->pubkey || !client->cipher_wallet->privkey_bytes) {
+        knishio_wallet_free(client->cipher_wallet);
+        client->cipher_wallet = NULL;
+        return KNISHIO_ERROR_CRYPTO;
     }
     return KNISHIO_SUCCESS;
 }

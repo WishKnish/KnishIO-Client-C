@@ -1,7 +1,7 @@
 # KnishIO C Client SDK
 cmake_minimum_required(VERSION 3.16)
 project(KnishIO-Client-C
-    VERSION 0.9.4
+    VERSION 1.0.0
     DESCRIPTION "KnishIO C Client SDK for post-blockchain DLT"
     LANGUAGES C
 )
@@ -568,6 +568,23 @@ if(KNISHIO_BUILD_TESTS)
              COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:mlkem_encaps_entropy>
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_encaps_entropy_twice.cmake)
     set_tests_properties(MlkemEncapsEntropy PROPERTIES LABELS "crypto;rng;pq")
+
+    # A build whose default ML-KEM parameter set is 1024 must still READ pre-bump ML-KEM-768
+    # records (frozen cross-SDK envelope + frozen signed auth molecule) and must still restore a
+    # pre-bump session as 768. Fixture path is baked in so the test is cwd-independent.
+    add_executable(mlkem_backcompat tests/mlkem_backcompat.c)
+    target_link_libraries(mlkem_backcompat PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(mlkem_backcompat PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(mlkem_backcompat PRIVATE
+        _GNU_SOURCE
+        KNISHIO_TEST_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cross-platform-test-vectors.json"
+    )
+    add_test(NAME MlkemBackCompat COMMAND mlkem_backcompat)
+    set_tests_properties(MlkemBackCompat PROPERTIES LABELS "crypto;pq;compat")
 endif()
 
 # Documentation

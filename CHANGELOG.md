@@ -14,6 +14,77 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
+## [1.0.0] — 2026-09-10
+
+### Changed
+
+- **ML-KEM-1024 is the default parameter set.** `knishio_client_config_t.mlkem_parameter_set`
+  and `knishio_wallet_set_mlkem_param()` / `knishio_wallet_set_default_mlkem_param()` select
+  `1024` (default) or `768` (opt-in step-back); a wallet's advertised `pubkey` is 1568 raw bytes
+  (2092 base64 chars) instead of 1184 (1580). Encapsulation is unchanged and still rejects a
+  recipient key whose decoded length is not a FIPS 203 ML-KEM public key.
+- `KNISHIO_MAX_META_VALUE_LENGTH` raised from 2048 to 4096 so a 2092-char base64 ML-KEM-1024
+  public key fits in atom meta (`walletPubkey` on the U-atom would otherwise be rejected).
+
+### Added
+
+- **A wallet now decrypts records addressed to its own ML-KEM-768 identity even when configured
+  at ML-KEM-1024**, by deriving that identity on demand. The 64-byte (d‖z) seed is
+  parameter-set-independent, so `src/crypto/cipher_hash.c` derives the sibling keypair, decapsulates
+  with it, and releases it through `knishio_secure_zero()` immediately — it is never cached on the
+  wallet. `knishio_cipher_hash_decrypt()` dispatches on the decoded ciphertext length, and its
+  `CipherHash` map lookup tries the configured identity's `hashShare` first and then the sibling
+  identity's, so an envelope addressed by a pre-bump sender is still found. Reading pre-bump 768
+  records needs no configuration change. Encapsulation and the advertised public key are unchanged
+  and remain single-set.
+- `knishio_cipher_hash_decrypt_envelope()` — decrypt one `{cipherText, encryptedMessage}` envelope
+  with a wallet's own identity at either parameter set.
+- `tests/mlkem_backcompat.c` (CTest `MlkemBackCompat`) asserts, from a default (1024) build: the
+  frozen cross-SDK ML-KEM-768 envelope decrypts directly; the advertised key is still 1568 bytes;
+  a ciphertext matching neither set still returns `KNISHIO_ERROR_INVALID_ARGS`; a 768-addressed
+  `CipherHash` map is found; a pre-bump session snapshot restores as 768; and the frozen pre-bump
+  768 auth molecule (`vectors.legacyMlkem768AuthMolecule`) still recomputes to its recorded
+  molecular hash with a 1184-byte `walletPubkey`. The C leg of that fixture covers
+  molecular-hash validation rather than full `knishio_molecule_check()`, because the SDK has no
+  molecule-from-JSON deserializer (`knishio_molecule_from_json()` returns
+  `KNISHIO_ERROR_NOT_IMPLEMENTED`); building one is a feature, not a release change.
+
+### Fixed
+
+- **The auth-token session snapshot now records the wallet's ML-KEM parameter set, and
+  `knishio_auth_token_restore()` honours it.** `wallet.mlKemParameterSet` joins `position` and
+  `characters` in the snapshot JSON and in `knishio_auth_token_snapshot_t`. Restore resolves the
+  set in three tiers: explicit field, else the decoded length of `pubkey` (1184 → 768, 1568 →
+  1024), else 768. A session persisted by an 0.9.x build therefore restores as ML-KEM-768 instead
+  of silently becoming 1024 and advertising a key the validator never recorded for that token.
+- **`knishio_auth_token_get_snapshot()` emitted only the nested `wallet` object**, dropping
+  `token`, `expiresAt`, `pubkey` and `encrypt`, so `knishio_auth_token_restore()` rejected the
+  SDK's own snapshots. `knishio_json_builder_start_object()` discards the object under
+  construction, so the streaming builder cannot nest; the snapshot is now built with cJSON
+  directly. (`knishio_auth_token_get_auth_data()` has the same nesting defect and is unchanged
+  here — it is a separate wire surface.)
+- `knishio_client_set_cipher_context()` now keeps an owned copy of the AUTH wallet rather than a
+  bare public/private ML-KEM key pair, which is what lets the transport derive the wallet's other
+  identity for a legacy inbound envelope.
+
+### Removed
+
+- The ML-KEM-768 alias layer: `include/knishio/crypto/mlkem768.h`, its three
+  `knishio_mlkem768_*_t` typedefs (`keypair`, `ciphertext`, `shared_secret`) and its thirteen
+  `knishio_mlkem768_*` wrappers. Use the parameter-set-neutral `knishio/crypto/mlkem.h` API
+  (`knishio_mlkem_keypair_from_seed()`, `knishio_mlkem_encapsulate()`,
+  `knishio_mlkem_decapsulate()`, …), which dispatches on key/ciphertext length. No aliases
+  retained. `src/crypto/mlkem768.c` is renamed `src/crypto/mlkem.c`.
+- `knishio_cipher_hash_decrypt()`'s `(my_pubkey_b64, my_privkey, my_privkey_len)` parameters,
+  replaced by the `const knishio_wallet_t*` the dual-identity path requires.
+
+### Notes
+
+- `0.9.5`–`0.9.9` were never released; the ML-KEM-1024 cutover is a breaking API change and takes
+  the 1.0.0 line.
+- Nothing on the wire changed and no hashed bytes changed: the parameter set is recoverable from
+  FIPS 203's disjoint key/ciphertext lengths, so no migration is required.
+
 ## [0.9.4] — 2026-08-17
 
 ### Security
@@ -259,7 +330,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/0.9.4...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.0.0
 [0.9.4]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/0.9.4
 [0.9.3]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/0.9.3
 [0.9.2]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/0.9.2

@@ -19,13 +19,13 @@ extern "C" {
 #endif
 
 /* Version information */
-#define KNISHIO_VERSION_MAJOR 0
+#define KNISHIO_VERSION_MAJOR 1
 /* Keep in step with project(VERSION) in CMakeLists.txt. self-test.c reports
  * KNISHIO_VERSION_STRING into its results file, and the gauntlet's snapshot coherence
  * gate fails an SDK whose reported version disagrees with its manifest. */
-#define KNISHIO_VERSION_MINOR 9
-#define KNISHIO_VERSION_PATCH 4
-#define KNISHIO_VERSION_STRING "0.9.4"
+#define KNISHIO_VERSION_MINOR 0
+#define KNISHIO_VERSION_PATCH 0
+#define KNISHIO_VERSION_STRING "1.0.0"
 
 /* Forward declarations for opaque types */
 typedef struct knishio_client knishio_client_t;
