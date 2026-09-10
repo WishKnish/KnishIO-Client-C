@@ -689,7 +689,7 @@ message(STATUS "  GraphQL Operations: Complete implementation with 15+ queries, 
 find_program(CLANG_TIDY_EXE NAMES clang-tidy HINTS /opt/homebrew/opt/llvm/bin)
 if(CLANG_TIDY_EXE)
     set(KNISHIO_LINT_SOURCES ${KNISHIO_SOURCES})
-    list(FILTER KNISHIO_LINT_SOURCES EXCLUDE REGEX "external/mlkem-native")
+    list(FILTER KNISHIO_LINT_SOURCES EXCLUDE REGEX "external/mlkem-native|mlkem_native_multilevel")
     list(TRANSFORM KNISHIO_LINT_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
     # macOS: the build uses Apple clang (/usr/bin/cc), whose implicit SDK sysroot differs
     # from Homebrew LLVM clang-tidy → pass the SDK sysroot so <stdlib.h> etc. resolve.
