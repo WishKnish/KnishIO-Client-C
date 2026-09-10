@@ -1,7 +1,7 @@
 #include "knishio/wallet.h"
 #include "knishio/crypto/shake256.h"
 #include "knishio/crypto/bigint.h"
-#include "knishio/crypto/mlkem768.h"
+#include "knishio/crypto/mlkem.h"
 #include "knishio/utils/memory.h"
 #include "knishio/utils/string.h"
 #include "knishio/utils/security.h"
@@ -861,6 +861,18 @@ void knishio_position_sequence_free(knishio_position_sequence_t *sequence) {
 /**
  * @brief Create wallet from parameters (full implementation)
  */
+static knishio_mlkem_param_t g_default_mlkem_param = KNISHIO_MLKEM_1024;
+
+bool knishio_wallet_set_default_mlkem_param(knishio_mlkem_param_t param) {
+    if (param != KNISHIO_MLKEM_1024 && param != KNISHIO_MLKEM_768) return false;
+    g_default_mlkem_param = param;
+    return true;
+}
+
+knishio_mlkem_param_t knishio_wallet_get_default_mlkem_param(void) {
+    return g_default_mlkem_param;
+}
+
 /**
  * @brief Derive the wallet's ML-KEM768 keypair from its private key and store the
  *        base64 public key in wallet->pubkey. Mirrors JS Wallet.initializeMLKEM:
@@ -869,6 +881,10 @@ void knishio_position_sequence_free(knishio_position_sequence_t *sequence) {
 bool knishio_wallet_initialize_mlkem(knishio_wallet_t *wallet) {
     if (!wallet || !wallet->private_key) {
         return false;
+    }
+
+    if (wallet->mlkem_param == 0) {
+        wallet->mlkem_param = knishio_wallet_get_default_mlkem_param();
     }
 
     /* JS: const seedHex = generateSecret(this.key, 128) -> 128 hex chars = 64 bytes */
@@ -889,39 +905,53 @@ bool knishio_wallet_initialize_mlkem(knishio_wallet_t *wallet) {
     }
     free(seed_hex);
 
-    /* Deterministic ML-KEM768 keygen (FIPS-203, mlkem-native) */
-    knishio_mlkem768_keypair_t keypair;
-    if (knishio_mlkem768_keypair_from_seed(&keypair, seed, sizeof(seed)) != KNISHIO_SUCCESS) {
+    /* Deterministic ML-KEM keygen (FIPS-203, mlkem-native) */
+    knishio_mlkem_keypair_t keypair;
+    if (knishio_mlkem_keypair_from_seed(&keypair, seed, sizeof(seed), wallet->mlkem_param) != KNISHIO_SUCCESS) {
         memset(seed, 0, sizeof(seed));
         return false;
     }
     memset(seed, 0, sizeof(seed));
 
-    /* base64-encode the 1184-byte public key (JS serializes the ML-KEM pubkey as base64) */
+    /* base64-encode the public key (JS serializes the ML-KEM pubkey as base64) */
     char *pubkey_b64 = NULL;
-    if (!knishio_base64_encode(keypair.public_key, KNISHIO_PUBKEY_LENGTH, &pubkey_b64)) {
+    if (!knishio_base64_encode(keypair.public_key, keypair.public_key_len, &pubkey_b64)) {
         return false;
     }
 
     knishio_free(wallet->pubkey);
     wallet->pubkey = pubkey_b64;
 
-    /* PQ-transport Phase E: retain the raw ML-KEM768 private key so this wallet can DECRYPT messages
-     * addressed to it (CipherHash responses). Previously only the public key was stored, so the
-     * wallet could encrypt-to-others but never decrypt-for-itself. */
+    /* PQ-transport Phase E: retain the raw ML-KEM private key so this wallet can DECRYPT messages
+     * addressed to it (CipherHash responses). */
     if (wallet->privkey_bytes) {
         knishio_secure_zero(wallet->privkey_bytes, wallet->privkey_bytes_len);
         knishio_free(wallet->privkey_bytes);
         wallet->privkey_bytes = NULL;
         wallet->privkey_bytes_len = 0;
     }
-    wallet->privkey_bytes = knishio_malloc(sizeof(keypair.private_key));
+    wallet->privkey_bytes = knishio_malloc(keypair.private_key_len);
     if (wallet->privkey_bytes) {
-        memcpy(wallet->privkey_bytes, keypair.private_key, sizeof(keypair.private_key));
-        wallet->privkey_bytes_len = sizeof(keypair.private_key);
+        memcpy(wallet->privkey_bytes, keypair.private_key, keypair.private_key_len);
+        wallet->privkey_bytes_len = keypair.private_key_len;
     }
     knishio_secure_zero(keypair.private_key, sizeof(keypair.private_key));
     return true;
+}
+
+bool knishio_wallet_set_mlkem_param(knishio_wallet_t *wallet, knishio_mlkem_param_t param) {
+    if (!wallet) return false;
+    if (param != KNISHIO_MLKEM_1024 && param != KNISHIO_MLKEM_768) return false;
+    wallet->mlkem_param = param;
+    if (wallet->private_key) {
+        return knishio_wallet_initialize_mlkem(wallet);
+    }
+    return true;
+}
+
+knishio_mlkem_param_t knishio_wallet_get_mlkem_param(const knishio_wallet_t *wallet) {
+    if (!wallet) return KNISHIO_MLKEM_1024;
+    return wallet->mlkem_param ? wallet->mlkem_param : KNISHIO_MLKEM_1024;
 }
 
 bool knishio_wallet_create_from_params(knishio_wallet_t **wallet,
@@ -944,6 +974,7 @@ bool knishio_wallet_create_from_params(knishio_wallet_t **wallet,
     
     knishio_wallet_t *w = *wallet;
     memset(w, 0, sizeof(knishio_wallet_t));
+    w->mlkem_param = knishio_wallet_get_default_mlkem_param();
     
     /* Set basic properties */
     w->secret = knishio_strdup(secret);

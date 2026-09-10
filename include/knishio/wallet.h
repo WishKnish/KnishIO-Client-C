@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "knishio/crypto/mlkem.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,7 +31,9 @@ extern "C" {
 #define KNISHIO_POSITION_LENGTH     64      /**< Position string length */
 #define KNISHIO_ADDRESS_LENGTH      64      /**< Address string length */
 #define KNISHIO_PRIVKEY_LENGTH      2048    /**< Private key length */
-#define KNISHIO_PUBKEY_LENGTH       1184    /**< Public key length (ML-KEM768) */
+#define KNISHIO_PUBKEY_LENGTH_1024  1568    /**< Public key length (ML-KEM-1024) */
+#define KNISHIO_PUBKEY_LENGTH_768   1184    /**< Public key length (ML-KEM-768) */
+#define KNISHIO_PUBKEY_LENGTH       1568    /**< Default public key length (ML-KEM-1024) */
 #define KNISHIO_FIXED_POSITION      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 #define KNISHIO_POSITION_CHARSET    "abcdef0123456789"
 #define KNISHIO_DEFAULT_TOKEN       "USER"
@@ -72,6 +75,7 @@ struct knishio_wallet {
     char *pubkey;                   /**< ML-KEM768 public key */
     uint8_t *privkey_bytes;         /**< ML-KEM768 private key bytes */
     size_t privkey_bytes_len;       /**< Private key bytes length */
+    knishio_mlkem_param_t mlkem_param; /**< ML-KEM parameter set (1024 default, 768 step-back) */
     
     /* Wallet state */
     double balance;                 /**< Current balance */
@@ -264,6 +268,10 @@ bool knishio_wallet_is_shadow(knishio_wallet_t *wallet);
  * @return True on success, false on failure
  */
 bool knishio_wallet_initialize_mlkem(knishio_wallet_t *wallet);
+bool knishio_wallet_set_mlkem_param(knishio_wallet_t *wallet, knishio_mlkem_param_t param);
+knishio_mlkem_param_t knishio_wallet_get_mlkem_param(const knishio_wallet_t *wallet);
+bool knishio_wallet_set_default_mlkem_param(knishio_mlkem_param_t param);
+knishio_mlkem_param_t knishio_wallet_get_default_mlkem_param(void);
 
 /* Wallet Bundle Management */
 

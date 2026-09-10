@@ -9,7 +9,7 @@
  */
 
 #include "knishio/crypto/cipher_hash.h"
-#include "knishio/crypto/mlkem768.h"
+#include "knishio/crypto/mlkem.h"
 #include "knishio/crypto/aes_gcm.h"
 #include "knishio/crypto/shake256.h"
 #include "knishio/utils/encoding.h"
@@ -28,6 +28,10 @@
 #else
   #include <cjson/cJSON.h>
 #endif
+
+#define KNISHIO_MLKEM1024_PUBKEY_BYTES     1568
+#define KNISHIO_MLKEM1024_CIPHERTEXT_BYTES 1568
+#define KNISHIO_MLKEM1024_PRIVKEY_BYTES    3168
 
 #define KNISHIO_MLKEM768_PUBKEY_BYTES     1184
 #define KNISHIO_MLKEM768_CIPHERTEXT_BYTES 1088
@@ -74,7 +78,7 @@ knishio_error_t knishio_cipher_hash_encrypt(const char* body, const char* server
      *    clean KNISHIO_ERROR_INVALID_ARGS rather than failing deep inside encapsulate. This is the C
      *    analogue of the other SDKs' encrypt guards (which throw an actionable error). */
     if (!knishio_base64_decode(server_pubkey_b64, &pubkey_raw, &pubkey_raw_len)
-        || pubkey_raw_len != KNISHIO_MLKEM768_PUBKEY_BYTES) {
+        || (pubkey_raw_len != KNISHIO_MLKEM1024_PUBKEY_BYTES && pubkey_raw_len != KNISHIO_MLKEM768_PUBKEY_BYTES)) {
         err = KNISHIO_ERROR_INVALID_ARGS;
         goto done;
     }
@@ -86,16 +90,16 @@ knishio_error_t knishio_cipher_hash_encrypt(const char* body, const char* server
     if (!json_msg) { err = KNISHIO_ERROR_MEMORY; goto done; }
 
     /* 3. Encapsulate (KEM) + AES-256-GCM encrypt with the shared secret. */
-    knishio_mlkem768_ciphertext_t kem_ct;
-    knishio_mlkem768_shared_secret_t shared_secret;
-    err = knishio_mlkem768_encapsulate(pubkey_raw, &kem_ct, &shared_secret);
+    knishio_mlkem_ciphertext_t kem_ct;
+    knishio_mlkem_shared_secret_t shared_secret;
+    err = knishio_mlkem_encapsulate(pubkey_raw, pubkey_raw_len, &kem_ct, &shared_secret);
     if (err != KNISHIO_SUCCESS) { goto done; }
     err = knishio_aes_gcm_encrypt((const uint8_t*)json_msg, strlen(json_msg),
                                   shared_secret.shared_secret, &aes_out, &aes_len);
     if (err != KNISHIO_SUCCESS) { goto done; }
 
     /* 4. Base64 both halves of the canonical envelope. */
-    if (!knishio_base64_encode(kem_ct.ciphertext, sizeof(kem_ct.ciphertext), &cipher_text_b64)
+    if (!knishio_base64_encode(kem_ct.ciphertext, kem_ct.ciphertext_len, &cipher_text_b64)
         || !knishio_base64_encode(aes_out, aes_len, &enc_msg_b64)) {
         err = KNISHIO_ERROR_MEMORY;
         goto done;
@@ -136,7 +140,7 @@ knishio_error_t knishio_cipher_hash_decrypt(const char* map_json, const char* my
     if (!map_json || !my_pubkey_b64 || !my_privkey || !plaintext_out) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    if (my_privkey_len != KNISHIO_MLKEM768_PRIVKEY_BYTES) {
+    if (my_privkey_len != KNISHIO_MLKEM1024_PRIVKEY_BYTES && my_privkey_len != KNISHIO_MLKEM768_PRIVKEY_BYTES) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     *plaintext_out = NULL;
@@ -164,8 +168,9 @@ knishio_error_t knishio_cipher_hash_decrypt(const char* map_json, const char* my
     cJSON* em = cJSON_GetObjectItem(entry, "encryptedMessage");
     if (!cJSON_IsString(ct) || !cJSON_IsString(em)) { err = KNISHIO_ERROR_INVALID_ARGS; goto done; }
 
+    size_t expected_ct_len = (my_privkey_len == KNISHIO_MLKEM1024_PRIVKEY_BYTES) ? KNISHIO_MLKEM1024_CIPHERTEXT_BYTES : KNISHIO_MLKEM768_CIPHERTEXT_BYTES;
     if (!knishio_base64_decode(cJSON_GetStringValue(ct), &kem_raw, &kem_raw_len)
-        || kem_raw_len != KNISHIO_MLKEM768_CIPHERTEXT_BYTES) {
+        || kem_raw_len != expected_ct_len) {
         err = KNISHIO_ERROR_INVALID_ARGS;
         goto done;
     }
@@ -174,12 +179,12 @@ knishio_error_t knishio_cipher_hash_decrypt(const char* map_json, const char* my
         goto done;
     }
 
-    knishio_mlkem768_ciphertext_t kem_ct;
-    memcpy(kem_ct.ciphertext, kem_raw, KNISHIO_MLKEM768_CIPHERTEXT_BYTES);
-    knishio_mlkem768_shared_secret_t shared_secret;
-    err = knishio_mlkem768_decapsulate(my_privkey, &kem_ct, &shared_secret);
+    knishio_mlkem_ciphertext_t kem_ct;
+    memcpy(kem_ct.ciphertext, kem_raw, kem_raw_len);
+    kem_ct.ciphertext_len = kem_raw_len;
+    knishio_mlkem_shared_secret_t shared_secret;
+    err = knishio_mlkem_decapsulate(my_privkey, my_privkey_len, &kem_ct, &shared_secret);
     if (err != KNISHIO_SUCCESS) { goto done; }
-
     err = knishio_aes_gcm_decrypt(enc_raw, enc_raw_len, shared_secret.shared_secret, &pt, &pt_len);
     if (err != KNISHIO_SUCCESS) { goto done; }
 

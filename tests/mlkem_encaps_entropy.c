@@ -18,7 +18,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#include "knishio/crypto/mlkem768.h"
+#include "knishio/crypto/mlkem.h"
 
 int main(void) {
     /* Fixed 64-byte (d || z) seed -> deterministic keypair -> fixed public key. */
@@ -27,20 +27,20 @@ int main(void) {
         seed[i] = (uint8_t)i;
     }
 
-    knishio_mlkem768_keypair_t keypair = {0};
-    if (knishio_mlkem768_keypair_from_seed(&keypair, seed, sizeof(seed)) != KNISHIO_SUCCESS) {
+    knishio_mlkem_keypair_t keypair = {0};
+    if (knishio_mlkem_keypair_from_seed(&keypair, seed, sizeof(seed), KNISHIO_MLKEM_1024) != KNISHIO_SUCCESS) {
         fprintf(stderr, "mlkem_encaps_entropy: keypair_from_seed failed\n");
         return 2;
     }
 
-    knishio_mlkem768_ciphertext_t ct;
-    knishio_mlkem768_shared_secret_t ss;
-    if (knishio_mlkem768_encapsulate(keypair.public_key, &ct, &ss) != KNISHIO_SUCCESS) {
+    knishio_mlkem_ciphertext_t ct = {0};
+    knishio_mlkem_shared_secret_t ss = {0};
+    if (knishio_mlkem_encapsulate(keypair.public_key, keypair.public_key_len, &ct, &ss) != KNISHIO_SUCCESS) {
         fprintf(stderr, "mlkem_encaps_entropy: encapsulate failed\n");
         return 2;
     }
 
-    for (size_t i = 0; i < sizeof(ct.ciphertext); i++) {
+    for (size_t i = 0; i < ct.ciphertext_len; i++) {
         printf("%02x", ct.ciphertext[i]);
     }
     printf("\n");

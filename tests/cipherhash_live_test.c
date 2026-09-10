@@ -46,6 +46,9 @@ int main(void) {
         goto cleanup;
     }
 
+    const char* param_env = getenv("CIPHERHASH_MLKEM_PARAMETER_SET");
+    int param = (param_env && strcmp(param_env, "768") == 0) ? 768 : 1024;
+
     knishio_client_config_t config = {
         .uri = url,
         .cell_slug = "public",   /* the active dev cell (TESTCELL is inactive there) */
@@ -53,7 +56,8 @@ int main(void) {
         .socket = NULL,
         .server_sdk_version = 3,
         .logging = false,
-        .insecure_tls = false
+        .insecure_tls = false,
+        .mlkem_parameter_set = param
     };
     if (knishio_client_create(&client, &config) != KNISHIO_SUCCESS || !client) {
         fprintf(stderr, "FAIL: could not create client\n");

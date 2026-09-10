@@ -66,6 +66,7 @@ typedef struct {
     int server_sdk_version;    /**< Server SDK version */
     bool logging;              /**< Enable logging */
     bool insecure_tls;         /**< Skip TLS cert verification (dev/self-signed validators); default false = verify */
+    int mlkem_parameter_set;   /**< ML-KEM parameter set: 1024 (default) or 768 */
 } knishio_client_config_t;
 
 /**
@@ -115,7 +116,7 @@ typedef struct {
 #include "knishio/utils/array.h"
 #include "knishio/utils/map.h"
 #include "knishio/crypto/shake256.h"
-#include "knishio/crypto/mlkem768.h"
+#include "knishio/crypto/mlkem.h"
 #include "knishio/meta.h"
 #include "knishio/exceptions.h"
 #include "knishio/http.h"

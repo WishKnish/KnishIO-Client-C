@@ -91,6 +91,15 @@ const char* knishio_client_get_cell_slug(const knishio_client_t* client);
  * @return KNISHIO_SUCCESS on success, error code on failure
  */
 knishio_error_t knishio_client_clear_auth(knishio_client_t *client);
+/**
+ * @brief Get client's active ML-KEM parameter set (1024 or 768)
+ */
+int knishio_client_get_mlkem_parameter_set(const knishio_client_t* client);
+
+/**
+ * @brief Set client's active ML-KEM parameter set (1024 or 768)
+ */
+void knishio_client_set_mlkem_parameter_set(knishio_client_t* client, int param_set);
 
 #ifdef __cplusplus
 }

@@ -73,11 +73,17 @@ struct knishio_client {
     char *cipher_my_pubkey;             /**< This (AUTH) wallet's ML-KEM pubkey (base64), for hashShare */
     uint8_t *cipher_my_privkey;         /**< This (AUTH) wallet's raw ML-KEM private key, for decrypt */
     size_t cipher_my_privkey_len;       /**< Length of cipher_my_privkey */
+    int mlkem_parameter_set;            /**< ML-KEM parameter set: 1024 or 768 */
 };
 
 /* Client management implementations */
 knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_client_config_t *config) {
     if (client == NULL || config == NULL) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (config->mlkem_parameter_set != 0 &&
+        config->mlkem_parameter_set != 1024 &&
+        config->mlkem_parameter_set != 768) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     
@@ -97,7 +103,8 @@ knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_c
     new_client->cipher_my_pubkey = NULL;
     new_client->cipher_my_privkey = NULL;
     new_client->cipher_my_privkey_len = 0;
-    
+    new_client->mlkem_parameter_set = (config->mlkem_parameter_set == 768) ? 768 : 1024;
+    knishio_wallet_set_default_mlkem_param(new_client->mlkem_parameter_set == 768 ? KNISHIO_MLKEM_768 : KNISHIO_MLKEM_1024);
     // Initialize authentication state
     memset(&new_client->auth_state, 0, sizeof(knishio_client_auth_state_t));
     new_client->auth_state.refresh_threshold_ms = 300000; // 5 minutes default
@@ -402,5 +409,15 @@ void knishio_client_set_encryption(knishio_client_t* client, bool encrypt) {
 void knishio_client_switch_encryption(knishio_client_t* client, bool encrypt) {
     if (client) {
         client->cipher_enabled = encrypt;
+    }
+}
+int knishio_client_get_mlkem_parameter_set(const knishio_client_t* client) {
+    if (!client) return 1024;
+    return (client->mlkem_parameter_set == 768) ? 768 : 1024;
+}
+
+void knishio_client_set_mlkem_parameter_set(knishio_client_t* client, int param_set) {
+    if (client) {
+        client->mlkem_parameter_set = (param_set == 768) ? 768 : 1024;
     }
 }
