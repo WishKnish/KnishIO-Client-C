@@ -14,6 +14,26 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
+## [Unreleased]
+
+### Added
+
+- **Secret-storage envelope encryption layer** (`knishio_envelope_seal`, `knishio_envelope_open`, `knishio_envelope_seal_json`, `knishio_envelope_open_json` in `include/knishio/storage/envelope.h`):
+  - Custody-agnostic AES-256-GCM envelope encryption with PBKDF2-HMAC-SHA256 key derivation (100,000 iterations, 16-byte random salt, 12-byte random IV, 16-byte tag appended to ciphertext, standard padded base64 encoding).
+  - Versioned `knishio_encrypted_payload_t` and `knishio_secret_metadata_t` with camelCase JSON framing adhering to the cross-SDK contract (`bundleHash`, `createdAt`, `hardwareBacked`, `providerType`, optional `label` omitted when NULL).
+  - Pluggable `knishio_storage_backend_t` interface with in-memory (`knishio_memory_storage_backend_create`) and atomic file-backed (`knishio_file_storage_backend_create`) implementations (0600 permissions, atomic tempfile rename).
+  - `knishio_aes_gcm_encrypt_iv` and `knishio_aes_gcm_decrypt_iv` in `include/knishio/crypto/aes_gcm.h` exposing explicit-IV encryption/decryption.
+  - Test suite in `tests/test_secret_storage.c` (CTest `test_secret_storage`) verifying cross-SDK decryption of frozen vector `vectors.secret_storage_envelope.tests[0]`, camelCase metadata contract, wrong-passphrase and corrupted-payload rejection, and storage backend operations.
+
+- **Secret Recovery (`knishio_envelope_recover_secret` & `KNISHIO_RECOVERY_KEY_PREFIX`)**:
+  - Added `#define KNISHIO_RECOVERY_KEY_PREFIX "knishio:recovery:"` in `include/knishio/storage/types.h`.
+  - Added `recovery_passphrase` and `allow_unrecoverable` to `knishio_storage_options_t`.
+  - Secondary recovery envelope: when `options->recovery_passphrase` is provided to `knishio_envelope_store_secret`, a secondary software AES-256-GCM envelope is sealed and stored under `knishio:recovery:<bundleHash>`.
+  - Secret recovery: `knishio_envelope_recover_secret` opens the recovery envelope under `recovery_passphrase`, re-encrypts the master secret under `new_passphrase`, stores the new primary envelope, and zeroizes plaintext memory without leaking it to the caller.
+  - Fail-closed semantics: wrong recovery passphrase or missing recovery envelope fails closed with an error code.
+  - Secret deletion: `knishio_envelope_delete_secret` and `knishio_storage_backend_delete_secret` remove both `knishio:secret:<bundleHash>` and `knishio:recovery:<bundleHash>`.
+  - Secret listing: `knishio_envelope_list_secrets` filters out all `knishio:recovery:` keys.
+
 ## [1.0.0] — 2026-09-10
 
 ### Changed

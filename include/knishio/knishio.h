@@ -130,6 +130,11 @@ typedef struct {
 /* High-level client operations for full JS SDK alignment */
 #include "knishio/client_ops.h"
 
+/* Secret storage envelope and backends */
+#include "knishio/storage/types.h"
+#include "knishio/storage/backend.h"
+#include "knishio/storage/envelope.h"
+
 /**
  * @brief Get version string
  * @return Version string

@@ -215,3 +215,161 @@ cleanup:
     }
     return result;
 }
+
+knishio_error_t knishio_aes_gcm_encrypt_iv(
+    const uint8_t *plaintext,
+    size_t plaintext_len,
+    const uint8_t *key,
+    const uint8_t *iv,
+    size_t iv_len,
+    uint8_t **ciphertext_out,
+    size_t *ciphertext_len_out
+) {
+    if (!plaintext || !key || !iv || !ciphertext_out || !ciphertext_len_out) {
+        return KNISHIO_ERROR_NULL_POINTER;
+    }
+
+    EVP_CIPHER_CTX *ctx = NULL;
+    uint8_t tag[AES_GCM_TAG_SIZE];
+    uint8_t *output = NULL;
+    size_t output_len = plaintext_len + AES_GCM_TAG_SIZE;
+    int len = 0;
+    int ciphertext_len = 0;
+    knishio_error_t result = KNISHIO_ERROR_CRYPTO;
+
+    output = malloc(output_len);
+    if (!output) {
+        result = KNISHIO_ERROR_MEMORY;
+        goto cleanup;
+    }
+
+    ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        goto cleanup;
+    }
+
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)iv_len, NULL) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_EncryptUpdate(ctx, output, &len, plaintext, (int)plaintext_len) != 1) {
+        goto cleanup;
+    }
+    ciphertext_len = len;
+
+    if (EVP_EncryptFinal_ex(ctx, output + len, &len) != 1) {
+        goto cleanup;
+    }
+    ciphertext_len += len;
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, AES_GCM_TAG_SIZE, tag) != 1) {
+        goto cleanup;
+    }
+
+    memcpy(output + (size_t)ciphertext_len, tag, AES_GCM_TAG_SIZE);
+
+    *ciphertext_out = output;
+    *ciphertext_len_out = (size_t)ciphertext_len + AES_GCM_TAG_SIZE;
+    result = KNISHIO_SUCCESS;
+    output = NULL;
+
+cleanup:
+    if (ctx) {
+        EVP_CIPHER_CTX_free(ctx);
+    }
+    if (output) {
+        free(output);
+    }
+    return result;
+}
+
+knishio_error_t knishio_aes_gcm_decrypt_iv(
+    const uint8_t *ciphertext,
+    size_t ciphertext_len,
+    const uint8_t *key,
+    const uint8_t *iv,
+    size_t iv_len,
+    uint8_t **plaintext_out,
+    size_t *plaintext_len_out
+) {
+    if (!ciphertext || !key || !iv || !plaintext_out || !plaintext_len_out) {
+        return KNISHIO_ERROR_NULL_POINTER;
+    }
+
+    if (ciphertext_len < AES_GCM_TAG_SIZE) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+
+    EVP_CIPHER_CTX *ctx = NULL;
+    uint8_t *plaintext = NULL;
+    size_t encrypted_len = ciphertext_len - AES_GCM_TAG_SIZE;
+    int len = 0;
+    int plaintext_len = 0;
+    knishio_error_t result = KNISHIO_ERROR_CRYPTO;
+
+    const uint8_t *encrypted_data = ciphertext;
+    const uint8_t *tag = ciphertext + encrypted_len;
+
+    plaintext = malloc(encrypted_len + 1);
+    if (!plaintext) {
+        result = KNISHIO_ERROR_MEMORY;
+        goto cleanup;
+    }
+
+    ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        goto cleanup;
+    }
+
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)iv_len, NULL) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv) != 1) {
+        goto cleanup;
+    }
+
+    if (EVP_DecryptUpdate(ctx, plaintext, &len, encrypted_data, (int)encrypted_len) != 1) {
+        goto cleanup;
+    }
+    plaintext_len = len;
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, AES_GCM_TAG_SIZE, (void *)(uintptr_t)tag) != 1) {
+        goto cleanup;
+    }
+
+    int ret = EVP_DecryptFinal_ex(ctx, plaintext + len, &len);
+    if (ret <= 0) {
+        result = KNISHIO_ERROR_CRYPTO;
+        goto cleanup;
+    }
+    plaintext_len += len;
+
+    plaintext[plaintext_len] = '\0';
+
+    *plaintext_out = plaintext;
+    *plaintext_len_out = (size_t)plaintext_len;
+    result = KNISHIO_SUCCESS;
+    plaintext = NULL;
+
+cleanup:
+    if (ctx) {
+        EVP_CIPHER_CTX_free(ctx);
+    }
+    if (plaintext) {
+        free(plaintext);
+    }
+    return result;
+}

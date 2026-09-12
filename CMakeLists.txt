@@ -190,6 +190,11 @@ set(KNISHIO_SOURCES
     src/crypto/aes_gcm.c
     src/crypto/cipher_hash.c
 
+
+    # Secret storage
+    src/storage/types.c
+    src/storage/envelope.c
+    src/storage/backend.c
     # JSON handling
     src/json/parser.c
     src/json/builder.c
@@ -585,6 +590,29 @@ if(KNISHIO_BUILD_TESTS)
     )
     add_test(NAME MlkemBackCompat COMMAND mlkem_backcompat)
     set_tests_properties(MlkemBackCompat PROPERTIES LABELS "crypto;pq;compat")
+
+    # Secret storage envelope tests (AES-256-GCM + PBKDF2 cross-SDK envelope, camelCase metadata, memory and file backends)
+    add_executable(test_secret_storage tests/test_secret_storage.c)
+    target_link_libraries(test_secret_storage PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(test_secret_storage PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(test_secret_storage PRIVATE
+        _GNU_SOURCE
+        KNISHIO_TEST_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cross-platform-test-vectors.json"
+    )
+    add_test(NAME test_secret_storage COMMAND test_secret_storage)
+    set_tests_properties(test_secret_storage PROPERTIES LABELS "storage;crypto;envelope")
+    add_executable(secret_storage_cli tests/secret_storage_cli.c)
+    target_link_libraries(secret_storage_cli PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(secret_storage_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(secret_storage_cli PRIVATE _GNU_SOURCE)
 endif()
 
 # Documentation

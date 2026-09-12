@@ -61,6 +61,48 @@ knishio_error_t knishio_aes_gcm_decrypt(
     size_t *plaintext_len_out
 );
 
+/**
+ * @brief Encrypt data using AES-256-GCM with caller-provided IV
+ * @param plaintext Data to encrypt
+ * @param plaintext_len Length of plaintext
+ * @param key 32-byte encryption key
+ * @param iv IV buffer (typically 12 bytes)
+ * @param iv_len Length of IV (AES_GCM_IV_SIZE = 12)
+ * @param ciphertext_out Output buffer: [encrypted data][16-byte tag]
+ * @param ciphertext_len_out Length of output (plaintext_len + 16)
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_aes_gcm_encrypt_iv(
+    const uint8_t *plaintext,
+    size_t plaintext_len,
+    const uint8_t *key,
+    const uint8_t *iv,
+    size_t iv_len,
+    uint8_t **ciphertext_out,
+    size_t *ciphertext_len_out
+);
+
+/**
+ * @brief Decrypt data using AES-256-GCM with caller-provided IV
+ * @param ciphertext [encrypted data][16-byte tag]
+ * @param ciphertext_len Length of ciphertext (at least 16 bytes for tag)
+ * @param key 32-byte decryption key
+ * @param iv IV buffer (typically 12 bytes)
+ * @param iv_len Length of IV (AES_GCM_IV_SIZE = 12)
+ * @param plaintext_out Output buffer (allocated, must be freed)
+ * @param plaintext_len_out Length of output plaintext
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_aes_gcm_decrypt_iv(
+    const uint8_t *ciphertext,
+    size_t ciphertext_len,
+    const uint8_t *key,
+    const uint8_t *iv,
+    size_t iv_len,
+    uint8_t **plaintext_out,
+    size_t *plaintext_len_out
+);
+
 #ifdef __cplusplus
 }
 #endif
