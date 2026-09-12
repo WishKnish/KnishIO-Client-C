@@ -1,9 +1,10 @@
 #include "knishio/storage/types.h"
 #include "knishio/utils/memory.h"
+#include "storage_internal.h"
 #include <cjson/cJSON.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 void knishio_storage_options_init(knishio_storage_options_t *options) {
     if (!options) return;
     options->label = NULL;
@@ -218,4 +219,23 @@ knishio_error_t knishio_encrypted_payload_from_json(const char *json_str, knishi
 
     cJSON_Delete(root);
     return KNISHIO_SUCCESS;
+}
+
+char *knishio_storage_build_key(const char *prefix, const char *bundle_hash) {
+    if (!prefix || !bundle_hash) {
+        return NULL;
+    }
+    size_t prefix_len = strlen(prefix);
+    size_t hash_len = strlen(bundle_hash);
+    size_t total_len = prefix_len + hash_len + 1;
+    char *key = (char *)malloc(total_len);
+    if (!key) {
+        return NULL;
+    }
+    int written = snprintf(key, total_len, "%s%s", prefix, bundle_hash);
+    if (written < 0 || (size_t)written >= total_len) {
+        free(key);
+        return NULL;
+    }
+    return key;
 }

@@ -3,6 +3,7 @@
 #include "knishio/crypto/aes_gcm.h"
 #include "knishio/utils/encoding.h"
 #include "knishio/utils/memory.h"
+#include "storage_internal.h"
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <stdlib.h>
@@ -273,15 +274,11 @@ knishio_error_t knishio_envelope_store_secret(
         return err;
     }
 
-    size_t hash_len = strlen(bundle_hash);
-    size_t sec_prefix_len = strlen(KNISHIO_SECRET_STORAGE_PREFIX);
-    char *primary_key = malloc(sec_prefix_len + hash_len + 1);
+    char *primary_key = knishio_storage_build_key(KNISHIO_SECRET_STORAGE_PREFIX, bundle_hash);
     if (!primary_key) {
         free(primary_json);
         return KNISHIO_ERROR_MEMORY;
     }
-    memcpy(primary_key, KNISHIO_SECRET_STORAGE_PREFIX, sec_prefix_len);
-    memcpy(primary_key + sec_prefix_len, bundle_hash, hash_len + 1);
 
     err = backend->set_item(backend, primary_key, primary_json);
     free(primary_json);
@@ -307,14 +304,11 @@ knishio_error_t knishio_envelope_store_secret(
             return err;
         }
 
-        size_t rec_prefix_len = strlen(KNISHIO_RECOVERY_KEY_PREFIX);
-        char *rec_key = malloc(rec_prefix_len + hash_len + 1);
+        char *rec_key = knishio_storage_build_key(KNISHIO_RECOVERY_KEY_PREFIX, bundle_hash);
         if (!rec_key) {
             free(rec_json);
             return KNISHIO_ERROR_MEMORY;
         }
-        memcpy(rec_key, KNISHIO_RECOVERY_KEY_PREFIX, rec_prefix_len);
-        memcpy(rec_key + rec_prefix_len, bundle_hash, hash_len + 1);
 
         err = backend->set_item(backend, rec_key, rec_json);
         free(rec_json);
@@ -353,14 +347,10 @@ knishio_error_t knishio_envelope_retrieve_secret(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
-    size_t hash_len = strlen(bundle_hash);
-    size_t sec_prefix_len = strlen(KNISHIO_SECRET_STORAGE_PREFIX);
-    char *key = malloc(sec_prefix_len + hash_len + 1);
+    char *key = knishio_storage_build_key(KNISHIO_SECRET_STORAGE_PREFIX, bundle_hash);
     if (!key) {
         return KNISHIO_ERROR_MEMORY;
     }
-    memcpy(key, KNISHIO_SECRET_STORAGE_PREFIX, sec_prefix_len);
-    memcpy(key + sec_prefix_len, bundle_hash, hash_len + 1);
 
     char *json_str = NULL;
     knishio_error_t err = backend->get_item(backend, key, &json_str);
@@ -401,12 +391,8 @@ knishio_error_t knishio_envelope_has_secret(
         return KNISHIO_ERROR_NOT_IMPLEMENTED;
     }
 
-    size_t hash_len = strlen(bundle_hash);
-    size_t sec_prefix_len = strlen(KNISHIO_SECRET_STORAGE_PREFIX);
-    char *key = malloc(sec_prefix_len + hash_len + 1);
+    char *key = knishio_storage_build_key(KNISHIO_SECRET_STORAGE_PREFIX, bundle_hash);
     if (!key) return KNISHIO_ERROR_MEMORY;
-    memcpy(key, KNISHIO_SECRET_STORAGE_PREFIX, sec_prefix_len);
-    memcpy(key + sec_prefix_len, bundle_hash, hash_len + 1);
 
     char *val = NULL;
     knishio_error_t err = backend->get_item(backend, key, &val);
@@ -520,12 +506,8 @@ knishio_error_t knishio_envelope_recover_secret(
         return KNISHIO_ERROR_NOT_IMPLEMENTED;
     }
 
-    size_t hash_len = strlen(bundle_hash);
-    size_t rec_prefix_len = strlen(KNISHIO_RECOVERY_KEY_PREFIX);
-    char *rec_key = malloc(rec_prefix_len + hash_len + 1);
+    char *rec_key = knishio_storage_build_key(KNISHIO_RECOVERY_KEY_PREFIX, bundle_hash);
     if (!rec_key) return KNISHIO_ERROR_MEMORY;
-    memcpy(rec_key, KNISHIO_RECOVERY_KEY_PREFIX, rec_prefix_len);
-    memcpy(rec_key + rec_prefix_len, bundle_hash, hash_len + 1);
 
     char *rec_json = NULL;
     knishio_error_t err = backend->get_item(backend, rec_key, &rec_json);

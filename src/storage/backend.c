@@ -1,5 +1,6 @@
 #include "knishio/storage/backend.h"
 #include "knishio/utils/memory.h"
+#include "storage_internal.h"
 #include <cjson/cJSON.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -445,23 +446,14 @@ knishio_error_t knishio_storage_backend_delete_secret(
         return KNISHIO_ERROR_NOT_IMPLEMENTED;
     }
 
-    size_t hash_len = strlen(bundle_hash);
-    size_t sec_prefix_len = strlen(KNISHIO_SECRET_STORAGE_PREFIX);
-    size_t rec_prefix_len = strlen(KNISHIO_RECOVERY_KEY_PREFIX);
-
-    char *sec_key = malloc(sec_prefix_len + hash_len + 1);
+    char *sec_key = knishio_storage_build_key(KNISHIO_SECRET_STORAGE_PREFIX, bundle_hash);
     if (!sec_key) return KNISHIO_ERROR_MEMORY;
-    memcpy(sec_key, KNISHIO_SECRET_STORAGE_PREFIX, sec_prefix_len);
-    memcpy(sec_key + sec_prefix_len, bundle_hash, hash_len + 1);
 
-    char *rec_key = malloc(rec_prefix_len + hash_len + 1);
+    char *rec_key = knishio_storage_build_key(KNISHIO_RECOVERY_KEY_PREFIX, bundle_hash);
     if (!rec_key) {
         free(sec_key);
         return KNISHIO_ERROR_MEMORY;
     }
-    memcpy(rec_key, KNISHIO_RECOVERY_KEY_PREFIX, rec_prefix_len);
-    memcpy(rec_key + rec_prefix_len, bundle_hash, hash_len + 1);
-
     bool sec_existed = false;
     bool rec_existed = false;
     knishio_error_t err1 = backend->remove_item(backend, sec_key, &sec_existed);

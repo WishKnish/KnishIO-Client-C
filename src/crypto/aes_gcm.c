@@ -314,10 +314,10 @@ knishio_error_t knishio_aes_gcm_decrypt_iv(
     int len = 0;
     int plaintext_len = 0;
     knishio_error_t result = KNISHIO_ERROR_CRYPTO;
+    uint8_t tag_copy[AES_GCM_TAG_SIZE];
 
     const uint8_t *encrypted_data = ciphertext;
-    const uint8_t *tag = ciphertext + encrypted_len;
-
+    memcpy(tag_copy, ciphertext + encrypted_len, AES_GCM_TAG_SIZE);
     plaintext = malloc(encrypted_len + 1);
     if (!plaintext) {
         result = KNISHIO_ERROR_MEMORY;
@@ -346,7 +346,7 @@ knishio_error_t knishio_aes_gcm_decrypt_iv(
     }
     plaintext_len = len;
 
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, AES_GCM_TAG_SIZE, (void *)(uintptr_t)tag) != 1) {
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, AES_GCM_TAG_SIZE, tag_copy) != 1) {
         goto cleanup;
     }
 
