@@ -8,6 +8,7 @@
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
 #include "knishio/crypto/cipher_hash.h"
+#include "knishio/utils/memory.h"
 #include "client_internal.h"
 #include <string.h>
 #include <stdlib.h>
@@ -56,25 +57,6 @@ static bool cipher_should_encrypt(const knishio_graphql_operation_t* op) {
     }
     return true;
 }
-
-/* Client structure - expanded for authentication support */
-struct knishio_client {
-    char *uri;                          /**< GraphQL endpoint URI */
-    char *cell_slug;                    /**< Cell identifier */
-    knishio_http_client_t *http_client; /**< HTTP client for requests */
-    knishio_auth_token_t *auth_token;   /**< Current authentication token (legacy) */
-    bool insecure_tls;                  /**< Skip TLS cert verification (dev/self-signed validators) */
-    bool initialized;                   /**< Initialization status */
-    knishio_client_auth_state_t auth_state; /**< Authentication state */
-
-    /* PQ-transport (Phase E): ML-KEM CipherHash encrypted transport context (set at auth). */
-    bool cipher_enabled;                /**< Encrypt subsequent ops via CipherHash */
-    char *cipher_server_pubkey;         /**< Validator's ML-KEM pubkey (base64), for encrypt */
-    knishio_wallet_t *cipher_wallet;    /**< Owned copy of the AUTH wallet's identity: supplies the
-                                         *   hashShare keys AND lets an inbound envelope at the
-                                         *   OTHER ML-KEM parameter set be decapsulated. */
-    int mlkem_parameter_set;            /**< ML-KEM parameter set: 1024 or 768 */
-};
 
 /* Client management implementations */
 knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_client_config_t *config) {
@@ -144,7 +126,24 @@ void knishio_client_destroy(knishio_client_t *client) {
         knishio_auth_token_cleanup(client->auth_state.current_token);
     }
     if (client->auth_state.secret) {
-        knishio_free(client->auth_state.secret);
+        knishio_secure_free(client->auth_state.secret, strlen(client->auth_state.secret));
+        client->auth_state.secret = NULL;
+    }
+    if (client->auth_state.bundle_hash) {
+        free(client->auth_state.bundle_hash);
+        client->auth_state.bundle_hash = NULL;
+    }
+    if (client->auth_state.storage_label) {
+        free(client->auth_state.storage_label);
+        client->auth_state.storage_label = NULL;
+    }
+    if (client->auth_state.storage_passphrase) {
+        knishio_secure_free(client->auth_state.storage_passphrase, strlen(client->auth_state.storage_passphrase));
+        client->auth_state.storage_passphrase = NULL;
+    }
+    if (client->auth_state.storage_recovery_passphrase) {
+        knishio_secure_free(client->auth_state.storage_recovery_passphrase, strlen(client->auth_state.storage_recovery_passphrase));
+        client->auth_state.storage_recovery_passphrase = NULL;
     }
     if (client->auth_state.cell_slug) {
         knishio_free(client->auth_state.cell_slug);

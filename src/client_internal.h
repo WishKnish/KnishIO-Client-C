@@ -11,6 +11,9 @@
 
 #include "knishio/client_auth.h"
 #include "knishio/auth_token.h"
+#include "knishio/wallet.h"
+#include "knishio/http.h"
+#include "knishio/storage/provider.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -31,7 +34,32 @@ typedef struct {
     int64_t refresh_threshold_ms;            /**< Refresh threshold */
     knishio_auth_event_callback_t callback;  /**< Auth event callback */
     void* callback_user_data;                /**< Callback user data */
+    knishio_secret_storage_provider_t *secret_storage;  /**< Attached provider, NOT owned */
+    char *bundle_hash;                                  /**< Bundle hash of the active secret (owned) or NULL */
+    char *storage_label;                                /**< Owned copy of label */
+    char *storage_passphrase;                           /**< Owned copy of primary passphrase */
+    char *storage_recovery_passphrase;                  /**< Owned copy of recovery passphrase */
+    bool storage_allow_unrecoverable;                   /**< Allow unrecoverable flag */
 } knishio_client_auth_state_t;
+
+/**
+ * @brief Client structure - internal definition shared across client modules
+ */
+struct knishio_client {
+    char *uri;                          /**< GraphQL endpoint URI */
+    char *cell_slug;                    /**< Cell identifier */
+    knishio_http_client_t *http_client; /**< HTTP client for requests */
+    knishio_auth_token_t *auth_token;   /**< Current authentication token (legacy) */
+    bool insecure_tls;                  /**< Skip TLS cert verification (dev/self-signed validators) */
+    bool initialized;                   /**< Initialization status */
+    knishio_client_auth_state_t auth_state; /**< Authentication state */
+
+    /* PQ-transport (Phase E): ML-KEM CipherHash encrypted transport context (set at auth). */
+    bool cipher_enabled;                /**< Encrypt subsequent ops via CipherHash */
+    char *cipher_server_pubkey;         /**< Validator's ML-KEM pubkey (base64), for encrypt */
+    knishio_wallet_t *cipher_wallet;    /**< Owned copy of the AUTH wallet's identity */
+    int mlkem_parameter_set;            /**< ML-KEM parameter set: 1024 or 768 */
+};
 
 #ifdef __cplusplus
 }

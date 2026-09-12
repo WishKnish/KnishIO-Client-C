@@ -28,7 +28,7 @@
 #include "knishio/atom.h"
 #include "knishio/auth_token.h"
 #include "knishio/meta.h"
-
+#include "knishio/storage/provider.h"
 /* Forward declarations for the graphql operation/response types — declared here (rather than
  * #include "knishio/graphql.h") to avoid a circular include (graphql.h -> knishio.h -> client_ops.h).
  * knishio_client_execute_graphql only uses pointers to these; the full defs live in graphql.h. */
@@ -90,6 +90,49 @@ const char* knishio_client_get_bundle(knishio_client_t* client);
 knishio_error_t knishio_client_set_secret(
     knishio_client_t* client,
     const char* secret
+);
+
+/**
+ * @brief Attach a secret storage provider to the client.
+ *
+ * provider=NULL detaches any currently attached provider (retaining cleartext secret, if any).
+ * bundle_hash (optional) selects an already-stored secret in the provider, allowing a client
+ * that never saw the cleartext secret to sign and create molecules.
+ * options are copied. If the client currently holds a cleartext secret and provider is non-NULL,
+ * the secret is stored into the provider now and the cleartext copy is dropped.
+ *
+ * @param client KnishIO client instance
+ * @param provider Secret storage provider instance (not owned; caller frees after client destruction)
+ * @param bundle_hash Bundle hash of secret to select (optional, may be NULL)
+ * @param options Storage configuration options (optional, may be NULL for defaults)
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_client_set_secret_storage(
+    knishio_client_t* client,
+    knishio_secret_storage_provider_t* provider,
+    const char* bundle_hash,
+    const knishio_storage_options_t* options
+);
+
+/**
+ * @brief Get the currently attached secret storage provider, or NULL if none attached.
+ */
+knishio_secret_storage_provider_t* knishio_client_get_secret_storage(const knishio_client_t* client);
+
+/**
+ * @brief Retrieve an owned copy of the active secret (either from in-memory cleartext or unwrapped JIT from storage).
+ *
+ * Caller MUST free the returned secret with knishio_secure_free(secret, len).
+ *
+ * @param client KnishIO client instance
+ * @param secret_out Output pointer to dynamically allocated secret string
+ * @param secret_len_out Output pointer to secret length
+ * @return KNISHIO_SUCCESS on success, KNISHIO_ERROR_INVALID_STATE if no secret or stored secret found
+ */
+knishio_error_t knishio_client_retrieve_secret(
+    knishio_client_t* client,
+    char** secret_out,
+    size_t* secret_len_out
 );
 
 /**

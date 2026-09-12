@@ -10,11 +10,15 @@
 #include <unistd.h>
 #include <cjson/cJSON.h>
 
+#include "knishio/knishio.h"
 #include "knishio/storage/types.h"
 #include "knishio/storage/envelope.h"
 #include "knishio/storage/backend.h"
+#include "knishio/storage/provider.h"
+#include "knishio/client.h"
+#include "knishio/client_ops.h"
+#include "knishio/wallet.h"
 #include "knishio/utils/memory.h"
-
 #ifndef KNISHIO_TEST_VECTORS_PATH
 #define KNISHIO_TEST_VECTORS_PATH "tests/fixtures/cross-platform-test-vectors.json"
 #endif
@@ -483,6 +487,221 @@ static void test_recovery_envelope_and_reenrollment(void) {
     knishio_storage_backend_free(backend);
 }
 
+/* ------------------------------------------------------------------ */
+/* 6. AES-GCM secret storage provider contract                        */
+/* ------------------------------------------------------------------ */
+static void test_aes_gcm_provider_contract(void) {
+    printf("\n--- 6. AES-GCM Secret Storage Provider Contract ---\n");
+
+    knishio_storage_backend_t *backend = NULL;
+    knishio_error_t err = knishio_memory_storage_backend_create(&backend);
+    check(err == KNISHIO_SUCCESS && backend != NULL, "create memory backend for provider", NULL);
+
+    knishio_secret_storage_provider_t *p = NULL;
+    err = knishio_aes_gcm_secret_storage_provider_create(backend, "default-pass", &p);
+    check(err == KNISHIO_SUCCESS && p != NULL, "create aes-gcm provider with default passphrase", NULL);
+
+    check(strcmp(p->provider_type(p), "aes-gcm") == 0, "provider_type is aes-gcm", p->provider_type(p));
+    check(!p->is_hardware_backed(p), "is_hardware_backed is false", NULL);
+
+    const char *bundle = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const char *probe_secret = "MASTER-SECRET-PROVIDER-PROBE";
+    knishio_storage_options_t store_opts;
+    knishio_storage_options_init(&store_opts);
+    store_opts.label = "probe";
+    store_opts.recovery_passphrase = "rec-pass";
+
+    err = p->store_secret(p, bundle, probe_secret, strlen(probe_secret), &store_opts);
+    check(err == KNISHIO_SUCCESS, "provider store_secret succeeded", NULL);
+
+    bool exists = false;
+    err = p->has_secret(p, bundle, &exists);
+    check(err == KNISHIO_SUCCESS && exists, "provider has_secret returns true", NULL);
+
+    /* Retrieve using default passphrase (NULL options) */
+    char *plaintext = NULL;
+    size_t plaintext_len = 0;
+    err = p->retrieve_secret(p, bundle, NULL, &plaintext, &plaintext_len);
+    check(err == KNISHIO_SUCCESS && plaintext != NULL, "provider retrieve_secret with default pass succeeded", NULL);
+    if (plaintext) {
+        check(strcmp(plaintext, probe_secret) == 0, "retrieved secret matches probe_secret", NULL);
+        knishio_secure_free(plaintext, plaintext_len);
+        plaintext = NULL;
+    }
+
+    /* Retrieve with wrong passphrase must fail */
+    knishio_storage_options_t wrong_opts;
+    knishio_storage_options_init(&wrong_opts);
+    wrong_opts.passphrase = "wrong-pass";
+    err = p->retrieve_secret(p, bundle, &wrong_opts, &plaintext, &plaintext_len);
+    check(err != KNISHIO_SUCCESS, "retrieve with wrong passphrase fails closed", NULL);
+    check(plaintext == NULL, "no plaintext returned on wrong passphrase", NULL);
+
+    /* List secrets */
+    knishio_secret_metadata_t *meta_list = NULL;
+    size_t count = 0;
+    err = p->list_secrets(p, &meta_list, &count);
+    check(err == KNISHIO_SUCCESS && count == 1, "list_secrets returns 1 entry", NULL);
+    if (meta_list && count > 0) {
+        check(strcmp(meta_list[0].bundle_hash, bundle) == 0, "listed bundle_hash matches", meta_list[0].bundle_hash);
+        check(strcmp(meta_list[0].provider_type, "aes-gcm") == 0, "listed provider_type is aes-gcm", meta_list[0].provider_type);
+        check(!meta_list[0].hardware_backed, "listed hardware_backed is false", NULL);
+        check(meta_list[0].label && strcmp(meta_list[0].label, "probe") == 0, "listed label matches probe", meta_list[0].label);
+        knishio_secret_metadata_list_free(meta_list, count);
+    }
+
+    /* Verify recovery envelope was sealed in backend */
+    char rec_key[128];
+    snprintf(rec_key, sizeof(rec_key), "%s%s", KNISHIO_RECOVERY_KEY_PREFIX, bundle);
+    char *rec_val = NULL;
+    err = backend->get_item(backend, rec_key, &rec_val);
+    check(err == KNISHIO_SUCCESS && rec_val != NULL, "recovery envelope exists in backend", NULL);
+    if (rec_val) free(rec_val);
+
+    /* Recover with recovery passphrase */
+    knishio_storage_options_t new_opts;
+    knishio_storage_options_init(&new_opts);
+    new_opts.passphrase = "new-pass";
+    err = p->recover_secret(p, bundle, "rec-pass", &new_opts);
+    check(err == KNISHIO_SUCCESS, "recover_secret with recovery passphrase succeeded", NULL);
+
+    /* Retrieve with new passphrase */
+    err = p->retrieve_secret(p, bundle, &new_opts, &plaintext, &plaintext_len);
+    check(err == KNISHIO_SUCCESS && plaintext != NULL, "retrieve_secret with new-pass succeeded", NULL);
+    if (plaintext) {
+        check(strcmp(plaintext, probe_secret) == 0, "retrieved secret after recovery matches probe_secret", NULL);
+        knishio_secure_free(plaintext, plaintext_len);
+        plaintext = NULL;
+    }
+
+    /* Second provider without default passphrase requires options->passphrase */
+    knishio_secret_storage_provider_t *p_no_def = NULL;
+    err = knishio_aes_gcm_secret_storage_provider_create(backend, NULL, &p_no_def);
+    check(err == KNISHIO_SUCCESS && p_no_def != NULL, "create provider without default passphrase", NULL);
+    err = p_no_def->retrieve_secret(p_no_def, bundle, NULL, &plaintext, &plaintext_len);
+    check(err == KNISHIO_ERROR_INVALID_ARGS, "retrieve without passphrase returns INVALID_ARGS", NULL);
+    knishio_secret_storage_provider_free(p_no_def);
+
+    /* Delete secret */
+    bool existed = false;
+    err = p->delete_secret(p, bundle, &existed);
+    check(err == KNISHIO_SUCCESS && existed, "delete_secret returns existed=true", NULL);
+    exists = true;
+    err = p->has_secret(p, bundle, &exists);
+    check(err == KNISHIO_SUCCESS && !exists, "has_secret after delete returns false", NULL);
+
+    knishio_secret_storage_provider_free(p);
+    knishio_storage_backend_free(backend);
+}
+
+/* ------------------------------------------------------------------ */
+/* 7. Client secret storage just-in-time unwrapping                   */
+/* ------------------------------------------------------------------ */
+static void test_client_secret_storage_jit_unwrap(void) {
+    printf("\n--- 7. Client Secret Storage JIT Unwrapping ---\n");
+
+    knishio_storage_backend_t *backend = NULL;
+    knishio_error_t err = knishio_memory_storage_backend_create(&backend);
+    check(err == KNISHIO_SUCCESS && backend != NULL, "create memory backend for client tests", NULL);
+
+    knishio_secret_storage_provider_t *provider = NULL;
+    err = knishio_aes_gcm_secret_storage_provider_create(backend, "default-pass", &provider);
+    check(err == KNISHIO_SUCCESS && provider != NULL, "create provider for client tests", NULL);
+
+    char *secret = NULL;
+    bool gen_ok = knishio_generate_secret("provider-test-seed-2026", 2048, &secret);
+    check(gen_ok && secret != NULL, "generate 2048-hex secret", NULL);
+
+    knishio_client_config_t config = {
+        .uri = "https://localhost:8080/graphql",
+        .cell_slug = "TEST",
+        .client = NULL,
+        .socket = NULL,
+        .server_sdk_version = 3,
+        .logging = false
+    };
+
+    /* Client A: attaches provider, sets secret (which auto-stores to provider and drops cleartext) */
+    knishio_client_t *clientA = NULL;
+    err = knishio_client_create(&clientA, &config);
+    check(err == KNISHIO_SUCCESS && clientA != NULL, "create client A", NULL);
+
+    knishio_storage_options_t store_opts;
+    knishio_storage_options_init(&store_opts);
+    store_opts.passphrase = "default-pass";
+    store_opts.allow_unrecoverable = true;
+
+    err = knishio_client_set_secret_storage(clientA, provider, NULL, &store_opts);
+    check(err == KNISHIO_SUCCESS, "client A set_secret_storage succeeded", NULL);
+    check(knishio_client_get_secret_storage(clientA) == provider, "get_secret_storage returns provider", NULL);
+
+    err = knishio_client_set_secret(clientA, secret);
+    check(err == KNISHIO_SUCCESS, "client A set_secret succeeded", NULL);
+
+    const char *bundleA = knishio_client_get_bundle(clientA);
+    check(bundleA != NULL && strlen(bundleA) == 64, "client A get_bundle returns 64-char hash", bundleA);
+
+    /* Verify on-disk/in-memory envelope was stored under bundleA */
+    bool exists_in_provider = false;
+    err = provider->has_secret(provider, bundleA, &exists_in_provider);
+    check(err == KNISHIO_SUCCESS && exists_in_provider, "secret is stored in provider under bundleA", NULL);
+
+    knishio_wallet_t *walletA = NULL;
+    err = knishio_client_get_source_wallet(clientA, "USER", &walletA);
+    check(err == KNISHIO_SUCCESS && walletA != NULL, "client A get_source_wallet succeeded", NULL);
+    if (walletA) {
+        check(walletA->secret != NULL && strcmp(walletA->secret, secret) == 0, "wallet A secret matches original", NULL);
+        check(walletA->bundle_hash != NULL && strcmp(walletA->bundle_hash, bundleA) == 0, "wallet A bundle matches bundleA", NULL);
+    }
+
+    /* Client B: fresh client instance, NEVER receives the cleartext secret directly.
+     * Only receives provider + bundleA. Must resolve secret just-in-time and derive matching wallet. */
+    knishio_client_t *clientB = NULL;
+    err = knishio_client_create(&clientB, &config);
+    check(err == KNISHIO_SUCCESS && clientB != NULL, "create client B", NULL);
+
+    err = knishio_client_set_secret_storage(clientB, provider, bundleA, &store_opts);
+    check(err == KNISHIO_SUCCESS, "client B set_secret_storage with bundleA succeeded", NULL);
+
+    knishio_wallet_t *walletB = NULL;
+    err = knishio_client_get_source_wallet(clientB, "USER", &walletB);
+    check(err == KNISHIO_SUCCESS && walletB != NULL, "client B get_source_wallet succeeded (JIT unwrap)", NULL);
+    if (walletA && walletB) {
+        check(strcmp(walletB->address, walletA->address) == 0, "wallet B address matches wallet A", walletB->address);
+        check(strcmp(walletB->bundle_hash, walletA->bundle_hash) == 0, "wallet B bundle matches wallet A", walletB->bundle_hash);
+        check(strcmp(walletB->secret, secret) == 0, "wallet B derived secret matches original", NULL);
+    }
+
+    /* Retrieve secret via client B */
+    char *retrieved_sec = NULL;
+    size_t retrieved_len = 0;
+    err = knishio_client_retrieve_secret(clientB, &retrieved_sec, &retrieved_len);
+    check(err == KNISHIO_SUCCESS && retrieved_sec != NULL, "client B retrieve_secret succeeded", NULL);
+    if (retrieved_sec) {
+        check(strcmp(retrieved_sec, secret) == 0, "client B retrieved secret matches original", NULL);
+        knishio_secure_free(retrieved_sec, retrieved_len);
+    }
+
+    /* Client C: unconfigured client, has no secret and no provider → must return INVALID_STATE */
+    knishio_client_t *clientC = NULL;
+    err = knishio_client_create(&clientC, &config);
+    check(err == KNISHIO_SUCCESS && clientC != NULL, "create client C", NULL);
+
+    knishio_wallet_t *walletC = NULL;
+    err = knishio_client_get_source_wallet(clientC, "USER", &walletC);
+    check(err == KNISHIO_ERROR_INVALID_STATE, "client C get_source_wallet fails with INVALID_STATE", NULL);
+    check(walletC == NULL, "wallet C remains NULL", NULL);
+
+    /* Cleanup */
+    if (walletA) knishio_wallet_free(walletA);
+    if (walletB) knishio_wallet_free(walletB);
+    if (clientA) knishio_client_destroy(clientA);
+    if (clientB) knishio_client_destroy(clientB);
+    if (clientC) knishio_client_destroy(clientC);
+    if (secret) knishio_free(secret);
+    knishio_secret_storage_provider_free(provider);
+    knishio_storage_backend_free(backend);
+}
 int main(void) {
     const char *env_path = getenv("KNISHIO_CROSS_PLATFORM_VECTORS");
     const char *path = env_path ? env_path : KNISHIO_TEST_VECTORS_PATH;
@@ -507,7 +726,8 @@ int main(void) {
     test_round_trip_and_wrong_passphrase();
     test_storage_backends();
     test_recovery_envelope_and_reenrollment();
-
+    test_aes_gcm_provider_contract();
+    test_client_secret_storage_jit_unwrap();
     cJSON_Delete(root);
 
     printf("\nResult: %s (%d failure%s)\n",

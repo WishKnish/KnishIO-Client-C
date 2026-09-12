@@ -15,34 +15,162 @@
 #include "knishio/auth_token.h"
 #include "knishio/crypto/shake256.h"
 #include "client_internal.h"
+#include "knishio/utils/memory.h"
+#include "knishio/storage/provider.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-/* Simple client state for secret storage (since client_auth.c is disabled) */
-typedef struct {
-    char* secret;
-} knishio_simple_client_state_t;
+static void client_clear_storage_options(knishio_client_t* client) {
+    if (!client) return;
+    if (client->auth_state.storage_label) {
+        free(client->auth_state.storage_label);
+        client->auth_state.storage_label = NULL;
+    }
+    if (client->auth_state.storage_passphrase) {
+        knishio_secure_free(client->auth_state.storage_passphrase, strlen(client->auth_state.storage_passphrase));
+        client->auth_state.storage_passphrase = NULL;
+    }
+    if (client->auth_state.storage_recovery_passphrase) {
+        knishio_secure_free(client->auth_state.storage_recovery_passphrase, strlen(client->auth_state.storage_recovery_passphrase));
+        client->auth_state.storage_recovery_passphrase = NULL;
+    }
+    client->auth_state.storage_allow_unrecoverable = false;
+}
 
-/* Global storage for client secrets (temporary solution) */
-static knishio_simple_client_state_t g_client_state = {0};
+static void client_storage_options(const knishio_client_t* client, knishio_storage_options_t* out) {
+    knishio_storage_options_init(out);
+    if (!client) return;
+    out->label = client->auth_state.storage_label;
+    out->passphrase = client->auth_state.storage_passphrase;
+    out->recovery_passphrase = client->auth_state.storage_recovery_passphrase;
+    out->allow_unrecoverable = client->auth_state.storage_allow_unrecoverable;
+}
 
-/* Generate simple bundle hash from secret using SHAKE256 (equivalent to JS generateBundleHash) */
+/* Generate canonical 64-char bundle hash from secret using SHAKE256 (256 bits = 64 hex chars, matching JS/cross-SDK) */
 static char* knishio_generate_simple_bundle_hash(const char* secret) {
     if (!secret) {
         return NULL;
     }
     
     char* bundle_hash = NULL;
-    bool result = knishio_shake256_hash(secret, 512, &bundle_hash);  /* 512 bits = 64 bytes like JS SDK */
-    
+    bool result = knishio_shake256_hash(secret, 256, &bundle_hash);
     if (!result || !bundle_hash) {
         return NULL;
     }
     
     return bundle_hash;
 }
+static knishio_error_t client_store_secret(knishio_client_t* client, const char* secret) {
+    if (!client || !secret) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+
+    char* bundle = knishio_generate_simple_bundle_hash(secret);
+    if (!bundle) {
+        return KNISHIO_ERROR_CRYPTO;
+    }
+
+    if (client->auth_state.secret_storage) {
+        knishio_storage_options_t opts;
+        client_storage_options(client, &opts);
+
+        knishio_error_t err = client->auth_state.secret_storage->store_secret(
+            client->auth_state.secret_storage,
+            bundle,
+            secret,
+            strlen(secret),
+            &opts
+        );
+        if (err != KNISHIO_SUCCESS) {
+            free(bundle);
+            return err;
+        }
+
+        /* Success: replace bundle_hash, and do not retain cleartext */
+        if (client->auth_state.bundle_hash) {
+            free(client->auth_state.bundle_hash);
+        }
+        client->auth_state.bundle_hash = bundle;
+
+        if (client->auth_state.secret) {
+            knishio_secure_free(client->auth_state.secret, strlen(client->auth_state.secret));
+            client->auth_state.secret = NULL;
+        }
+    } else {
+        if (client->auth_state.bundle_hash) {
+            free(client->auth_state.bundle_hash);
+        }
+        client->auth_state.bundle_hash = bundle;
+
+        if (client->auth_state.secret) {
+            knishio_secure_free(client->auth_state.secret, strlen(client->auth_state.secret));
+        }
+        client->auth_state.secret = knishio_strdup(secret);
+        if (!client->auth_state.secret) {
+            return KNISHIO_ERROR_MEMORY;
+        }
+    }
+
+    return KNISHIO_SUCCESS;
+}
+
+static knishio_error_t client_resolve_secret(
+    knishio_client_t* client,
+    char** secret_out,
+    size_t* len_out,
+    bool* owned_out
+) {
+    if (!client || !secret_out || !len_out || !owned_out) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+
+    *secret_out = NULL;
+    *len_out = 0;
+    *owned_out = false;
+
+    if (client->auth_state.secret) {
+        *secret_out = client->auth_state.secret;
+        *len_out = strlen(client->auth_state.secret);
+        *owned_out = false;
+        return KNISHIO_SUCCESS;
+    }
+
+    if (client->auth_state.secret_storage && client->auth_state.bundle_hash) {
+        knishio_storage_options_t opts;
+        client_storage_options(client, &opts);
+
+        char* plaintext = NULL;
+        size_t plaintext_len = 0;
+        knishio_error_t err = client->auth_state.secret_storage->retrieve_secret(
+            client->auth_state.secret_storage,
+            client->auth_state.bundle_hash,
+            &opts,
+            &plaintext,
+            &plaintext_len
+        );
+        if (err != KNISHIO_SUCCESS) {
+            return err;
+        }
+        if (!plaintext) {
+            return KNISHIO_ERROR_INVALID_STATE;
+        }
+        *secret_out = plaintext;
+        *len_out = plaintext_len;
+        *owned_out = true;
+        return KNISHIO_SUCCESS;
+    }
+
+    return KNISHIO_ERROR_INVALID_STATE;
+}
+
+static void client_release_secret(char* secret, size_t len, bool owned) {
+    if (owned && secret) {
+        knishio_secure_free(secret, len);
+    }
+}
+
 
 /* Authenticate with profile credentials: store the secret, build + submit a U-isotope auth
  * molecule, and set the resulting bundle-scoped JWT as the client auth token (mirrors JS
@@ -55,12 +183,11 @@ knishio_error_t knishio_client_authenticate(
     if (!client || !secret) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-
-    /* Store secret in global state (get_source_wallet reads it). */
-    if (g_client_state.secret) {
-        free(g_client_state.secret);
+    /* Store secret on client (auto-stores to provider if attached) */
+    knishio_error_t store_err = client_store_secret(client, secret);
+    if (store_err != KNISHIO_SUCCESS) {
+        return store_err;
     }
-    g_client_state.secret = knishio_strdup(secret);
 
     knishio_request_profile_auth_token_params_t params = {
         .secret = secret,
@@ -83,12 +210,11 @@ knishio_error_t knishio_client_configure_auth(
     knishio_client_t* client,
     const knishio_client_auth_config_t* config
 ) {
-    /* Store secret in global state for now */
+    if (!client) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
     if (config && config->secret) {
-        if (g_client_state.secret) {
-            free(g_client_state.secret);
-        }
-        g_client_state.secret = knishio_strdup(config->secret);
+        return client_store_secret(client, config->secret);
     }
     return KNISHIO_SUCCESS;
 }
@@ -144,14 +270,7 @@ const char* knishio_client_get_bundle(knishio_client_t* client) {
     if (!client) {
         return NULL;
     }
-    
-    /* Check if we have a stored secret in global state */
-    if (!g_client_state.secret) {
-        return NULL;
-    }
-    
-    /* Generate and return bundle hash from secret */
-    return knishio_generate_simple_bundle_hash(g_client_state.secret);
+    return client->auth_state.bundle_hash;
 }
 
 /* Set client secret */
@@ -162,21 +281,101 @@ knishio_error_t knishio_client_set_secret(
     if (!client || !secret) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Configure authentication with the secret */
-    knishio_client_auth_config_t config = {
-        .secret = (char*)secret,
-        .encrypt = false,
-        .auto_refresh = true,
-        .refresh_threshold_ms = 300000  /* 5 minutes */
-    };
-    
-    return knishio_client_configure_auth(client, &config);
+    return client_store_secret(client, secret);
 }
 
-/* Get source wallet for operations — derives a REAL wallet from the client's stored
- * secret (g_client_state.secret, set via knishio_client_set_secret). The returned wallet
- * carries secret/position/address/bundle, so callers can build recipient/remainder wallets
+knishio_error_t knishio_client_set_secret_storage(
+    knishio_client_t* client,
+    knishio_secret_storage_provider_t* provider,
+    const char* bundle_hash,
+    const knishio_storage_options_t* options
+) {
+    if (!client) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (bundle_hash && bundle_hash[0] == '\0') {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+
+    client_clear_storage_options(client);
+    client->auth_state.secret_storage = provider;
+
+    if (options) {
+        if (options->label) {
+            client->auth_state.storage_label = knishio_strdup(options->label);
+        }
+        if (options->passphrase) {
+            client->auth_state.storage_passphrase = knishio_strdup(options->passphrase);
+        }
+        if (options->recovery_passphrase) {
+            client->auth_state.storage_recovery_passphrase = knishio_strdup(options->recovery_passphrase);
+        }
+        client->auth_state.storage_allow_unrecoverable = options->allow_unrecoverable;
+    }
+
+    if (bundle_hash) {
+        if (client->auth_state.bundle_hash) {
+            free(client->auth_state.bundle_hash);
+        }
+        client->auth_state.bundle_hash = knishio_strdup(bundle_hash);
+    }
+
+    /* If client currently holds cleartext secret and provider is attached, store into provider and drop cleartext */
+    if (provider && client->auth_state.secret) {
+        char* current_secret = client->auth_state.secret;
+        client->auth_state.secret = NULL;  /* prevent double-free during client_store_secret */
+        knishio_error_t err = client_store_secret(client, current_secret);
+        if (err != KNISHIO_SUCCESS) {
+            client->auth_state.secret = current_secret;
+            return err;
+        }
+        knishio_secure_free(current_secret, strlen(current_secret));
+    }
+
+    return KNISHIO_SUCCESS;
+}
+
+knishio_secret_storage_provider_t* knishio_client_get_secret_storage(const knishio_client_t* client) {
+    if (!client) {
+        return NULL;
+    }
+    return client->auth_state.secret_storage;
+}
+
+knishio_error_t knishio_client_retrieve_secret(
+    knishio_client_t* client,
+    char** secret_out,
+    size_t* secret_len_out
+) {
+    if (!client || !secret_out || !secret_len_out) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+
+    char* resolved = NULL;
+    size_t len = 0;
+    bool owned = false;
+    knishio_error_t err = client_resolve_secret(client, &resolved, &len, &owned);
+    if (err != KNISHIO_SUCCESS) {
+        return err;
+    }
+
+    if (owned) {
+        *secret_out = resolved;
+        *secret_len_out = len;
+    } else {
+        *secret_out = knishio_strdup(resolved);
+        if (!*secret_out) {
+            return KNISHIO_ERROR_MEMORY;
+        }
+        *secret_len_out = len;
+    }
+
+    return KNISHIO_SUCCESS;
+}
+
+/* Get source wallet for operations — derives a REAL wallet from the client's active
+ * secret (resolved from in-memory cleartext or unwrapped JIT from secret_storage). The returned
+ * wallet carries secret/position/address/bundle, so callers can build recipient/remainder wallets
  * from wallet->secret and sign molecules.
  *
  * NOTE (cycle 39, slice 1): the source position is the canonical KNISHIO_FIXED_POSITION
@@ -191,16 +390,23 @@ knishio_error_t knishio_client_get_source_wallet(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
-    if (!g_client_state.secret) {
-        return KNISHIO_ERROR_INVALID_STATE;  /* no secret set — call knishio_client_set_secret first */
+    char* secret = NULL;
+    size_t secret_len = 0;
+    bool owned = false;
+    knishio_error_t err = client_resolve_secret(client, &secret, &secret_len, &owned);
+    if (err != KNISHIO_SUCCESS) {
+        return err;
     }
 
-    return knishio_wallet_create_simple(
+    knishio_error_t result = knishio_wallet_create_simple(
         wallet,
-        g_client_state.secret,
+        secret,
         token ? token : "USER",
         KNISHIO_FIXED_POSITION
     );
+
+    client_release_secret(secret, secret_len, owned);
+    return result;
 }
 
 /* Resolve the SIGNING source wallet at the bundle's live on-ledger ContinuID position (slice 2c,
@@ -216,21 +422,27 @@ knishio_error_t knishio_client_get_source_wallet_continuid(
     if (!client || !wallet) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    if (!g_client_state.secret) {
-        return KNISHIO_ERROR_INVALID_STATE;
+
+    char* secret = NULL;
+    size_t secret_len = 0;
+    bool owned = false;
+    knishio_error_t err = client_resolve_secret(client, &secret, &secret_len, &owned);
+    if (err != KNISHIO_SUCCESS) {
+        return err;
     }
 
     const char* tok = token ? token : "USER";
 
-    /* Derive the bundle hash from the secret (temp wallet at the fixed position). */
+    /* Derive bundle hash from secret (temp wallet at fixed position). */
     knishio_wallet_t* tmp = NULL;
     knishio_error_t error = knishio_wallet_create_simple(
-        &tmp, g_client_state.secret, tok, KNISHIO_FIXED_POSITION);
+        &tmp, secret, tok, KNISHIO_FIXED_POSITION);
     if (error != KNISHIO_SUCCESS) {
+        client_release_secret(secret, secret_len, owned);
         return error;
     }
 
-    /* Query the live ContinuID position for the bundle; fall back to the fixed position (genesis). */
+    /* Query live ContinuID position for bundle */
     const char* position = KNISHIO_FIXED_POSITION;
     knishio_continuId_result_t* cid = NULL;
     if (knishio_client_query_continuId(client, tmp->bundle_hash, &cid) == KNISHIO_SUCCESS
@@ -239,13 +451,13 @@ knishio_error_t knishio_client_get_source_wallet_continuid(
         position = cid->wallet->position;
     }
 
-    error = knishio_wallet_create_simple(wallet, g_client_state.secret, tok, position);
+    error = knishio_wallet_create_simple(wallet, secret, tok, position);
 
     if (cid) knishio_continuId_result_free(cid);
     knishio_wallet_free(tmp);
+    client_release_secret(secret, secret_len, owned);
     return error;
 }
-
 /* Create and sign a molecule */
 knishio_error_t knishio_client_create_molecule(
     knishio_client_t* client,

@@ -195,6 +195,7 @@ set(KNISHIO_SOURCES
     src/storage/types.c
     src/storage/envelope.c
     src/storage/backend.c
+    src/storage/provider.c
     # JSON handling
     src/json/parser.c
     src/json/builder.c
