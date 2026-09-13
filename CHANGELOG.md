@@ -14,7 +14,7 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
-## [Unreleased]
+## [1.1.0] — 2026-09-12
 
 ### Added
 
@@ -33,6 +33,16 @@ substantiate a detail, the entry says so instead of guessing.
   - Fail-closed semantics: wrong recovery passphrase or missing recovery envelope fails closed with an error code.
   - Secret deletion: `knishio_envelope_delete_secret` and `knishio_storage_backend_delete_secret` remove both `knishio:secret:<bundleHash>` and `knishio:recovery:<bundleHash>`.
   - Secret listing: `knishio_envelope_list_secrets` filters out all `knishio:recovery:` keys.
+- **Secret storage provider vtable** (`include/knishio/storage/provider.h`): `knishio_secret_storage_provider_t` (`provider_type`, `is_hardware_backed`, `store_secret`, `retrieve_secret`, `delete_secret`, `has_secret`, `list_secrets`, `recover_secret`, `free_provider`) with `knishio_aes_gcm_secret_storage_provider_create(backend, default_passphrase, &out)` (`providerType` `aes-gcm`, software custody, delegates to `knishio_envelope_*`) and `knishio_secret_storage_provider_free`.
+- **Client secret storage integration** (`include/knishio/client_ops.h`): `knishio_client_set_secret_storage(client, provider, bundle_hash, options)`, `knishio_client_get_secret_storage`, `knishio_client_retrieve_secret`. With a provider attached, `knishio_client_set_secret` stores the secret in the provider and drops the cleartext; `knishio_client_get_source_wallet` and `knishio_client_get_source_wallet_continuid` unwrap it just-in-time and zeroize it after use, so a client given only a bundle hash can sign without ever holding the cleartext. The provider and backend are not owned by the client — free them after `knishio_client_destroy`.
+
+### Changed
+
+- **Client secret held per client, not per process**: the process-global secret state is gone; each `knishio_client_t` owns its secret, bundle hash and storage options, and `knishio_client_destroy` zeroizes them with `knishio_secure_free`.
+
+### Fixed
+
+- **BREAKING:** `knishio_client_get_bundle` now returns the canonical 64-hex bundle hash (`SHAKE256(secret, 256)`, matching every other SDK); 1.0.0 returned 128 hex characters (`knishio_shake256_hash(secret, 512, …)`), which could not serve as a cross-SDK storage key.
 
 ## [1.0.0] — 2026-09-10
 
@@ -350,7 +360,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.0.0...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.1.0...HEAD
+[1.1.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.1.0
 [1.0.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.0.0
 [0.9.4]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/0.9.4
 [0.9.3]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/0.9.3
