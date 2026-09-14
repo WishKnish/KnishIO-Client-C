@@ -96,6 +96,129 @@ static void test_cross_sdk_vector(const cJSON *vectors) {
     }
 }
 
+static void test_cross_sdk_recovery_vector(const cJSON *vectors) {
+    printf("\nTest 1b: Cross-SDK recovery vector re-enrollment\n");
+
+    const cJSON *env_obj = cJSON_GetObjectItem(vectors, "secret_storage_envelope");
+    check(env_obj != NULL, "fixture contains secret_storage_envelope", NULL);
+    if (!env_obj) return;
+
+    const cJSON *tests_arr = cJSON_GetObjectItem(env_obj, "tests");
+    check(tests_arr && cJSON_GetArraySize(tests_arr) > 1, "fixture contains at least 2 tests", NULL);
+    if (!tests_arr || cJSON_GetArraySize(tests_arr) < 2) return;
+
+    const cJSON *test1 = cJSON_GetArrayItem(tests_arr, 1);
+    const char *storage_key = cJSON_GetStringValue(cJSON_GetObjectItem(test1, "storageKey"));
+    const char *bundle_hash = cJSON_GetStringValue(cJSON_GetObjectItem(test1, "bundleHash"));
+    const char *recovery_passphrase = cJSON_GetStringValue(cJSON_GetObjectItem(test1, "recoveryPassphrase"));
+    const char *expected_plaintext = cJSON_GetStringValue(cJSON_GetObjectItem(test1, "expectedPlaintext"));
+    const cJSON *payload_json = cJSON_GetObjectItem(test1, "payload");
+
+    check(storage_key != NULL, "test1 has storageKey", storage_key);
+    check(bundle_hash != NULL, "test1 has bundleHash", bundle_hash);
+    check(recovery_passphrase != NULL, "test1 has recoveryPassphrase", recovery_passphrase);
+    check(expected_plaintext != NULL, "test1 has expectedPlaintext", expected_plaintext);
+    check(payload_json != NULL, "test1 has payload object", NULL);
+    if (!storage_key || !bundle_hash || !recovery_passphrase || !expected_plaintext || !payload_json) return;
+
+    char *payload_str = cJSON_PrintUnformatted(payload_json);
+    check(payload_str != NULL, "serialized payload JSON", NULL);
+    if (!payload_str) return;
+
+    knishio_storage_backend_t *backend = NULL;
+    knishio_error_t err = knishio_memory_storage_backend_create(&backend);
+    check(err == KNISHIO_SUCCESS && backend != NULL, "created memory backend", NULL);
+    if (!backend) {
+        free(payload_str);
+        return;
+    }
+
+    /* Seed only the recovery record */
+    err = backend->set_item(backend, storage_key, payload_str);
+    free(payload_str);
+    check(err == KNISHIO_SUCCESS, "seeded recovery record", NULL);
+
+    /* Assert knishio:secret:<bundleHash> is absent */
+    char secret_key[128];
+    snprintf(secret_key, sizeof(secret_key), "knishio:secret:%s", bundle_hash);
+    char *initial_secret = NULL;
+    err = backend->get_item(backend, secret_key, &initial_secret);
+    check(err != KNISHIO_SUCCESS || initial_secret == NULL, "primary secret initially absent", NULL);
+    if (initial_secret) free(initial_secret);
+
+    /* Create provider with NULL default passphrase */
+    knishio_secret_storage_provider_t *provider = NULL;
+    err = knishio_aes_gcm_secret_storage_provider_create(backend, NULL, &provider);
+    check(err == KNISHIO_SUCCESS && provider != NULL, "created aes-gcm provider", NULL);
+    if (!provider) {
+        knishio_storage_backend_free(backend);
+        return;
+    }
+
+    const char *primary_pass = "xsdk-reenrolled-primary-pass";
+    knishio_storage_options_t opts;
+    knishio_storage_options_init(&opts);
+    opts.passphrase = primary_pass;
+
+    /* Recover secret */
+    err = provider->recover_secret(provider, bundle_hash, recovery_passphrase, &opts);
+    check(err == KNISHIO_SUCCESS, "provider recover_secret succeeded", NULL);
+
+    /* Retrieve secret under re-enrolled primary passphrase */
+    char *retrieved = NULL;
+    size_t retrieved_len = 0;
+    err = provider->retrieve_secret(provider, bundle_hash, &opts, &retrieved, &retrieved_len);
+    check(err == KNISHIO_SUCCESS && retrieved != NULL, "provider retrieve_secret succeeded", NULL);
+    if (retrieved) {
+        check(strcmp(retrieved, expected_plaintext) == 0,
+              "retrieved plaintext matches expectedPlaintext", retrieved);
+        knishio_secure_free(retrieved, retrieved_len);
+    }
+
+    /* Assert both knishio:secret:<bundleHash> and knishio:recovery:<bundleHash> exist */
+    char *secret_raw = NULL;
+    err = backend->get_item(backend, secret_key, &secret_raw);
+    check(err == KNISHIO_SUCCESS && secret_raw != NULL, "primary secret exists after recovery", NULL);
+
+    char *rec_raw = NULL;
+    err = backend->get_item(backend, storage_key, &rec_raw);
+    check(err == KNISHIO_SUCCESS && rec_raw != NULL, "recovery record exists after recovery", NULL);
+
+    /* Parse stored primary metadata and check contract */
+    if (secret_raw) {
+        cJSON *stored_json = cJSON_Parse(secret_raw);
+        check(stored_json != NULL, "parsed stored secret JSON", NULL);
+        if (stored_json) {
+            cJSON *metadata = cJSON_GetObjectItem(stored_json, "metadata");
+            check(metadata != NULL, "stored secret has metadata", NULL);
+            if (metadata) {
+                cJSON *hw = cJSON_GetObjectItem(metadata, "hardwareBacked");
+                check(hw != NULL && cJSON_IsFalse(hw), "metadata hardwareBacked is false", NULL);
+
+                /* Check camelCase keys exist */
+                const char *required_keys[] = {"bundleHash", "createdAt", "hardwareBacked", "providerType"};
+                for (size_t i = 0; i < 4; i++) {
+                    check(cJSON_GetObjectItem(metadata, required_keys[i]) != NULL,
+                          "required metadata key present", required_keys[i]);
+                }
+
+                /* Check snake_case keys are absent */
+                const char *forbidden_keys[] = {"bundle_hash", "created_at", "hardware_backed", "provider_type"};
+                for (size_t i = 0; i < 4; i++) {
+                    check(cJSON_GetObjectItem(metadata, forbidden_keys[i]) == NULL,
+                          "forbidden snake_case key absent", forbidden_keys[i]);
+                }
+            }
+            cJSON_Delete(stored_json);
+        }
+        free(secret_raw);
+    }
+    if (rec_raw) free(rec_raw);
+
+    knishio_secret_storage_provider_free(provider);
+    knishio_storage_backend_free(backend);
+}
+
 /* ------------------------------------------------------------------ */
 /* 2. Emitted metadata contract (camelCase, omit label when NULL)      */
 /* ------------------------------------------------------------------ */
@@ -722,6 +845,7 @@ int main(void) {
     printf("=== KnishIO C Secret Storage Test Suite ===\n");
 
     test_cross_sdk_vector(vectors);
+    test_cross_sdk_recovery_vector(vectors);
     test_emitted_metadata_contract();
     test_round_trip_and_wrong_passphrase();
     test_storage_backends();
