@@ -19,6 +19,7 @@
 
 #include "knishio/knishio.h"
 #include "knishio/client_ops.h"
+#include "knishio/graphql.h"
 #include "knishio/operations/auth.h"
 #include "knishio/operations/transfer.h"
 #include "knishio/wallet.h"
@@ -40,6 +41,11 @@ int main(void) {
     knishio_request_profile_auth_token_result_t* auth_result = NULL;
     knishio_wallet_t* enc_wallet = NULL;
     knishio_wallet_t* plain_wallet = NULL;
+    char* secret2 = NULL;
+    knishio_client_t* client2 = NULL;
+    knishio_request_profile_auth_token_result_t* auth_result2 = NULL;
+    knishio_wallet_t* enc_wallet2 = NULL;
+    knishio_graphql_response_t* plain_response = NULL;
 
     if (!knishio_generate_secret("phase-e-live-c-cipherhash-secret-0123456789", 2048, &secret)) {
         fprintf(stderr, "FAIL: could not generate secret\n");
@@ -64,10 +70,16 @@ int main(void) {
         goto cleanup;
     }
 
-    /* ONE authenticated session (encrypt=true → conveys the AUTH wallet's ML-KEM pubkey as a signed
-     * walletPubkey U-atom meta, so the validator can encrypt responses back to it). We then vary
-     * ONLY the transport on this SAME session — the queried balance wallet stays fixed. */
-    knishio_request_profile_auth_token_params_t params = { .secret = secret, .encrypt = true };
+    /* ONE session, transport toggled on it — the queried balance wallet stays fixed. (A fresh
+     * second auth would rotate the USER remainder via ContinuID → a different address/position.)
+     *
+     * The session authenticates PLAINTEXT on purpose. The AUTH wallet's ML-KEM pubkey is conveyed
+     * as a signed walletPubkey U-atom meta regardless of `encrypt`, and the cipher context is
+     * plumbed either way (src/operations/auth.c), so a plaintext-authenticated session still
+     * speaks the encrypted transport. Authenticating with encrypt=true instead would make the
+     * plaintext baseline leg below a silent downgrade, which the validator rejects when
+     * ENFORCE_ENCRYPTED_TRANSPORT is at its secure default. */
+    knishio_request_profile_auth_token_params_t params = { .secret = secret, .encrypt = false };
     knishio_error_t aerr = knishio_client_request_profile_auth_token(client, &params, &auth_result);
     if (aerr != KNISHIO_SUCCESS || !auth_result || !auth_result->success) {
         fprintf(stderr, "FAIL: authentication failed%s%s\n",
@@ -78,6 +90,7 @@ int main(void) {
 
     /* Encrypted round-trip: the validator ML-KEM-decrypts the request, executes it, and encrypts
      * the response back to the client's ML-KEM pubkey; the client decrypts it. */
+    knishio_client_switch_encryption(client, true);
     knishio_client_query_balance_wallet(client, "USER", &enc_wallet);
 
     /* Plaintext baseline of the SAME wallet on the SAME authed session — only the transport differs. */
@@ -106,13 +119,84 @@ int main(void) {
 
     printf("PASS: encrypted balance query round-trips (matches plaintext); address=%s\n",
            enc_wallet->address);
+
+    /* Scenario 2 — live coverage of the enforcement path: extract_encrypt_flag →
+     * auth_tokens.encrypted → requires_encrypted_transport. A session that authenticated with
+     * encrypt=true must NOT be able to fall back to plaintext. This also proves this SDK's signed
+     * `encrypt` meta literal is the one the validator honours.
+     *
+     * The refusal is read from the RAW GraphQL response: knishio_client_query_balance_wallet
+     * reports any GraphQL error as *wallet == NULL (transfer.c), which cannot tell a refusal from
+     * an absent balance. */
+    if (!knishio_generate_secret("phase-e-live-c-enforcement-secret-0123456789", 2048, &secret2)) {
+        fprintf(stderr, "FAIL: could not generate the enforcement-scenario secret\n");
+        rc = 1;
+        goto cleanup;
+    }
+    if (knishio_client_create(&client2, &config) != KNISHIO_SUCCESS || !client2) {
+        fprintf(stderr, "FAIL: could not create the enforcement-scenario client\n");
+        rc = 1;
+        goto cleanup;
+    }
+    {
+        knishio_request_profile_auth_token_params_t enc_params = { .secret = secret2, .encrypt = true };
+        knishio_error_t err2 = knishio_client_request_profile_auth_token(client2, &enc_params, &auth_result2);
+        if (err2 != KNISHIO_SUCCESS || !auth_result2 || !auth_result2->success) {
+            fprintf(stderr, "FAIL: encrypt=true authentication failed%s%s\n",
+                    (auth_result2 && auth_result2->error_message) ? ": " : "",
+                    (auth_result2 && auth_result2->error_message) ? auth_result2->error_message : "");
+            rc = 1;
+            goto cleanup;
+        }
+    }
+
+    /* The encrypted transport still works for this session. */
+    knishio_client_query_balance_wallet(client2, "USER", &enc_wallet2);
+    if (!enc_wallet2 || !enc_wallet2->address) {
+        fprintf(stderr, "FAIL: encrypt=true session could not complete an encrypted query\n");
+        rc = 1;
+        goto cleanup;
+    }
+
+    /* Dropping to plaintext on the same session must be refused by the validator. */
+    knishio_client_switch_encryption(client2, false);
+    {
+        knishio_graphql_operation_t plain_op = {
+            .name = "Balance",
+            .query = "query { Balance(token: \"USER\") { address } }",
+            .variables_json = "{}",
+            .requires_auth = true,
+            .is_mutation = false
+        };
+        knishio_error_t err3 = knishio_client_execute_graphql(client2, &plain_op, &plain_response);
+        if (err3 != KNISHIO_SUCCESS || !plain_response) {
+            fprintf(stderr, "FAIL: plaintext request could not be executed (err=%d)\n", (int)err3);
+            rc = 1;
+            goto cleanup;
+        }
+        if (plain_response->success || !plain_response->errors
+            || !strstr(plain_response->errors, "CipherHash encrypted transport")) {
+            fprintf(stderr,
+                    "FAIL: plaintext request from an encrypt=true session was not refused\n  errors=%s\n",
+                    plain_response->errors ? plain_response->errors : "(none)");
+            rc = 1;
+            goto cleanup;
+        }
+    }
+
+    printf("PASS: an encrypt=true session is refused when it drops to plaintext\n");
     rc = 0;
 
 cleanup:
     if (enc_wallet) knishio_wallet_free(enc_wallet);
     if (plain_wallet) knishio_wallet_free(plain_wallet);
+    if (enc_wallet2) knishio_wallet_free(enc_wallet2);
+    if (plain_response) knishio_graphql_response_free(plain_response);
     if (auth_result) knishio_request_profile_auth_token_result_free(auth_result);
+    if (auth_result2) knishio_request_profile_auth_token_result_free(auth_result2);
     if (client) knishio_client_destroy(client);
+    if (client2) knishio_client_destroy(client2);
     if (secret) knishio_free(secret);
+    if (secret2) knishio_free(secret2);
     return rc;
 }

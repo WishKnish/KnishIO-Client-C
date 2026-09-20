@@ -10,6 +10,7 @@
 extern void test_shake256_suite(void);
 extern void test_wallet_suite(void);
 extern void test_molecule_suite(void);   /* Molecular validation and signing tests */
+extern void test_encrypted_transport_suite(void);  /* PQ-transport fail-closed behaviour */
 
 /* Global test state */
 static int tests_run = 0;
@@ -81,6 +82,10 @@ int main(int argc, char *argv[]) {
 
     if (filter == NULL || strstr("wallet", filter) != NULL) {
         run_test_suite("Wallet Generation", test_wallet_suite);
+    }
+
+    if (filter == NULL || strstr("encrypted_transport", filter) != NULL) {
+        run_test_suite("Encrypted Transport Fail-Closed", test_encrypted_transport_suite);
     }
     
     /* Cross-SDK compatibility tests */

@@ -297,7 +297,14 @@ knishio_error_t knishio_client_execute_graphql(
 
     /* PQ-transport Phase E: wrap the operation in the ML-KEM CipherHash envelope when encryption is
      * enabled + the operation isn't bypassed. Encrypt the FULL body string (the validator recovers
-     * it as a JSON string value and parses the inner request). */
+     * it as a JSON string value and parses the inner request).
+     *
+     * Decide the bypass FIRST, then demand the keys: a bypassed operation (`__schema`, `ContinuId`,
+     * `AccessToken`, U-isotope `ProposeMolecule`) must still go out in plaintext or the auth
+     * bootstrap would deadlock encrypting to a server pubkey it has not learned yet. Anything else
+     * on an encryption-enabled client fails closed — both when the transport keys are missing and
+     * when the envelope cannot be built — rather than silently downgrading to plaintext (matches
+     * PHP Cipher.php / Kotlin HttpClient). */
     bool encrypted_request = false;
     char* body = NULL;
     char* envelope = NULL;
@@ -305,8 +312,14 @@ knishio_error_t knishio_client_execute_graphql(
     knishio_graphql_operation_t cipher_op;
     const knishio_graphql_operation_t* exec_op = operation;
 
-    if (client->cipher_enabled && client->cipher_server_pubkey && client->cipher_wallet
-        && cipher_should_encrypt(operation)) {
+    if (client->cipher_enabled && cipher_should_encrypt(operation)) {
+        if (!client->cipher_wallet || !client->cipher_server_pubkey
+            || client->cipher_server_pubkey[0] == '\0') {
+            /* Authorized wallet / server public key missing — never send this in the clear.
+             * An empty advertised key counts as missing (parity with JS/TS `!serverPubkey`). */
+            knishio_graphql_client_free(gql);
+            return KNISHIO_ERROR_INVALID_STATE;
+        }
         cJSON* body_json = cJSON_CreateObject();
         if (body_json) {
             cJSON_AddStringToObject(body_json, "query", operation->query ? operation->query : "");
@@ -317,23 +330,36 @@ knishio_error_t knishio_client_execute_graphql(
             body = cJSON_PrintUnformatted(body_json);
             cJSON_Delete(body_json);
         }
-        if (body && knishio_cipher_hash_encrypt(body, client->cipher_server_pubkey, &envelope) == KNISHIO_SUCCESS) {
-            cJSON* cv = cJSON_CreateObject();
-            if (cv) {
-                cJSON_AddStringToObject(cv, "Hash", envelope);
-                cipher_vars = cJSON_PrintUnformatted(cv);
-                cJSON_Delete(cv);
-            }
-            if (cipher_vars) {
-                cipher_op.name = "CipherHash";
-                cipher_op.query = KNISHIO_CIPHER_HASH_QUERY;
-                cipher_op.variables_json = cipher_vars;
-                cipher_op.requires_auth = operation->requires_auth;
-                cipher_op.is_mutation = false;  /* CipherHash is a query op */
-                exec_op = &cipher_op;
-                encrypted_request = true;
-            }
+        if (!body) {
+            knishio_graphql_client_free(gql);
+            return KNISHIO_ERROR_CRYPTO;
         }
+        if (knishio_cipher_hash_encrypt(body, client->cipher_server_pubkey, &envelope) != KNISHIO_SUCCESS
+            || !envelope) {
+            free(body);
+            if (envelope) free(envelope);
+            knishio_graphql_client_free(gql);
+            return KNISHIO_ERROR_CRYPTO;
+        }
+        cJSON* cv = cJSON_CreateObject();
+        if (cv) {
+            cJSON_AddStringToObject(cv, "Hash", envelope);
+            cipher_vars = cJSON_PrintUnformatted(cv);
+            cJSON_Delete(cv);
+        }
+        if (!cipher_vars) {
+            free(body);
+            free(envelope);
+            knishio_graphql_client_free(gql);
+            return KNISHIO_ERROR_CRYPTO;
+        }
+        cipher_op.name = "CipherHash";
+        cipher_op.query = KNISHIO_CIPHER_HASH_QUERY;
+        cipher_op.variables_json = cipher_vars;
+        cipher_op.requires_auth = operation->requires_auth;
+        cipher_op.is_mutation = false;  /* CipherHash is a query op */
+        exec_op = &cipher_op;
+        encrypted_request = true;
     }
 
     error = knishio_graphql_execute(gql, exec_op, response);

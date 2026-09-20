@@ -466,6 +466,7 @@ if(KNISHIO_BUILD_TESTS)
         tests/test_shake256.c
         tests/test_wallet.c
         tests/test_molecule.c
+        tests/test_encrypted_transport.c
     )
     
     add_executable(knishio_tests ${TEST_SOURCES})
@@ -485,6 +486,10 @@ if(KNISHIO_BUILD_TESTS)
     add_test(NAME shake256_tests COMMAND knishio_tests test_shake256)
     add_test(NAME wallet_tests COMMAND knishio_tests test_wallet)
     add_test(NAME molecule_tests COMMAND knishio_tests test_molecule)
+    # `--filter=` (not a bare argument): test_main.c resets Unity.TestFailures per suite and main
+    # returns UnityEnd(), so an unfiltered run only reports the LAST suite's failures. Filtering
+    # makes this suite run alone, which is what makes its failures reach the exit code.
+    add_test(NAME encrypted_transport_tests COMMAND knishio_tests --filter=encrypted_transport)
 endif()
 
 # Examples
