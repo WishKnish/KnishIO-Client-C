@@ -14,6 +14,23 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
+## [1.2.0] — 2026-09-20
+
+### Changed
+
+- `knishio_client_execute_graphql` **fails closed**: `KNISHIO_ERROR_INVALID_STATE` when
+  encryption is enabled but the wallet or the validator ML-KEM key is missing, and
+  `KNISHIO_ERROR_CRYPTO` when the CipherHash envelope cannot be produced — instead of falling
+  through to the plaintext request in either case (`src/client.c`). The bypass set is decided
+  first, so the auth bootstrap still goes out in plaintext.
+
+### Notes
+
+- Registered as `knishio_tests --filter=encrypted_transport` (`tests/test_encrypted_transport.c`).
+- Both live CipherHash cases (`tests/cipherhash_live_test.c`) passed against `testnet.knish.io`
+  on 2026-09-20 at ML-KEM-1024 and ML-KEM-768, including the validator refusing a plaintext query
+  from an `encrypt=true` session.
+
 ## [1.1.0] — 2026-09-12
 
 ### Added
@@ -360,7 +377,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.1.0...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.2.0...HEAD
+[1.2.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.0
 [1.1.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.1.0
 [1.0.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.0.0
 [0.9.4]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/0.9.4
