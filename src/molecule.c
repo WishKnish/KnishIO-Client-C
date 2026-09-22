@@ -17,6 +17,7 @@
 // #include "knishio/crypto/signatures.h" - removed (dead code)
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
+#include "atom_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -132,6 +133,20 @@ void knishio_molecule_free(knishio_molecule_t* molecule) {
     
     /* Free the molecule structure itself */
     knishio_free(molecule);
+}
+
+void knishio_molecule_free_deep(knishio_molecule_t* molecule) {
+    if (!molecule) {
+        return;
+    }
+
+    /* knishio_molecule_free() releases only the atom pointer array; the atoms (and their meta)
+     * are released here, for molecules that own them (see include/knishio/molecule.h). */
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        knishio_atom_free_deep(molecule->atoms[i]);
+    }
+
+    knishio_molecule_free(molecule);
 }
 
 /* Atom management functions */
@@ -929,11 +944,86 @@ knishio_error_t knishio_molecule_from_json(
     if (!json_input || !molecule) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
+    *molecule = NULL;
 
-    /* TODO: Implement JSON deserialization using json parser */
-    /* This would parse the JSON and create a molecule with all fields */
-    
-    return KNISHIO_ERROR_NOT_IMPLEMENTED;
+    cJSON *root = cJSON_Parse(json_input);
+    if (!root) {
+        return KNISHIO_ERROR_JSON_PARSE;
+    }
+
+    knishio_error_t err = KNISHIO_ERROR_INVALID_JSON;
+    knishio_molecule_t *mol = NULL;
+    const char *molecular_hash = NULL;
+    const char *bundle = NULL;
+    const char *cell_slug = NULL;
+    const char *version = NULL;
+    const char *created_at = NULL;
+    long long created_ms = 0;
+    const cJSON *atom_json = NULL;
+    const cJSON *atoms = cJSON_GetObjectItemCaseSensitive(root, "atoms");
+
+    /* sourceWallet, remainderWallet, status, cellSlugOrigin, mlKemParameterSet and unknown keys
+     * are ignored: none of them is hashed or read by knishio_molecule_check(). */
+    if (!cJSON_IsObject(root)
+        || !knishio_cjson_optional_string(root, "molecularHash", &molecular_hash)
+        || !knishio_cjson_optional_string(root, "bundle", &bundle)
+        || !knishio_cjson_optional_string(root, "cellSlug", &cell_slug)
+        || !knishio_cjson_optional_string(root, "version", &version)
+        || !knishio_cjson_optional_string(root, "createdAt", &created_at)
+        || !cJSON_IsArray(atoms)) {
+        goto done;
+    }
+
+    /* The molecule-level createdAt is not hashed (only atoms are), so it is truncated to whole
+     * seconds rather than rejected; the frozen cross-SDK vector carries "1790041380391". */
+    if (created_at && !knishio_cjson_millis(created_at, &created_ms)) {
+        goto done;
+    }
+
+    err = knishio_molecule_create(&mol, NULL, bundle, NULL, NULL, cell_slug, version);
+    if (err != KNISHIO_SUCCESS) {
+        goto done;
+    }
+
+    cJSON_ArrayForEach(atom_json, atoms) {
+        knishio_atom_t *atom = NULL;
+        err = knishio_atom_from_cjson(atom_json, &atom);
+        if (err != KNISHIO_SUCCESS) {
+            goto done;
+        }
+        /* knishio_molecule_add_atom() overwrites the index with the insertion position, but the
+         * index is what orders the atoms for hashing, so the sender's value is restored. */
+        const int index = atom->index;
+        err = knishio_molecule_add_atom(mol, atom);
+        if (err != KNISHIO_SUCCESS) {
+            knishio_atom_free_deep(atom);
+            goto done;
+        }
+        err = knishio_atom_set_index(atom, index);
+        if (err != KNISHIO_SUCCESS) {
+            goto done;
+        }
+    }
+
+    /* Set last: knishio_molecule_add_atom() frees the molecular hash on every call. */
+    if (molecular_hash) {
+        mol->molecular_hash = knishio_strdup(molecular_hash);
+        if (!mol->molecular_hash) {
+            err = KNISHIO_ERROR_MEMORY;
+            goto done;
+        }
+    }
+    mol->created_at = (time_t)(created_ms / 1000);
+    err = KNISHIO_SUCCESS;
+
+done:
+    cJSON_Delete(root);
+    if (err != KNISHIO_SUCCESS) {
+        knishio_molecule_free_deep(mol);
+        return err;
+    }
+    *molecule = mol;
+    return KNISHIO_SUCCESS;
 }
 
 const char* knishio_molecule_get_cell_slug_delimiter(void) {

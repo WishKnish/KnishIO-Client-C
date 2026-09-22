@@ -114,10 +114,13 @@ knishio_error_t knishio_molecule_check(
 }
 
 /**
- * @brief All atoms must carry the same token, except fusion (F) atoms
+ * @brief Every V atom must carry atoms[0]'s token (KNISHIO_ERROR_TRANSFER_MISMATCHED)
  *
- * Ported from the subset verifier that previously shipped in src/molecule.c — it is the
- * one check that file had and this one did not.
+ * Matches the JS reference (CheckMolecule.isotopeV, CheckMolecule.js:545-548) and the Rust SDK
+ * (check_molecule.rs:558-561): each V atom's token is compared with atoms[0]'s. Every other
+ * isotope has its own per-isotope token rule (check_isotope_*: U = AUTH, I/M/C/T = USER). This
+ * used to require ALL non-F atoms to share atoms[0]'s token, which rejected every U+I
+ * authorization molecule (U = AUTH, I = USER) that the reference and the validator accept.
  */
 static bool check_token_consistency(const knishio_molecule_t* molecule) {
     const char* first_token = molecule->atoms[0]->token;
@@ -127,14 +130,12 @@ static bool check_token_consistency(const knishio_molecule_t* molecule) {
 
     for (size_t i = 1; i < molecule->atom_count; i++) {
         const knishio_atom_t* atom = molecule->atoms[i];
-        if (!atom || !atom->token) {
+        if (!atom || atom->isotope != KNISHIO_ISOTOPE_V || !atom->token) {
             continue;
         }
-        /* A fusion atom legitimately carries a different token */
-        if (atom->isotope != KNISHIO_ISOTOPE_F &&
-            strcmp(atom->token, first_token) != 0) {
+        if (strcmp(atom->token, first_token) != 0) {
 #if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_token_consistency: FAIL - atom %zu token '%s' != '%s'\n",
+            printf("DEBUG check_token_consistency: FAIL - V atom %zu token '%s' != '%s'\n",
                    i, atom->token, first_token);
 #endif
             return false;

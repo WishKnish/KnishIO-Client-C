@@ -99,10 +99,23 @@ knishio_error_t knishio_molecule_create(
 );
 
 /**
- * @brief Free molecule and all associated resources
- * @param molecule Molecule to free
+ * @brief Free a molecule's own strings and its atom pointer array
+ *
+ * Does NOT free the atoms the array points to: in the builder flow those are owned by the
+ * caller. For a molecule that owns its atoms (every molecule produced by
+ * knishio_molecule_from_json()), use knishio_molecule_free_deep().
+ * @param molecule Molecule to free (NULL is a no-op)
  */
 void knishio_molecule_free(knishio_molecule_t* molecule);
+
+/**
+ * @brief Free a molecule together with every atom in it and every meta in those atoms
+ *
+ * Releases each molecule->atoms[i] with knishio_atom_free_deep(), then the molecule with
+ * knishio_molecule_free(). Use for molecules produced by knishio_molecule_from_json().
+ * @param molecule Molecule to free (NULL is a no-op)
+ */
+void knishio_molecule_free_deep(knishio_molecule_t* molecule);
 
 /* Atom management */
 
@@ -203,10 +216,28 @@ knishio_error_t knishio_molecule_to_json(
 );
 
 /**
- * @brief Create molecule from JSON string
- * @param json_input JSON string
- * @param molecule Output molecule
- * @return KNISHIO_SUCCESS on success, error code on failure
+ * @brief Create a molecule from its JSON form (the inverse of knishio_molecule_to_json)
+ *
+ * Accepts the molecule JSON every KnishIO SDK emits. Hashed atom fields are taken verbatim, so
+ * knishio_molecule_check() re-derives the sender's molecularHash and verifies its one-time
+ * signature. Field rules (JS reference parity):
+ *   - value / batchId / metaType / metaId / version / otsFragment: string, or null/absent -> NULL
+ *   - position / walletAddress: string, or null/absent -> "" (JS hashes a null there as '';
+ *     Kotlin omits null keys)
+ *   - meta: array of {key, value}. An entry whose value is null/absent is dropped, exactly as
+ *     JS Atom.getHashableValues() skips it; storing "" would change the molecular hash
+ *   - atom createdAt: decimal string of milliseconds that must be whole seconds, because
+ *     knishio_atom_t.created_at is time_t seconds; a sub-second value is rejected rather than
+ *     silently changing the hash. The molecule-level createdAt (not hashed) is truncated.
+ *   - index: required non-negative integer (it orders the atoms for hashing)
+ *   - isotope: must be one knishio_isotope_t represents (the JS-only P and A are rejected)
+ *   - sourceWallet, remainderWallet, status and unknown keys are ignored
+ * @param json_input Molecule JSON
+ * @param molecule Receives the molecule; NULL on failure
+ * @return KNISHIO_SUCCESS; KNISHIO_ERROR_INVALID_ARGS (NULL argument); KNISHIO_ERROR_JSON_PARSE
+ *         (not JSON); KNISHIO_ERROR_INVALID_JSON (wrong shape or unrepresentable value);
+ *         KNISHIO_ERROR_MEMORY. The caller owns the molecule, its atoms and their meta: release
+ *         it with knishio_molecule_free_deep().
  */
 knishio_error_t knishio_molecule_from_json(
     const char* json_input,

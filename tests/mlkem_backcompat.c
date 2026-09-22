@@ -8,11 +8,9 @@
  *   - vectors.legacyMlkem768AuthMolecule    — a frozen signed U+I auth molecule whose U-atom
  *                                             walletPubkey meta is an ML-KEM-768 key
  *
- * The C SDK has no molecule-from-JSON deserializer (knishio_molecule_from_json and
- * knishio_molecule_from_json_obj both return KNISHIO_ERROR_NOT_IMPLEMENTED), so the frozen-molecule
- * leg asserts the molecular hash recomputed over the fixture's hashable `atoms` array — not the
- * full knishio_molecule_check() (hash + OTS), which would need a deserializer this release does not
- * add.
+ * The frozen-molecule leg deserializes the molecule with knishio_molecule_from_json() and runs the
+ * full knishio_molecule_check() on it — molecular hash, WOTS+ one-time signature and isotope
+ * checks — so it proves a 1024 build accepts the pre-bump auth molecule, not just its hash.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -308,55 +306,8 @@ static void test_session_snapshot_parameter_set(const cJSON *vectors) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Step 14.3: the frozen pre-bump 768 auth molecule still hashes      */
+/* Step 14.3: the frozen pre-bump 768 auth molecule still verifies    */
 /* ------------------------------------------------------------------ */
-static knishio_atom_t *atom_from_vector(const cJSON *src) {
-    const char *position = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)src, "position"));
-    const char *address = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)src, "walletAddress"));
-    const char *isotope = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)src, "isotope"));
-    const char *token = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)src, "token"));
-    const char *value = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)src, "value"));
-    const char *batch_id = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)src, "batchId"));
-    const char *meta_type = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)src, "metaType"));
-    const char *meta_id = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)src, "metaId"));
-    const char *created_at = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)src, "createdAt"));
-    const char *version = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)src, "version"));
-    const cJSON *index = cJSON_GetObjectItem((cJSON *)src, "index");
-
-    if (!position || !address || !isotope || !created_at) return NULL;
-
-    knishio_atom_t *atom = NULL;
-    if (knishio_atom_create(&atom, position, address, knishio_isotope_from_string(isotope),
-                            token, value, batch_id) != KNISHIO_SUCCESS) {
-        return NULL;
-    }
-    /* Every hashed property comes from the fixture verbatim — knishio_atom_create() stamps a fresh
-     * createdAt, which would silently change the hash. createdAt is milliseconds on the wire and
-     * seconds in knishio_atom_t (the hasher multiplies by 1000 again). */
-    atom->created_at = (time_t)(strtoll(created_at, NULL, 10) / 1000);
-    if (meta_type) atom->meta_type = knishio_strdup(meta_type);
-    if (meta_id) atom->meta_id = knishio_strdup(meta_id);
-    if (version) {
-        knishio_free(atom->version);
-        atom->version = knishio_strdup(version);
-    }
-    if (cJSON_IsNumber(index)) atom->index = (int)cJSON_GetNumberValue(index);
-
-    const cJSON *meta = cJSON_GetObjectItem((cJSON *)src, "meta");
-    if (cJSON_IsArray(meta)) {
-        const cJSON *item = NULL;
-        cJSON_ArrayForEach(item, meta) {
-            const char *key = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)item, "key"));
-            const char *val = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)item, "value"));
-            knishio_meta_t *m = NULL;
-            if (key && val && knishio_meta_create(&m, key, val) == KNISHIO_SUCCESS) {
-                knishio_atom_add_meta(atom, m);
-            }
-        }
-    }
-    return atom;
-}
-
 static void test_frozen_768_molecule(const cJSON *vectors) {
     printf("\nStep 14.3 — frozen pre-bump ML-KEM-768 auth molecule validates from a 1024 build\n");
 
@@ -367,10 +318,8 @@ static void test_frozen_768_molecule(const cJSON *vectors) {
     }
     const char *expected_hash = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)v, "expectedMolecularHash"));
     const cJSON *expected_bytes = cJSON_GetObjectItem((cJSON *)v, "expectedWalletPubkeyBytes");
-    const cJSON *atoms_json = cJSON_GetObjectItem((cJSON *)v, "atoms");
     const cJSON *molecule_json = cJSON_GetObjectItem((cJSON *)v, "molecule");
-    if (!expected_hash || !cJSON_IsNumber(expected_bytes) || !cJSON_IsArray(atoms_json)
-        || !molecule_json) {
+    if (!expected_hash || !cJSON_IsNumber(expected_bytes) || !molecule_json) {
         check(false, "legacyMlkem768AuthMolecule fields present", "missing field(s)");
         return;
     }
@@ -400,31 +349,20 @@ static void test_frozen_768_molecule(const cJSON *vectors) {
     check(pubkey_bytes == (size_t)cJSON_GetNumberValue(expected_bytes),
           "U-atom walletPubkey meta is an ML-KEM-768 key", detail);
 
-    /* Recompute the molecular hash over the hashable atom array. */
-    size_t count = (size_t)cJSON_GetArraySize((cJSON *)atoms_json);
-    knishio_atom_t **atoms = calloc(count, sizeof(knishio_atom_t *));
-    size_t built = 0;
-    atom = NULL;
-    cJSON_ArrayForEach(atom, atoms_json) {
-        knishio_atom_t *a = atom_from_vector(atom);
-        if (a) atoms[built++] = a;
-    }
-
-    knishio_molecule_t molecule;
-    memset(&molecule, 0, sizeof(molecule));
-    molecule.atoms = atoms;
-    molecule.atom_count = built;
-    knishio_error_t err = (built == count) ? knishio_molecule_generate_hash(&molecule)
-                                           : KNISHIO_ERROR_INVALID_STATE;
-    snprintf(detail, sizeof(detail), "err=%d, %zu/%zu atoms, got=%s", (int)err, built, count,
-             molecule.molecular_hash ? molecule.molecular_hash : "(null)");
-    check(err == KNISHIO_SUCCESS && molecule.molecular_hash
-              && strcmp(molecule.molecular_hash, expected_hash) == 0,
-          "recomputed molecular hash matches expectedMolecularHash", detail);
-
-    knishio_free(molecule.molecular_hash);
-    for (size_t i = 0; i < built; i++) knishio_atom_free(atoms[i]);
-    free(atoms);
+    /* Deserialize the frozen molecule and run the full verifier on it. */
+    char *molecule_text = cJSON_PrintUnformatted(molecule_json);
+    knishio_molecule_t *molecule = NULL;
+    const knishio_error_t err = molecule_text ? knishio_molecule_from_json(molecule_text, &molecule)
+                                              : KNISHIO_ERROR_MEMORY;
+    cJSON_free(molecule_text);
+    const knishio_error_t verdict = (err == KNISHIO_SUCCESS) ? knishio_molecule_check(molecule, NULL) : err;
+    const bool frozen = molecule && molecule->molecular_hash
+                        && strcmp(molecule->molecular_hash, expected_hash) == 0;
+    snprintf(detail, sizeof(detail), "err=%d (%s), molecularHash %s expectedMolecularHash",
+             (int)verdict, knishio_error_to_string(verdict), frozen ? "==" : "!=");
+    check(verdict == KNISHIO_SUCCESS && frozen,
+          "frozen 768 auth molecule passes knishio_molecule_check (hash + OTS + isotopes)", detail);
+    knishio_molecule_free_deep(molecule);
 }
 
 int main(void) {

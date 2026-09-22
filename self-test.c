@@ -2501,6 +2501,8 @@ static bool test_cross_sdk_validation(test_results_t *results) {
                             
                             cJSON* molecule_data = cJSON_GetObjectItem(molecules, molecule_types[j]);
                             bool is_valid = false;
+                            knishio_error_t peer_error = KNISHIO_SUCCESS;
+                            const char *peer_stage = NULL;
                             
                             if (molecule_data && cJSON_IsString(molecule_data)) {
                                 /* Basic validation: check if molecule JSON can be parsed */
@@ -2604,15 +2606,20 @@ static bool test_cross_sdk_validation(test_results_t *results) {
                                             is_valid = false;  /* Missing required JSON fields */
                                         }
                                     } else {
-                                        /* Standard molecule validation */
-                                        cJSON* molecular_hash = cJSON_GetObjectItem(molecule_json, "molecularHash");
-                                        cJSON* atoms = cJSON_GetObjectItem(molecule_json, "atoms");
-                                        
-                                        if (molecular_hash && cJSON_IsString(molecular_hash) && 
-                                            atoms && cJSON_IsArray(atoms) && 
-                                            cJSON_GetArraySize(atoms) > 0) {
-                                            is_valid = true;
+                                        /* Verify the peer's molecule with the verifier C applies to its own:
+                                         * deserialize, then knishio_molecule_check() (hash, OTS, batch ID,
+                                         * ContinuID, isotopes, conservation). This branch used to accept any
+                                         * JSON with a string molecularHash and a non-empty atoms array, so it
+                                         * could not reject a forged signature. */
+                                        knishio_molecule_t *peer_molecule = NULL;
+                                        peer_error = knishio_molecule_from_json(cJSON_GetStringValue(molecule_data), &peer_molecule);
+                                        peer_stage = "not deserializable";
+                                        if (peer_error == KNISHIO_SUCCESS) {
+                                            peer_error = knishio_molecule_check(peer_molecule, NULL);
+                                            peer_stage = "rejected by knishio_molecule_check";
                                         }
+                                        is_valid = (peer_error == KNISHIO_SUCCESS);
+                                        knishio_molecule_free_deep(peer_molecule);
                                     }
                                     
                                     cJSON_Delete(molecule_json);
@@ -2624,6 +2631,10 @@ static bool test_cross_sdk_validation(test_results_t *results) {
                                 passed_validations++;
                             } else {
                                 printf("    ❌ %s molecule: FAILED\n", molecule_types[j]);
+                                if (peer_error != KNISHIO_SUCCESS && peer_stage) {
+                                    printf("      ↳ %s: %s (%d)\n", peer_stage,
+                                           knishio_error_to_string(peer_error), (int)peer_error);
+                                }
                             }
                         }
                     }

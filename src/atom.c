@@ -12,13 +12,14 @@
 #include "knishio/utils/string.h"
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
-#include "knishio/json/serializers.h"
+#include "atom_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
 #include <errno.h>
+#include <limits.h>
 
 /* Internal helper function declarations */
 static knishio_error_t copy_string_field(char** dest, const char* src);
@@ -201,6 +202,20 @@ void knishio_atom_free(knishio_atom_t* atom) {
 
     /* Free the atom structure itself */
     knishio_free(atom);
+}
+
+void knishio_atom_free_deep(knishio_atom_t* atom) {
+    if (!atom) {
+        return;
+    }
+
+    /* knishio_atom_free() releases only the meta pointer array; the meta objects it points to
+     * are released here, for atoms that own them (see include/knishio/atom.h). */
+    for (size_t i = 0; i < atom->meta_count; i++) {
+        knishio_meta_free(atom->meta[i]);
+    }
+
+    knishio_atom_free(atom);
 }
 
 /* Atom property getters */
@@ -571,6 +586,170 @@ knishio_error_t knishio_atom_to_json(
     return KNISHIO_SUCCESS;
 }
 
+/* ------------------------------------------------------------------------------------------ */
+/* JSON -> atom: the inverse of knishio_atom_to_json(). The field rules are documented at      */
+/* knishio_molecule_from_json() in include/knishio/molecule.h.                                 */
+/* ------------------------------------------------------------------------------------------ */
+
+bool knishio_cjson_optional_string(const cJSON *json, const char *key, const char **out) {
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, key);
+    if (!item || cJSON_IsNull(item)) {
+        *out = NULL;
+        return true;
+    }
+    if (!cJSON_IsString(item)) {
+        return false;
+    }
+    *out = item->valuestring;
+    return true;
+}
+
+bool knishio_cjson_millis(const char *text, long long *ms) {
+    size_t len = text ? strlen(text) : 0;
+    if (len == 0 || len > 18) {
+        return false;
+    }
+    long long value = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (text[i] < '0' || text[i] > '9') {
+            return false;
+        }
+        value = (value * 10) + (text[i] - '0');
+    }
+    *ms = value;
+    return true;
+}
+
+knishio_error_t knishio_atom_from_cjson(const cJSON *json, knishio_atom_t **atom) {
+    if (!json || !atom) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    *atom = NULL;
+    if (!cJSON_IsObject(json)) {
+        return KNISHIO_ERROR_INVALID_JSON;
+    }
+
+    const cJSON *isotope_item = cJSON_GetObjectItemCaseSensitive(json, "isotope");
+    const cJSON *token_item = cJSON_GetObjectItemCaseSensitive(json, "token");
+    if (!cJSON_IsString(isotope_item) || !cJSON_IsString(token_item)) {
+        return KNISHIO_ERROR_INVALID_JSON;
+    }
+    /* Unknown includes the JS-only P and A isotopes, which knishio_isotope_t cannot represent. */
+    knishio_isotope_t isotope = knishio_isotope_from_string(isotope_item->valuestring);
+    if (isotope == KNISHIO_ISOTOPE_UNKNOWN) {
+        return KNISHIO_ERROR_INVALID_JSON;
+    }
+
+    const char *position = NULL;
+    const char *wallet_address = NULL;
+    const char *value = NULL;
+    const char *batch_id = NULL;
+    const char *meta_type = NULL;
+    const char *meta_id = NULL;
+    const char *version = NULL;
+    const char *ots_fragment = NULL;
+    if (!knishio_cjson_optional_string(json, "position", &position)
+        || !knishio_cjson_optional_string(json, "walletAddress", &wallet_address)
+        || !knishio_cjson_optional_string(json, "value", &value)
+        || !knishio_cjson_optional_string(json, "batchId", &batch_id)
+        || !knishio_cjson_optional_string(json, "metaType", &meta_type)
+        || !knishio_cjson_optional_string(json, "metaId", &meta_id)
+        || !knishio_cjson_optional_string(json, "version", &version)
+        || !knishio_cjson_optional_string(json, "otsFragment", &ots_fragment)) {
+        return KNISHIO_ERROR_INVALID_JSON;
+    }
+
+    /* createdAt is milliseconds on the wire and whole seconds in knishio_atom_t.created_at (the
+     * hasher multiplies by 1000 again). A sub-second value cannot be represented, and truncating
+     * it would silently change the molecular hash, so it is rejected instead. */
+    const cJSON *created_item = cJSON_GetObjectItemCaseSensitive(json, "createdAt");
+    long long created_ms = 0;
+    if (!cJSON_IsString(created_item)
+        || !knishio_cjson_millis(created_item->valuestring, &created_ms)
+        || created_ms % 1000 != 0) {
+        return KNISHIO_ERROR_INVALID_JSON;
+    }
+
+    /* index orders the atoms for hashing; the JS reference rejects an atom without one
+     * (AtomIndexException). */
+    const cJSON *index_item = cJSON_GetObjectItemCaseSensitive(json, "index");
+    if (!cJSON_IsNumber(index_item)) {
+        return KNISHIO_ERROR_INVALID_JSON;
+    }
+    const double index_value = index_item->valuedouble;
+    if (!(index_value >= 0.0 && index_value <= (double)INT_MAX)
+        || index_value != (double)(int)index_value) {
+        return KNISHIO_ERROR_INVALID_JSON;
+    }
+
+    const cJSON *meta_item = cJSON_GetObjectItemCaseSensitive(json, "meta");
+    if (meta_item && !cJSON_IsNull(meta_item) && !cJSON_IsArray(meta_item)) {
+        return KNISHIO_ERROR_INVALID_JSON;
+    }
+
+    /* JS hashes a null position/walletAddress as '' and Kotlin omits null keys, so both map to "". */
+    knishio_atom_t *result = NULL;
+    knishio_error_t err = knishio_atom_create_with_meta(&result,
+        position ? position : "", wallet_address ? wallet_address : "", isotope,
+        token_item->valuestring, value, batch_id, meta_type, meta_id, NULL, 0);
+    if (err != KNISHIO_SUCCESS) {
+        return (err == KNISHIO_ERROR_MEMORY) ? KNISHIO_ERROR_MEMORY : KNISHIO_ERROR_INVALID_JSON;
+    }
+
+    /* The constructor stamps the current time and index -1; every hashed value comes from the
+     * JSON verbatim instead. */
+    result->created_at = (time_t)(created_ms / 1000);
+    result->index = (int)index_value;
+
+    if ((err = knishio_atom_set_version(result, version)) != KNISHIO_SUCCESS) {
+        goto fail;
+    }
+    if (ots_fragment && (err = knishio_atom_set_ots_fragment(result, ots_fragment)) != KNISHIO_SUCCESS) {
+        goto fail;
+    }
+
+    if (cJSON_IsArray(meta_item)) {
+        const cJSON *entry = NULL;
+        cJSON_ArrayForEach(entry, meta_item) {
+            if (!cJSON_IsObject(entry)) {
+                err = KNISHIO_ERROR_INVALID_JSON;
+                goto fail;
+            }
+            const cJSON *key = cJSON_GetObjectItemCaseSensitive(entry, "key");
+            const cJSON *meta_value = cJSON_GetObjectItemCaseSensitive(entry, "value");
+            if (!cJSON_IsString(key)) {
+                err = KNISHIO_ERROR_INVALID_JSON;
+                goto fail;
+            }
+            /* The JS reference does not hash a meta entry whose value is null (Atom.js:446,
+             * Atom.getHashableValues), so it is dropped. Storing "" would absorb the key and
+             * change the molecular hash. */
+            if (!meta_value || cJSON_IsNull(meta_value)) {
+                continue;
+            }
+            if (!cJSON_IsString(meta_value)) {
+                err = KNISHIO_ERROR_INVALID_JSON;
+                goto fail;
+            }
+            knishio_meta_t *meta = NULL;
+            if ((err = knishio_meta_create(&meta, key->valuestring, meta_value->valuestring)) != KNISHIO_SUCCESS) {
+                goto fail;
+            }
+            if ((err = knishio_atom_add_meta(result, meta)) != KNISHIO_SUCCESS) {
+                knishio_meta_free(meta);
+                goto fail;
+            }
+        }
+    }
+
+    *atom = result;
+    return KNISHIO_SUCCESS;
+
+fail:
+    knishio_atom_free_deep(result);
+    return (err == KNISHIO_ERROR_MEMORY) ? KNISHIO_ERROR_MEMORY : KNISHIO_ERROR_INVALID_JSON;
+}
+
 knishio_error_t knishio_atom_from_json(
     const char* json_input,
     knishio_atom_t** atom
@@ -578,9 +757,16 @@ knishio_error_t knishio_atom_from_json(
     if (!json_input || !atom) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
+    *atom = NULL;
 
-    /* Use existing JSON deserialization implementation */
-    return knishio_atom_from_json_string(json_input, atom);
+    cJSON *root = cJSON_Parse(json_input);
+    if (!root) {
+        return KNISHIO_ERROR_JSON_PARSE;
+    }
+
+    knishio_error_t err = knishio_atom_from_cjson(root, atom);
+    cJSON_Delete(root);
+    return err;
 }
 
 /* Utility functions */

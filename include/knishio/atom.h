@@ -153,10 +153,23 @@ knishio_error_t knishio_atom_create_with_meta(
 );
 
 /**
- * @brief Free atom and all associated resources
- * @param atom Atom to free
+ * @brief Free an atom's own strings and its meta pointer array
+ *
+ * Does NOT free the knishio_meta_t objects the array points to: in the builder flow those are
+ * owned by the caller. For an atom that owns its meta (every atom produced by
+ * knishio_atom_from_json() or knishio_molecule_from_json()), use knishio_atom_free_deep().
+ * @param atom Atom to free (NULL is a no-op)
  */
 void knishio_atom_free(knishio_atom_t* atom);
+
+/**
+ * @brief Free an atom together with every knishio_meta_t it holds
+ *
+ * Releases each atom->meta[i] with knishio_meta_free(), then the atom with knishio_atom_free().
+ * Use for atoms produced by knishio_atom_from_json() / knishio_molecule_from_json().
+ * @param atom Atom to free (NULL is a no-op)
+ */
+void knishio_atom_free_deep(knishio_atom_t* atom);
 
 /* Atom properties */
 
@@ -305,10 +318,16 @@ knishio_error_t knishio_atom_to_json(
 );
 
 /**
- * @brief Create atom from JSON string
- * @param json_input JSON string
- * @param atom Output atom
- * @return KNISHIO_SUCCESS on success, error code on failure
+ * @brief Create an atom from its JSON form (the inverse of knishio_atom_to_json)
+ *
+ * Parses every field knishio_atom_to_json() emits, with the field rules documented at
+ * knishio_molecule_from_json() in knishio/molecule.h.
+ * @param json_input Atom JSON
+ * @param atom Receives the atom; NULL on failure
+ * @return KNISHIO_SUCCESS; KNISHIO_ERROR_INVALID_ARGS (NULL argument); KNISHIO_ERROR_JSON_PARSE
+ *         (not JSON); KNISHIO_ERROR_INVALID_JSON (wrong shape or unrepresentable value);
+ *         KNISHIO_ERROR_MEMORY. The caller owns the atom and its meta: release it with
+ *         knishio_atom_free_deep().
  */
 knishio_error_t knishio_atom_from_json(
     const char* json_input,

@@ -597,6 +597,23 @@ if(KNISHIO_BUILD_TESTS)
     add_test(NAME MlkemBackCompat COMMAND mlkem_backcompat)
     set_tests_properties(MlkemBackCompat PROPERTIES LABELS "crypto;pq;compat")
 
+    # knishio_molecule_from_json() + knishio_molecule_check() must verify a molecule another SDK
+    # signed (the frozen JS-signed wotsSignedMetadataMolecule), reject a forged signature or an
+    # altered hashed field, and accept every peer's JSON shape. Fixture path is baked in.
+    add_executable(molecule_from_json tests/molecule_from_json.c)
+    target_link_libraries(molecule_from_json PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(molecule_from_json PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(molecule_from_json PRIVATE
+        _GNU_SOURCE
+        KNISHIO_TEST_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cross-platform-test-vectors.json"
+    )
+    add_test(NAME MoleculeFromJson COMMAND molecule_from_json)
+    set_tests_properties(MoleculeFromJson PROPERTIES LABELS "vectors;parity;signature")
+
     # Secret storage envelope tests (AES-256-GCM + PBKDF2 cross-SDK envelope, camelCase metadata, memory and file backends)
     add_executable(test_secret_storage tests/test_secret_storage.c)
     target_link_libraries(test_secret_storage PRIVATE
