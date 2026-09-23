@@ -10,7 +10,8 @@
  * failure yields a NULL wallet here (query_balance_wallet returns NULL when the response isn't a
  * Balance), so a false-pass is not possible.
  *
- * Gated on CIPHERHASH_TEST_URL (skips cleanly when unset → CI-safe). Run live:
+ * Gated on CIPHERHASH_TEST_URL: unset, it exits 77, which ctest reports as Skipped (SKIP_RETURN_CODE
+ * in CMakeLists.txt) rather than Passed. Run live:
  *   CIPHERHASH_TEST_URL=http://localhost:8081/graphql ./build/tests/cipherhash_live_test
  */
 #include <stdio.h>
@@ -32,7 +33,7 @@ int main(void) {
     const char* url = getenv("CIPHERHASH_TEST_URL");
     if (url == NULL || url[0] == '\0') {
         printf("SKIP: CIPHERHASH_TEST_URL not set — skipping live CipherHash test\n");
-        return 0;
+        return 77;  /* ctest SKIP_RETURN_CODE: reported as Skipped, never as Passed */
     }
 
     int rc = 1;

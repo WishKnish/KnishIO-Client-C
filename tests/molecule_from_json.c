@@ -314,6 +314,22 @@ static void test_atom_from_json(const cJSON *vec) {
           "a wrong-type argument leaves every json/serializers.h parse output empty", detail);
     knishio_json_free(object);
     knishio_json_free(array);
+
+    /* A NULL input is an argument error as well, and resets the output the same way. */
+    knishio_atom_t *atom_null = (knishio_atom_t *)(void *)&not_an_output;
+    knishio_atom_t *atom_string_null = (knishio_atom_t *)(void *)&not_an_output;
+    knishio_molecule_t *molecule_null = (knishio_molecule_t *)(void *)&not_an_output;
+    const knishio_error_t n_atom = knishio_atom_from_json(NULL, &atom_null);
+    const knishio_error_t n_string = knishio_atom_from_json_string(NULL, &atom_string_null);
+    const knishio_error_t n_mol = knishio_molecule_from_json(NULL, &molecule_null);
+    snprintf(detail, sizeof(detail), "atom=%d %s, atom_string=%d %s, molecule=%d %s",
+             (int)n_atom, atom_null ? "non-NULL" : "NULL", (int)n_string,
+             atom_string_null ? "non-NULL" : "NULL", (int)n_mol, molecule_null ? "non-NULL" : "NULL");
+    check(n_atom == KNISHIO_ERROR_INVALID_ARGS && atom_null == NULL
+              && n_string == KNISHIO_ERROR_INVALID_ARGS && atom_string_null == NULL
+              && n_mol == KNISHIO_ERROR_INVALID_ARGS && molecule_null == NULL,
+          "a NULL input leaves the knishio_atom_from_json, _string and knishio_molecule_from_json output NULL",
+          detail);
 }
 
 /* ------------------------------------------------------------------ */

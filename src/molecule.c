@@ -941,10 +941,11 @@ knishio_error_t knishio_molecule_from_json(
     const char* json_input,
     knishio_molecule_t** molecule
 ) {
+    /* The output is NULL on every failure, a NULL input included (knishio/molecule.h). */
+    if (molecule) *molecule = NULL;
     if (!json_input || !molecule) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    *molecule = NULL;
 
     cJSON *root = cJSON_Parse(json_input);
     if (!root) {

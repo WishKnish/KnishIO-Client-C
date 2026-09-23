@@ -494,8 +494,11 @@ if(KNISHIO_BUILD_TESTS)
     # its own.
     add_test(NAME cross_sdk_tests COMMAND knishio_tests --filter=cross_sdk)
     # A filter that matches no suite must fail rather than report "0 Tests 0 Failures" as a pass.
-    add_test(NAME filter_matching_nothing_fails COMMAND knishio_tests --filter=no_such_suite)
-    set_tests_properties(filter_matching_nothing_fails PROPERTIES WILL_FAIL TRUE)
+    # The wrapper requires the non-zero exit AND the runner's no-match line, so a crash cannot
+    # stand in for the guard. See tests/expect_filter_no_match_fails.cmake.
+    add_test(NAME filter_matching_nothing_fails
+             COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:knishio_tests>
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/expect_filter_no_match_fails.cmake)
 endif()
 
 # Examples
@@ -558,7 +561,7 @@ if(KNISHIO_BUILD_TESTS)
     # C SDK now has embedded cross-validation in c_self_test executable
 
     # PQ-transport (Phase E): live ML-KEM CipherHash round-trip test. Gated at runtime on
-    # CIPHERHASH_TEST_URL (skips cleanly → CI-safe even without a reachable validator).
+    # CIPHERHASH_TEST_URL: unset, it exits 77 and ctest reports it Skipped, not Passed.
     add_executable(cipherhash_live_test tests/cipherhash_live_test.c)
     target_link_libraries(cipherhash_live_test PRIVATE
         knishio-client-static
@@ -568,7 +571,7 @@ if(KNISHIO_BUILD_TESTS)
     target_include_directories(cipherhash_live_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_definitions(cipherhash_live_test PRIVATE _GNU_SOURCE)
     add_test(NAME CipherHashLive COMMAND cipherhash_live_test)
-    set_tests_properties(CipherHashLive PROPERTIES LABELS "integration;network;pq-transport" TIMEOUT 60)
+    set_tests_properties(CipherHashLive PROPERTIES LABELS "integration;network;pq-transport" TIMEOUT 60 SKIP_RETURN_CODE 77)
 
     # Prove-the-gate: ML-KEM encapsulation must draw its message m from a fresh CSPRNG,
     # not the mlkem-native test RNG stub. Cross-process determinism = the bug.

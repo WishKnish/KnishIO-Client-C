@@ -754,10 +754,11 @@ knishio_error_t knishio_atom_from_json(
     const char* json_input,
     knishio_atom_t** atom
 ) {
+    /* The output is NULL on every failure, a NULL input included (knishio/atom.h). */
+    if (atom) *atom = NULL;
     if (!json_input || !atom) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    *atom = NULL;
 
     cJSON *root = cJSON_Parse(json_input);
     if (!root) {

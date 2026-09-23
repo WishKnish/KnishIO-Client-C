@@ -160,7 +160,6 @@ static void test_dual_identity_inbound(const cJSON *vectors) {
     check(err == KNISHIO_ERROR_INVALID_ARGS && plaintext == NULL,
           "12(d) a 64-byte ciphertext still fails with KNISHIO_ERROR_INVALID_ARGS", detail);
     free(plaintext);
-    free(junk_b64);
 
     /* (e) the map-addressed path finds an envelope keyed by hashShare(our 768 pubkey). */
     char *share768 = NULL;
@@ -207,6 +206,7 @@ static void test_dual_identity_inbound(const cJSON *vectors) {
     check(err == KNISHIO_ERROR_INVALID_ARGS && envelope == NULL,
           "12(c) encapsulation still rejects a non-ML-KEM recipient key", detail);
     free(envelope);
+    free(junk_b64);   /* after 12(c), its last user */
 
     free(share768);
     free(share_configured);
