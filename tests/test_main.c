@@ -94,18 +94,34 @@ int main(int argc, char *argv[]) {
     /* Cross-SDK compatibility tests */
     if (filter == NULL || strstr("cross_sdk", filter) != NULL) {
         printf("\n=== Cross-SDK Compatibility Tests ===\n");
-        
-        /* Test SHAKE256 compatibility with known test vectors */
-        char *output = NULL;
-        bool shake_compat = knishio_shake256_hash("test", 256, &output);
-        if (shake_compat && output != NULL) {
-            printf("✓ SHAKE256 basic functionality: PASSED\n");
+
+        /* Known answers from the cross-SDK master, sdks/shared-test-results/
+         * cross-platform-test-vectors.json .vectors.shake256.tests[]: the vectors
+         * abc_32_bytes and empty_string_32_bytes. Every SDK asserts the same values. */
+        static const struct {
+            const char *name;
+            const char *input;
+            const char *expected;
+        } master_vectors[] = {
+            { "abc_32_bytes", "abc",
+              "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739" },
+            { "empty_string_32_bytes", "",
+              "46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f" },
+        };
+        for (size_t v = 0; v < sizeof(master_vectors) / sizeof(master_vectors[0]); v++) {
+            char *output = NULL;
+            const bool hashed = knishio_shake256_hash(master_vectors[v].input, 256, &output);
+            if (hashed && output != NULL && strcmp(output, master_vectors[v].expected) == 0) {
+                printf("✓ SHAKE256 master vector %s: PASSED\n", master_vectors[v].name);
+            } else {
+                printf("✗ SHAKE256 master vector %s: FAILED (expected %s, got %s)\n",
+                       master_vectors[v].name, master_vectors[v].expected,
+                       output != NULL ? output : "(no output)");
+                tests_failed++;
+            }
             knishio_free(output);
-        } else {
-            printf("✗ SHAKE256 basic functionality: FAILED\n");
-            tests_failed++;
+            tests_run++;
         }
-        tests_run++;
     }
     
     /* Cleanup */

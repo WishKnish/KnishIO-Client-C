@@ -189,6 +189,7 @@ typedef struct {
     molecule_test_result_t buffer_family;
     molecule_test_result_t wots_roundtrip;
     mlkem768_test_result_t mlkem768;
+    molecule_test_result_t mlkem768_vector;  /**< 5b: passed / skipped / validation_error only */
     negative_test_result_t negative_cases;
     char *molecules_metadata;
     char *molecules_simple_transfer;
@@ -459,7 +460,7 @@ static bool test_meta_creation(test_results_t *results, const cJSON *config) {
         return false;
     }
     
-    bool success = true;
+    bool success = false;  /* set only by the final check: a setup failure (goto cleanup) fails the step */
     knishio_wallet_t *source_wallet = NULL;
     knishio_wallet_t *remainder_wallet = NULL;
     knishio_molecule_t *molecule = NULL;
@@ -606,7 +607,7 @@ static bool test_token_creation(test_results_t *results, const cJSON *config) {
     char amount_str[32];
     snprintf(amount_str, sizeof(amount_str), "%lld", (long long)cJSON_GetNumberValue(amount_item));
 
-    bool success = true;
+    bool success = false;  /* set only by the final check: a setup failure (goto cleanup) fails the step */
     knishio_wallet_t *source_wallet = NULL;
     knishio_wallet_t *recipient_wallet = NULL;
     knishio_wallet_t *remainder_wallet = NULL;
@@ -739,7 +740,7 @@ static bool test_wallet_creation(test_results_t *results, const cJSON *config) {
         return false;
     }
 
-    bool success = true;
+    bool success = false;  /* set only by the final check: a setup failure (goto cleanup) fails the step */
     knishio_wallet_t *source_wallet = NULL;
     knishio_wallet_t *new_wallet = NULL;
     knishio_wallet_t *remainder_wallet = NULL;
@@ -866,7 +867,7 @@ static bool test_shadow_wallet_claim(test_results_t *results, const cJSON *confi
         return false;
     }
 
-    bool success = true;
+    bool success = false;  /* set only by the final check: a setup failure (goto cleanup) fails the step */
     knishio_wallet_t *source_wallet = NULL;
     knishio_wallet_t *claim_wallet = NULL;
     knishio_wallet_t *remainder_wallet = NULL;
@@ -989,7 +990,7 @@ static bool test_simple_transfer(test_results_t *results, const cJSON *config) {
     int balance = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(transfer_config, "balance"));
     int amount = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(transfer_config, "amount"));
     
-    bool success = true;
+    bool success = false;  /* set only by the final check: a setup failure (goto cleanup) fails the step */
     knishio_wallet_t *source_wallet = NULL;
     knishio_wallet_t *recipient_wallet = NULL;
     knishio_molecule_t *molecule = NULL;
@@ -1145,7 +1146,7 @@ static bool test_complex_transfer(test_results_t *results, const cJSON *config) 
     int balance = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(transfer_config, "sourceBalance"));
     int amount = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(transfer_config, "amount1"));
     
-    bool success = true;
+    bool success = false;  /* set only by the final check: a setup failure (goto cleanup) fails the step */
     knishio_wallet_t *source_wallet = NULL;
     knishio_wallet_t *recipient_wallet = NULL;
     knishio_wallet_t *remainder_wallet = NULL;
@@ -1301,7 +1302,7 @@ static bool test_mlkem768(test_results_t *results, const cJSON *config) {
         return false;
     }
     
-    bool success = true;
+    bool success = false;  /* set only by the final check: a setup failure (goto cleanup) fails the step */
     char *secret = NULL;
     char *bundle = NULL;
     knishio_wallet_t *encryption_wallet = NULL;
@@ -1514,10 +1515,10 @@ cleanup:
  *   keygen  → wallet ML-KEM pubkey (base64) == expectedPubkey ("nzuf1Bq2…")
  *   decrypt → decapsulate + AES-256-GCM the frozen {cipherText,encryptedMessage} == expectedPlaintext
  * C's AES-GCM is OpenSSL EVP (portable) → both asserts run on ARM + x86.
- * Reads the vendored vector; SKIPS (returns pass) if absent (standalone-CI safe).
+ * Reads the vendored vector. If it is absent the step is recorded as SKIPPED (never as a
+ * pass) and does not fail the run, unless KNISHIO_REQUIRE_VECTORS=true.
  */
 static bool test_mlkem768_vector_assertion(test_results_t *results) {
-    (void)results;
     log_message("\n5b. ML-KEM768 Cross-SDK Vector Assertion", COLOR_BLUE);
 
     /* Locate the committed cross-platform-test-vectors.json (env override → vendored → shared dir) */
@@ -1550,8 +1551,19 @@ static bool test_mlkem768_vector_assertion(test_results_t *results) {
         fclose(f);
     }
     if (!file_content) {
-        log_test("ML-KEM768 vector file present", true, "SKIPPED (vector file absent — standalone CI)");
-        return true; /* skip, not fail */
+        const char *require = getenv("KNISHIO_REQUIRE_VECTORS");
+        bool must_have = require && strcmp(require, "true") == 0;
+        results->mlkem768_vector.passed = false;
+        results->mlkem768_vector.skipped = !must_have;
+        results->mlkem768_vector.validation_error =
+            safe_strdup("cross-platform-test-vectors.json absent");
+        if (must_have) {
+            log_message("  FAILED: cross-platform-test-vectors.json absent "
+                        "(KNISHIO_REQUIRE_VECTORS=true)", COLOR_RED);
+            return false;
+        }
+        log_message("  SKIPPED: cross-platform-test-vectors.json absent (standalone CI)", COLOR_YELLOW);
+        return true;  /* skipped and recorded as such — never counted as a pass */
     }
 
     /* Declare all locals up front (single cleanup label, mirrors test_mlkem768) */
@@ -1767,6 +1779,11 @@ vcleanup:
     if (seed_hex) free(seed_hex);
     if (wallet) knishio_wallet_free(wallet);
     if (root) cJSON_Delete(root);
+    results->mlkem768_vector.passed = ok;
+    results->mlkem768_vector.skipped = false;
+    if (!ok) {
+        results->mlkem768_vector.validation_error = safe_strdup("ML-KEM vector assertion failed");
+    }
     return ok;
 }
 
@@ -2230,6 +2247,96 @@ static bool test_buffer_family(test_results_t *results) {
     return all_pass;
 }
 
+/* ---- 6. Negative cases ---------------------------------------------------------------
+ *
+ * Each case injects ONE defect into an otherwise well-formed molecule and passes only
+ * when knishio_molecule_check rejects it with that defect's own error code.
+ *
+ * These cases used to accept any non-success code, and skipped a case silently when its
+ * molecule could not be built. A verifier that rejected every molecule (a broken OTS
+ * check, say) therefore passed all three, a verifier that never recomputed the molecular
+ * hash passed the invalid-hash case, and a failed setup counted as a pass. */
+
+/* Build a V-only molecule from source_wallet with the given atom values. With sign, the
+ * molecular hash is generated and the molecule signed; without, it carries no hash.
+ * Returns NULL and fills setup_error on any failure. */
+static knishio_molecule_t *build_negative_molecule(const char *secret, const char *bundle,
+                                                   knishio_wallet_t *wallet,
+                                                   const char *const *values, size_t value_count,
+                                                   bool sign, char *setup_error, size_t setup_error_len) {
+    knishio_molecule_t *molecule = NULL;
+    knishio_error_t rc = knishio_molecule_create(&molecule, secret, bundle, wallet, NULL, NULL, KNISHIO_VERSION_STRING);
+    if (rc != KNISHIO_SUCCESS || !molecule) {
+        snprintf(setup_error, setup_error_len, "setup failed: knishio_molecule_create returned %s (%d)",
+                 knishio_error_to_string(rc), (int)rc);
+        return NULL;
+    }
+    for (size_t i = 0; i < value_count; i++) {
+        knishio_atom_t *atom = NULL;
+        rc = knishio_atom_create(&atom, wallet->position, wallet->address, KNISHIO_ISOTOPE_V, "TEST", values[i], NULL);
+        if (rc != KNISHIO_SUCCESS || !atom) {
+            snprintf(setup_error, setup_error_len, "setup failed: knishio_atom_create(%s) returned %s (%d)",
+                     values[i], knishio_error_to_string(rc), (int)rc);
+            knishio_molecule_free_deep(molecule);
+            return NULL;
+        }
+        rc = knishio_molecule_add_atom(molecule, atom);
+        if (rc != KNISHIO_SUCCESS) {
+            snprintf(setup_error, setup_error_len, "setup failed: knishio_molecule_add_atom returned %s (%d)",
+                     knishio_error_to_string(rc), (int)rc);
+            knishio_atom_free(atom);
+            knishio_molecule_free_deep(molecule);
+            return NULL;
+        }
+    }
+    if (molecule->atom_count != value_count) {
+        snprintf(setup_error, setup_error_len, "setup failed: molecule has %zu atoms, expected %zu",
+                 molecule->atom_count, value_count);
+        knishio_molecule_free_deep(molecule);
+        return NULL;
+    }
+    if (sign) {
+        rc = knishio_molecule_generate_hash(molecule);
+        if (rc == KNISHIO_SUCCESS) {
+            rc = knishio_molecule_sign(molecule, bundle, false, true);
+        }
+        if (rc != KNISHIO_SUCCESS || !molecule->molecular_hash || strlen(molecule->molecular_hash) != 64) {
+            snprintf(setup_error, setup_error_len, "setup failed: hashing/signing returned %s (%d)",
+                     knishio_error_to_string(rc), (int)rc);
+            knishio_molecule_free_deep(molecule);
+            return NULL;
+        }
+    }
+    return molecule;
+}
+
+/* Log one case's verdict line (text unchanged) and return whether it passed: the check
+ * returned exactly `expected`. A setup failure fails the case. */
+static bool negative_case_verdict(const char *name, const char *setup_error,
+                                  knishio_error_t expected, knishio_error_t got,
+                                  char **first_failure) {
+    char detail[512];
+    bool passed = false;
+    if (setup_error && setup_error[0]) {
+        snprintf(detail, sizeof(detail), "%s", setup_error);
+    } else if (got == expected) {
+        passed = true;
+    } else if (got == KNISHIO_SUCCESS) {
+        snprintf(detail, sizeof(detail), "Invalid molecule passed validation (expected %s (%d))",
+                 knishio_error_to_string(expected), (int)expected);
+    } else {
+        snprintf(detail, sizeof(detail), "Rejected for the wrong reason: expected %s (%d), got %s (%d)",
+                 knishio_error_to_string(expected), (int)expected, knishio_error_to_string(got), (int)got);
+    }
+    log_test(name, passed, passed ? NULL : detail);
+    if (!passed && first_failure && !*first_failure) {
+        char msg[640];
+        snprintf(msg, sizeof(msg), "%s: %s", name, detail);
+        *first_failure = safe_strdup(msg);
+    }
+    return passed;
+}
+
 static bool test_negative_cases(test_results_t *results, const cJSON *config) {
     log_message("\n6. Negative Test Cases (Anti-Cheating)", COLOR_BLUE);
 
@@ -2274,101 +2381,106 @@ static bool test_negative_cases(test_results_t *results, const cJSON *config) {
 
     source_wallet->balance = 1000;
 
+    /* The base molecule: a balanced V transfer of the wallet's whole balance. The control
+     * run below must NOT raise the case's own code, which proves the injected defect, not
+     * something already wrong with the base molecule, is what the check reports. */
+    static const char *const balanced_values[] = { "-1000", "1000" };
+    static const char *const unbalanced_values[] = { "-1000", "500" };
+    char *first_failure = NULL;
+    char setup_error[256];
+
     /* Test 1: Missing Molecular Hash (should fail) */
     {
-        knishio_molecule_t *invalid_molecule = NULL;
-        bool test_passed = false;
+        const char *name = "Missing molecular hash validation (should FAIL)";
+        const knishio_error_t expected = KNISHIO_ERROR_MOLECULAR_HASH_MISSING;
+        knishio_error_t got = KNISHIO_SUCCESS;
+        setup_error[0] = '\0';
 
-        if (knishio_molecule_create(&invalid_molecule, secret, bundle, source_wallet, NULL, NULL, KNISHIO_VERSION_STRING) == KNISHIO_SUCCESS) {
-            /* Add a valid atom but don't sign (no molecular hash) */
-            knishio_atom_t *atom = NULL;
-            if (knishio_atom_create(&atom, source_wallet->position, source_wallet->address,
-                                   KNISHIO_ISOTOPE_V, "TEST", "-100", NULL) == KNISHIO_SUCCESS) {
-                knishio_molecule_add_atom(invalid_molecule, atom);
+        knishio_molecule_t *control = build_negative_molecule(secret, bundle, source_wallet, balanced_values, 2,
+                                                              true, setup_error, sizeof(setup_error));
+        if (control) {
+            const knishio_error_t control_rc = knishio_molecule_check(control, source_wallet);
+            printf("    ↳ control (same molecule, signed): %s (%d)\n", knishio_error_to_string(control_rc), (int)control_rc);
+            if (control_rc == expected) {
+                snprintf(setup_error, sizeof(setup_error), "setup failed: the signed control molecule already raises %s",
+                         knishio_error_to_string(control_rc));
             }
-
-            /* This should fail because there's no molecular hash */
-            if (knishio_molecule_check(invalid_molecule, source_wallet) == KNISHIO_SUCCESS) {
-                log_test("Missing molecular hash validation (should FAIL)", false, "Invalid molecule passed validation");
-                all_negative_tests_passed = false;
-            } else {
-                log_test("Missing molecular hash validation (should FAIL)", true, NULL);
-                test_passed = true;
-            }
-
-            knishio_molecule_free(invalid_molecule);
+            knishio_molecule_free_deep(control);
+        }
+        /* The same molecule, never hashed or signed */
+        knishio_molecule_t *invalid_molecule = setup_error[0] ? NULL :
+            build_negative_molecule(secret, bundle, source_wallet, balanced_values, 2,
+                                    false, setup_error, sizeof(setup_error));
+        if (invalid_molecule && invalid_molecule->molecular_hash) {
+            snprintf(setup_error, sizeof(setup_error), "setup failed: the unsigned molecule carries a molecular hash");
+        }
+        if (invalid_molecule && !setup_error[0]) {
+            got = knishio_molecule_check(invalid_molecule, source_wallet);
+        }
+        knishio_molecule_free_deep(invalid_molecule);
+        if (!negative_case_verdict(name, setup_error, expected, got, &first_failure)) {
+            all_negative_tests_passed = false;
         }
     }
 
     /* Test 2: Invalid Molecular Hash (should fail) */
     {
-        knishio_molecule_t *invalid_molecule = NULL;
-        bool test_passed = false;
+        const char *name = "Invalid molecular hash validation (should FAIL)";
+        const knishio_error_t expected = KNISHIO_ERROR_MOLECULAR_HASH_MISMATCH;
+        knishio_error_t got = KNISHIO_SUCCESS;
+        setup_error[0] = '\0';
 
-        if (knishio_molecule_create(&invalid_molecule, secret, bundle, source_wallet, NULL, NULL, KNISHIO_VERSION_STRING) == KNISHIO_SUCCESS) {
-            /* Add a valid atom */
-            knishio_atom_t *atom = NULL;
-            if (knishio_atom_create(&atom, source_wallet->position, source_wallet->address,
-                                   KNISHIO_ISOTOPE_V, "TEST", "-100", NULL) == KNISHIO_SUCCESS) {
-                knishio_molecule_add_atom(invalid_molecule, atom);
-            }
-
-            /* Sign normally */
-            knishio_molecule_generate_hash(invalid_molecule);
-            knishio_molecule_sign(invalid_molecule, bundle, false, true);
-
-            /* Then corrupt the molecular hash */
-            if (invalid_molecule->molecular_hash) {
-                free(invalid_molecule->molecular_hash);
-                invalid_molecule->molecular_hash = safe_strdup("invalid_hash_that_should_fail_validation_check_12345678");
-            }
-
-            /* This should fail because the hash is invalid */
-            if (knishio_molecule_check(invalid_molecule, source_wallet) == KNISHIO_SUCCESS) {
-                log_test("Invalid molecular hash validation (should FAIL)", false, "Corrupted molecule passed validation");
-                all_negative_tests_passed = false;
+        knishio_molecule_t *invalid_molecule = build_negative_molecule(secret, bundle, source_wallet, balanced_values, 2,
+                                                                       true, setup_error, sizeof(setup_error));
+        if (invalid_molecule) {
+            const knishio_error_t control_rc = knishio_molecule_check(invalid_molecule, source_wallet);
+            printf("    ↳ control (hash not corrupted): %s (%d)\n", knishio_error_to_string(control_rc), (int)control_rc);
+            if (control_rc == expected) {
+                snprintf(setup_error, sizeof(setup_error), "setup failed: the uncorrupted molecule already raises %s",
+                         knishio_error_to_string(control_rc));
             } else {
-                log_test("Invalid molecular hash validation (should FAIL)", true, NULL);
-                test_passed = true;
+                /* Corrupt ONE hex digit, keeping 64 lowercase hex characters: only recomputing
+                 * the hash from the atoms can detect it, not a format check. (The old
+                 * corruption was a 56-character non-hex string, rejected by the length guard.) */
+                char *hash = invalid_molecule->molecular_hash;
+                hash[0] = (hash[0] == '0') ? '1' : '0';
+                got = knishio_molecule_check(invalid_molecule, source_wallet);
             }
-
-            knishio_molecule_free(invalid_molecule);
+            knishio_molecule_free_deep(invalid_molecule);
+        }
+        if (!negative_case_verdict(name, setup_error, expected, got, &first_failure)) {
+            all_negative_tests_passed = false;
         }
     }
 
     /* Test 3: Unbalanced Transfer (should fail) */
     {
-        knishio_molecule_t *invalid_molecule = NULL;
-        bool test_passed = false;
+        const char *name = "Unbalanced transfer validation (should FAIL)";
+        const knishio_error_t expected = KNISHIO_ERROR_TRANSFER_UNBALANCED;
+        knishio_error_t got = KNISHIO_SUCCESS;
+        setup_error[0] = '\0';
 
-        if (knishio_molecule_create(&invalid_molecule, secret, bundle, source_wallet, NULL, NULL, KNISHIO_VERSION_STRING) == KNISHIO_SUCCESS) {
-            /* Create unbalanced atoms (doesn't sum to zero) */
-            knishio_atom_t *atom1 = NULL;
-            if (knishio_atom_create(&atom1, source_wallet->position, source_wallet->address,
-                                    KNISHIO_ISOTOPE_V, "TEST", "-1000", NULL) == KNISHIO_SUCCESS) {
-                knishio_molecule_add_atom(invalid_molecule, atom1);
+        knishio_molecule_t *control = build_negative_molecule(secret, bundle, source_wallet, balanced_values, 2,
+                                                              true, setup_error, sizeof(setup_error));
+        if (control) {
+            const knishio_error_t control_rc = knishio_molecule_check(control, source_wallet);
+            printf("    ↳ control (balanced transfer): %s (%d)\n", knishio_error_to_string(control_rc), (int)control_rc);
+            if (control_rc == expected) {
+                snprintf(setup_error, sizeof(setup_error), "setup failed: the balanced control molecule already raises %s",
+                         knishio_error_to_string(control_rc));
             }
-
-            knishio_atom_t *atom2 = NULL;
-            if (knishio_atom_create(&atom2, source_wallet->position, source_wallet->address,
-                                    KNISHIO_ISOTOPE_V, "TEST", "500", NULL) == KNISHIO_SUCCESS) {
-                knishio_molecule_add_atom(invalid_molecule, atom2);
-            }
-
-            /* Sign the unbalanced molecule */
-            knishio_molecule_generate_hash(invalid_molecule);
-            knishio_molecule_sign(invalid_molecule, bundle, false, true);
-
-            /* This should fail because it's unbalanced */
-            if (knishio_molecule_check(invalid_molecule, source_wallet) == KNISHIO_SUCCESS) {
-                log_test("Unbalanced transfer validation (should FAIL)", false, "Unbalanced molecule passed validation");
-                all_negative_tests_passed = false;
-            } else {
-                log_test("Unbalanced transfer validation (should FAIL)", true, NULL);
-                test_passed = true;
-            }
-
-            knishio_molecule_free(invalid_molecule);
+            knishio_molecule_free_deep(control);
+        }
+        /* The same transfer with a V sum of -500, signed */
+        knishio_molecule_t *invalid_molecule = setup_error[0] ? NULL :
+            build_negative_molecule(secret, bundle, source_wallet, unbalanced_values, 2,
+                                    true, setup_error, sizeof(setup_error));
+        if (invalid_molecule) {
+            got = knishio_molecule_check(invalid_molecule, source_wallet);
+        }
+        knishio_molecule_free_deep(invalid_molecule);
+        if (!negative_case_verdict(name, setup_error, expected, got, &first_failure)) {
+            all_negative_tests_passed = false;
         }
     }
 
@@ -2376,6 +2488,7 @@ static bool test_negative_cases(test_results_t *results, const cJSON *config) {
     results->negative_cases.passed = all_negative_tests_passed;
     results->negative_cases.description = safe_strdup("Anti-cheating validation tests");
     results->negative_cases.test_count = 3;
+    results->negative_cases.error = first_failure;
 
     /* Cleanup */
     if (source_wallet) knishio_wallet_free(source_wallet);
@@ -2385,9 +2498,33 @@ static bool test_negative_cases(test_results_t *results, const cJSON *config) {
     return all_negative_tests_passed;
 }
 
+/* The molecule types every peer results file must carry and that must all verify for
+ * the peer to count as validated: the six signed molecules (edge-kit acceptance.mjs
+ * REQUIRED_TYPES), then the ML-KEM768 decrypt of the peer's ciphertext. */
+static const char *const CROSS_SDK_MOLECULE_TYPES[] = {
+    "metadata", "simpleTransfer", "complexTransfer", "tokenCreation",
+    "walletCreation", "shadowWalletClaim", "mlkem768"
+};
+#define CROSS_SDK_MOLECULE_TYPE_COUNT (sizeof(CROSS_SDK_MOLECULE_TYPES) / sizeof(CROSS_SDK_MOLECULE_TYPES[0]))
+
+/* the eight SDKs' results files (edge-kit/aggregate.mjs EXPECTED_LANES) */
+static const char *const CANONICAL_RESULTS_SDKS[] = {
+    "javascript", "typescript", "python", "php", "kotlin", "rust", "c", "cpp"
+};
+#define CANONICAL_RESULTS_SDK_COUNT (sizeof(CANONICAL_RESULTS_SDKS) / sizeof(CANONICAL_RESULTS_SDKS[0]))
+/* The peer names printed in the "Validating <name> SDK molecules:" headers that
+ * acceptance.mjs parses, index for index with CANONICAL_RESULTS_SDKS. */
+static const char *const CANONICAL_RESULTS_DISPLAY[CANONICAL_RESULTS_SDK_COUNT] = {
+    "JavaScript", "TypeScript", "Python", "PHP", "Kotlin", "Rust", "C", "C++"
+};
+/* This validator's own results file, which it never validates. */
+#define SELF_RESULTS_SDK "c"
+/* A validator's expected peers: the canonical eight less itself. */
+#define CANONICAL_PEERS_EXPECTED ((int)CANONICAL_RESULTS_SDK_COUNT - 1)
+
 /**
  * Cross-SDK Validation
- * Loads and validates molecules from other SDKs (basic structural validation)
+ * Verifies every molecule of the seven canonical peer SDKs' results files
  */
 static bool test_cross_sdk_validation(test_results_t *results) {
     log_message("\n6. Cross-SDK Validation", COLOR_BLUE);
@@ -2436,44 +2573,44 @@ static bool test_cross_sdk_validation(test_results_t *results) {
         log_message("     Round 2 requires peer molecules. Reporting failure, not a skip.", COLOR_RED);
         results->cross_sdk_compatible = false;
         results->cross_peers_validated = 0;
-        results->cross_peers_expected = 7;
+        results->cross_peers_expected = CANONICAL_PEERS_EXPECTED;
         return false;
     }
     
-    /* Implement actual cross-SDK validation following JavaScript pattern */
-    const char* sdk_names[] = {"JavaScript", "TypeScript", "Kotlin", "PHP", "Python", "Rust", "C++"};
-    const char* sdk_filenames[] = {"javascript-results.json", "typescript-results.json", "kotlin-results.json", 
-                                   "php-results.json", "python-results.json", "rust-results.json", "cpp-results.json"};
-    
-    char sdk_files[7][MAX_PATH_LENGTH];
-    for (int i = 0; i < 7; i++) {
-        snprintf(sdk_files[i], MAX_PATH_LENGTH, "%s/%s", results_dir_path, sdk_filenames[i]);
-    }
-    
-    int num_sdks = sizeof(sdk_files) / sizeof(sdk_files[0]);
+    /* Validate each canonical peer except ourselves (CANONICAL_RESULTS_SDKS). Other
+     * *-results.json files in the directory are ignored. */
+    const char *const *sdk_names = CANONICAL_RESULTS_DISPLAY;
     int passed_validations = 0;
     int total_validations = 0;
-    int peers_seen = 0;
+    int peers_present = 0;
+    int peers_validated = 0;
+    bool any_failure = false;
 
-    results->cross_peers_expected = num_sdks;
+    results->cross_peers_expected = CANONICAL_PEERS_EXPECTED;
 
     printf("\n");
-    for (int i = 0; i < num_sdks; i++) {
+    for (size_t i = 0; i < CANONICAL_RESULTS_SDK_COUNT; i++) {
+        if (strcmp(CANONICAL_RESULTS_SDKS[i], SELF_RESULTS_SDK) == 0) {
+            continue;  /* a validator never validates its own results file */
+        }
+        char peer_file[MAX_PATH_LENGTH];
+        snprintf(peer_file, sizeof(peer_file), "%s/%s-results.json", results_dir_path, CANONICAL_RESULTS_SDKS[i]);
+
         printf("  🧪 Validating %s SDK molecules:\n", sdk_names[i]);
 
-        /* A peer whose results file is absent is an UNVALIDATED peer, not an absent one.
-         *
-         * This used to `continue` silently, contributing nothing to either counter, so six
-         * missing peers left total_validations reflecting only the one file that happened
-         * to be present — and all_valid below then compared that truncated count against
-         * itself and passed. Count the peer as seen-and-failed so the coverage check at the
-         * end can tell that we did not look at everything we were supposed to. */
-        FILE* file = fopen(sdk_files[i], "r");
+        /* A missing canonical peer is an UNVALIDATED peer: it stays out of
+         * targetsValidated, so the count can never reach CANONICAL_PEERS_EXPECTED. */
+        FILE* file = fopen(peer_file, "r");
         if (!file) {
-            printf("    ❌ Results file not found for %s — peer NOT validated\n", sdk_names[i]);
+            printf("    ❌ %s-results.json missing\n\n", CANONICAL_RESULTS_SDKS[i]);
             continue;
         }
-        peers_seen++;
+        peers_present++;
+
+        /* A peer counts as validated only when every molecule type below was present and
+         * verified, including the ML-KEM768 decrypt of its ciphertext. */
+        bool peer_readable = false;
+        int peer_types_passed = 0;
         
         /* Read file content (simplified approach) */
         fseek(file, 0, SEEK_END);
@@ -2491,11 +2628,12 @@ static bool test_cross_sdk_validation(test_results_t *results) {
                 if (json) {
                     cJSON* molecules = cJSON_GetObjectItem(json, "molecules");
                     if (molecules && cJSON_IsObject(molecules)) {
-                        
+                        peer_readable = true;
+
                         /* Validate each molecule type */
-                        const char* molecule_types[] = {"metadata", "simpleTransfer", "complexTransfer", "tokenCreation", "walletCreation", "shadowWalletClaim", "mlkem768"};
-                        int num_types = sizeof(molecule_types) / sizeof(molecule_types[0]);
-                        
+                        const char *const *molecule_types = CROSS_SDK_MOLECULE_TYPES;
+                        const int num_types = (int)CROSS_SDK_MOLECULE_TYPE_COUNT;
+
                         for (int j = 0; j < num_types; j++) {
                             total_validations++;
                             
@@ -2629,6 +2767,7 @@ static bool test_cross_sdk_validation(test_results_t *results) {
                             if (is_valid) {
                                 printf("    ✅ %s molecule: PASSED\n", molecule_types[j]);
                                 passed_validations++;
+                                peer_types_passed++;
                             } else {
                                 printf("    ❌ %s molecule: FAILED\n", molecule_types[j]);
                                 if (peer_error != KNISHIO_SUCCESS && peer_stage) {
@@ -2647,37 +2786,44 @@ static bool test_cross_sdk_validation(test_results_t *results) {
         }
         
         fclose(file);
+
+        if (!peer_readable) {
+            printf("    ❌ %s-results.json unreadable or has no molecules object — peer NOT validated\n",
+                   CANONICAL_RESULTS_SDKS[i]);
+            any_failure = true;
+        } else if (peer_types_passed == (int)CROSS_SDK_MOLECULE_TYPE_COUNT) {
+            peers_validated++;
+        } else {
+            any_failure = true;
+        }
         printf("\n");
     }
     
     /* COVERAGE FLOOR.
      *
-     * `passed_validations == total_validations` is vacuously true when both are zero, and
-     * both are initialised to zero. Validating nothing therefore reported full cross-SDK
-     * compatibility. Every counter-based check of this shape needs a floor: it is not
-     * enough that nothing failed, something has to have actually been checked.
-     *
-     * Two independent conditions now have to hold:
-     *   1. every peer we were supposed to validate was present and validated
-     *   2. every individual molecule validation that ran, passed
-     * Condition 1 is the one that was missing, and it is the reason this test could not
-     * turn red no matter how badly cross-SDK compatibility had regressed. */
-    results->cross_peers_validated = peers_seen;
+     * targetsValidated counts peers whose results file was present and every one of whose
+     * molecule types verified (the six signed molecules plus the ML-KEM768 decrypt). It
+     * used to count results files that were merely present, so a peer with a forged
+     * molecule still counted as validated. A missing peer file is not validated either,
+     * and the expected count is the fixed seven canonical peers, never the number of
+     * files found. Compatibility requires all seven validated and no check failed. */
+    results->cross_peers_validated = peers_validated;
 
-    bool full_coverage = (peers_seen == results->cross_peers_expected);
-    bool nothing_failed = (total_validations > 0 && passed_validations == total_validations);
+    bool full_coverage = (peers_validated == results->cross_peers_expected);
+    bool nothing_failed = (total_validations > 0 && !any_failure &&
+                           passed_validations == total_validations);
     bool all_valid = full_coverage && nothing_failed;
 
     printf("\n");
-    printf("  📊 Cross-validation coverage: %d/%d peer SDKs, %d/%d molecule checks passed\n",
-           peers_seen, results->cross_peers_expected, passed_validations, total_validations);
+    printf("  📊 Cross-validation coverage: %d/%d peer SDKs validated (%d results files present), %d/%d molecule checks passed\n",
+           peers_validated, results->cross_peers_expected, peers_present, passed_validations, total_validations);
 
-    if (!full_coverage) {
-        log_message("  ❌ Incomplete coverage — not every peer SDK was validated", COLOR_RED);
+    if (peers_present != results->cross_peers_expected) {
+        log_message("  ❌ Incomplete coverage — a canonical peer results file is missing", COLOR_RED);
     }
     if (total_validations == 0) {
         log_message("  ❌ Zero molecule validations ran — nothing was actually checked", COLOR_RED);
-    } else if (passed_validations != total_validations) {
+    } else if (!nothing_failed) {
         log_message("  ❌ Some cross-SDK molecules failed validation", COLOR_RED);
     }
 
@@ -2879,6 +3025,14 @@ static bool save_results(void) {
     }
     cJSON_AddItemToObject(tests, "mlkem768", mlkem768);
 
+    /* ML-KEM768/1024 cross-SDK vector assertion (5b). "skipped" marks an absent vector
+     * file, which is missing coverage and never a pass. */
+    cJSON *mlkem768_vector = cJSON_CreateObject();
+    cJSON_AddItemToObject(mlkem768_vector, "passed", cJSON_CreateBool(g_results.mlkem768_vector.passed));
+    cJSON_AddItemToObject(mlkem768_vector, "skipped", cJSON_CreateBool(g_results.mlkem768_vector.skipped));
+    cJSON_AddItemToObject(mlkem768_vector, "validationError", cJSON_CreateString(g_results.mlkem768_vector.validation_error ? g_results.mlkem768_vector.validation_error : "null"));
+    cJSON_AddItemToObject(tests, "mlkem768Vector", mlkem768_vector);
+
     /* Negative test cases */
     cJSON *negative_cases = cJSON_CreateObject();
     cJSON_AddItemToObject(negative_cases, "passed", cJSON_CreateBool(g_results.negative_cases.passed));
@@ -2963,8 +3117,10 @@ static void display_summary(void) {
     printf("SDK: C v%s\n", g_results.version);
     printf("Timestamp: %s\n", g_results.timestamp);
     
-    /* Count passed tests (including cross-SDK validation) */
-    int total_tests = 12; // crypto + 3 base + 3 extended + WOTS + buffer family + ML-KEM768 + negative + cross-SDK
+    /* Count passed tests (including cross-SDK validation). A step skipped for a missing
+     * fixture, or cross-validation disabled for Round 1, is never counted as passed and
+     * is listed under Skipped Tests rather than Failed Tests. */
+    int total_tests = 13; // crypto + 3 base + 3 extended + WOTS + buffer family + ML-KEM768 + ML-KEM768 vector + negative + cross-SDK
     int passed_tests = 0;
     if (g_results.crypto.passed) passed_tests++;
     if (g_results.meta_creation.passed) passed_tests++;
@@ -2976,13 +3132,23 @@ static void display_summary(void) {
     if (g_results.wots_roundtrip.passed) passed_tests++;
     if (g_results.buffer_family.passed) passed_tests++;
     if (g_results.mlkem768.passed) passed_tests++;
+    if (g_results.mlkem768_vector.passed) passed_tests++;
     if (g_results.negative_cases.passed) passed_tests++;
     if (g_results.cross_sdk_compatible) passed_tests++;
-    const char *color = (passed_tests == total_tests) ? COLOR_GREEN : COLOR_RED;
+    int skipped_tests = 0;
+    if (g_results.wots_roundtrip.skipped) skipped_tests++;
+    if (g_results.buffer_family.skipped) skipped_tests++;
+    if (g_results.mlkem768_vector.skipped) skipped_tests++;
+    if (!g_results.cross_validation_ran) skipped_tests++;
+    const int failed_tests = total_tests - passed_tests - skipped_tests;
+    const char *color = (failed_tests > 0) ? COLOR_RED : (skipped_tests > 0 ? COLOR_YELLOW : COLOR_GREEN);
     printf("\n%sTests Passed: %d/%d%s\n", color, passed_tests, total_tests, COLOR_RESET);
-    
+    if (skipped_tests > 0) {
+        printf("%sTests Skipped: %d%s\n", COLOR_YELLOW, skipped_tests, COLOR_RESET);
+    }
+
     /* Show failed tests */
-    if (passed_tests < total_tests) {
+    if (failed_tests > 0) {
         printf("\n%sFailed Tests:%s\n", COLOR_RED, COLOR_RESET);
         if (!g_results.crypto.passed) {
             printf("  - crypto: %s\n", g_results.crypto.error ? g_results.crypto.error : "Validation failed");
@@ -3005,21 +3171,47 @@ static void display_summary(void) {
         if (!g_results.shadow_wallet_claim.passed) {
             printf("  - shadowWalletClaim: Validation failed\n");
         }
-        if (!g_results.wots_roundtrip.passed) {
-            printf("  - wotsRoundtrip: %s%s\n",
-                   g_results.wots_roundtrip.validation_error ? g_results.wots_roundtrip.validation_error : "Validation failed",
-                   g_results.wots_roundtrip.skipped ? " (SKIPPED — missing coverage, not a pass)" : "");
+        if (!g_results.wots_roundtrip.passed && !g_results.wots_roundtrip.skipped) {
+            printf("  - wotsRoundtrip: %s\n",
+                   g_results.wots_roundtrip.validation_error ? g_results.wots_roundtrip.validation_error : "Validation failed");
         }
-        if (!g_results.buffer_family.passed) {
-            printf("  - bufferFamily: %s%s\n",
-                   g_results.buffer_family.validation_error ? g_results.buffer_family.validation_error : "Validation failed",
-                   g_results.buffer_family.skipped ? " (SKIPPED — missing coverage, not a pass)" : "");
+        if (!g_results.buffer_family.passed && !g_results.buffer_family.skipped) {
+            printf("  - bufferFamily: %s\n",
+                   g_results.buffer_family.validation_error ? g_results.buffer_family.validation_error : "Validation failed");
         }
         if (!g_results.mlkem768.passed) {
             printf("  - mlkem768: %s\n", g_results.mlkem768.error ? g_results.mlkem768.error : "Validation failed");
         }
+        if (!g_results.mlkem768_vector.passed && !g_results.mlkem768_vector.skipped) {
+            printf("  - mlkem768Vector: %s\n",
+                   g_results.mlkem768_vector.validation_error ? g_results.mlkem768_vector.validation_error : "Validation failed");
+        }
         if (!g_results.negative_cases.passed) {
             printf("  - negativeCases: %s\n", g_results.negative_cases.error ? g_results.negative_cases.error : "Validation failed");
+        }
+        if (g_results.cross_validation_ran && !g_results.cross_sdk_compatible) {
+            printf("  - crossSdk: %d/%d peer SDKs validated\n",
+                   g_results.cross_peers_validated, g_results.cross_peers_expected);
+        }
+    }
+
+    /* Show skipped tests: missing coverage, never a pass */
+    if (skipped_tests > 0) {
+        printf("\n%sSkipped Tests:%s\n", COLOR_YELLOW, COLOR_RESET);
+        if (g_results.wots_roundtrip.skipped) {
+            printf("  - wotsRoundtrip: %s (SKIPPED — missing coverage, not a pass)\n",
+                   g_results.wots_roundtrip.validation_error ? g_results.wots_roundtrip.validation_error : "fixture absent");
+        }
+        if (g_results.buffer_family.skipped) {
+            printf("  - bufferFamily: %s (SKIPPED — missing coverage, not a pass)\n",
+                   g_results.buffer_family.validation_error ? g_results.buffer_family.validation_error : "fixture absent");
+        }
+        if (g_results.mlkem768_vector.skipped) {
+            printf("  - mlkem768Vector: %s (SKIPPED — missing coverage, not a pass)\n",
+                   g_results.mlkem768_vector.validation_error ? g_results.mlkem768_vector.validation_error : "fixture absent");
+        }
+        if (!g_results.cross_validation_ran) {
+            printf("  - crossSdk: cross-validation disabled (KNISHIO_DISABLE_CROSS_VALIDATION=true)\n");
         }
     }
     
@@ -3142,13 +3334,14 @@ int main(void) {
                                 { "shadowWalletClaim", &g_results.shadow_wallet_claim },
                                 { "bufferFamily",      &g_results.buffer_family },
                                 { "wotsRoundtrip",     &g_results.wots_roundtrip },
+                                { "mlkem768Vector",    &g_results.mlkem768_vector },
                             };
                             for (size_t tm = 0; tm < sizeof(test_map) / sizeof(test_map[0]); tm++) {
                                 cJSON* t = cJSON_GetObjectItem(existing_tests, test_map[tm].key);
                                 if (!t) continue;
                                 cJSON* tp = cJSON_GetObjectItem(t, "passed");
                                 if (tp && cJSON_IsBool(tp)) test_map[tm].dst->passed = cJSON_IsTrue(tp);
-                                /* Only bufferFamily emits "skipped"; absent elsewhere, so this
+                                /* Only bufferFamily, wotsRoundtrip and mlkem768Vector emit "skipped"; absent elsewhere, so this
                                  * is a no-op for the others. Losing it would turn a Round 1
                                  * skip into what reads as a Round 2 failure. */
                                 cJSON* ts = cJSON_GetObjectItem(t, "skipped");

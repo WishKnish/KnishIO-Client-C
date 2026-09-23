@@ -200,20 +200,23 @@ void test_shake256_utilities(void) {
     knishio_free(converted_data);
 }
 
-/* Test known test vectors (if available) */
+/* Known-answer test: SHAKE256("abc"), 512 bits */
 void test_shake256_known_vectors(void) {
-    /* Test vector from NIST */
     const char *input = "abc";
     char *output = NULL;
-    
+
     TEST_ASSERT_TRUE(knishio_shake256_hash(input, 512, &output));
     TEST_ASSERT_NOT_NULL(output);
-    
-    /* We can't check against exact expected value without reference implementation,
-     * but we can verify basic properties */
-    TEST_ASSERT_EQUAL(128, strlen(output)); /* 512 bits = 128 hex chars */
-    TEST_ASSERT_TRUE(knishio_is_valid_hex(output));
-    
+
+    /* Expected value from an independent implementation:
+     *   python3 -c 'import hashlib;print(hashlib.shake_256(b"abc").hexdigest(64))'
+     * Its first 64 hex characters are the cross-SDK master vector abc_32_bytes
+     * (sdks/shared-test-results/cross-platform-test-vectors.json). */
+    TEST_ASSERT_EQUAL_STRING(
+        "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739"
+        "d5a15bef186a5386c75744c0527e1faa9f8726e462a12a4feb06bd8801e751e4",
+        output);
+
     /* The output should be deterministic */
     char *output2 = NULL;
     TEST_ASSERT_TRUE(knishio_shake256_hash(input, 512, &output2));
