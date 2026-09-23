@@ -36,6 +36,13 @@ collect "CMakeLists.txt project(VERSION)" \
 # real second source of truth — and it is what self-test.c reports into its results file.
 collect "knishio.h KNISHIO_VERSION_STRING" \
   "$(grep -oE 'KNISHIO_VERSION_STRING[[:space:]]+"[0-9]+\.[0-9]+\.[0-9]+"' include/knishio/knishio.h | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+# The numeric macros are installed public API too (include/knishio/knishio.h), and nothing else
+# ties them to the string: src/config.h.in derives its own copies from CMake, but that header is
+# neither installed nor included. A bump that missed KNISHIO_VERSION_PATCH passed every gate.
+collect "knishio.h KNISHIO_VERSION_MAJOR.MINOR.PATCH" \
+  "$(awk '$1 == "#define" && $2 ~ /^KNISHIO_VERSION_(MAJOR|MINOR|PATCH)$/ { v[$2] = $3 }
+          END { if (("KNISHIO_VERSION_MAJOR" in v) && ("KNISHIO_VERSION_MINOR" in v) && ("KNISHIO_VERSION_PATCH" in v))
+                  print v["KNISHIO_VERSION_MAJOR"] "." v["KNISHIO_VERSION_MINOR"] "." v["KNISHIO_VERSION_PATCH"] }' include/knishio/knishio.h)"
 # -----------------------------------------------------------------------------------------
 
 mismatches=()

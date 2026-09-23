@@ -14,6 +14,69 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
+## [1.2.1] — 2026-09-23
+
+### Added
+
+- `knishio_molecule_from_json()`, which returned `KNISHIO_ERROR_NOT_IMPLEMENTED`, parses the
+  molecule JSON every KnishIO SDK emits and takes every hashed atom field verbatim, so
+  `knishio_molecule_check()` can verify another SDK's molecule. The field rules are in
+  `knishio/molecule.h`; a molecule with any atom that fails to parse is rejected as a whole.
+- `knishio_molecule_free_deep()` and `knishio_atom_free_deep()` release a molecule or atom together
+  with the atoms and meta it owns, which `knishio_molecule_free()` and `knishio_atom_free()` do not.
+  Use them for anything `knishio_molecule_from_json()` or `knishio_atom_from_json()` returns.
+
+### Changed
+
+- `knishio_atom_from_json()` parses every field `knishio_atom_to_json()` emits; it dropped
+  `metaType`, `metaId`, `createdAt` and all meta. Release its result with `knishio_atom_free_deep()`.
+- `knishio_atom_from_json()` and `knishio_molecule_from_json()` leave their output NULL on every
+  failure, a NULL input included.
+- `knishio_atom_from_json_string()`, `knishio_atom_from_json_obj()`,
+  `knishio_molecule_from_json_obj()` and `knishio_json_parse_atom_array()`
+  (`knishio/json/serializers.h`) parse through the same implementation and leave their outputs
+  empty on every failure. They returned success with those four atom fields missing
+  (`knishio_molecule_from_json_obj()` was a stub), and `knishio_json_parse_atom_array()` silently
+  dropped atoms it could not parse; it now fails the whole array.
+
+### Fixed
+
+- The self-test's cross-validation verified nothing: a peer molecule passed if `molecularHash` was
+  a string and `atoms` was non-empty, so `crossSdkCompatible: true` in 1.2.0 and earlier said
+  nothing about peers' signatures. Each peer molecule now goes through
+  `knishio_molecule_from_json()` and `knishio_molecule_check()`.
+- `knishio_molecule_check()` rejected every U+I authorization molecule
+  (`KNISHIO_ERROR_TRANSFER_MISMATCHED`) because it required every atom to carry atoms[0]'s token;
+  the JS reference and the Rust SDK require that of V atoms only. The SDK's own client code never
+  calls `knishio_molecule_check()`, so this affected verification only.
+- The unit-test runner's exit status reflected only the last suite it ran, and three ctest entries
+  ran the same full binary, so two failing molecule assertions (which expected an unsigned and a
+  forged molecule to verify) went unnoticed. Each ctest entry now runs one suite, any failure
+  fails the run, a `--filter` that matches no suite fails, and the assertions require rejection.
+
+### Security
+
+- `knishio_base64_decode()` read one and two bytes before its input when given an empty string.
+  `knishio_molecule_check()` reaches it for an unsigned molecule (no `otsFragment` on any atom),
+  and with this release that includes a peer molecule parsed by `knishio_molecule_from_json()`.
+  Empty input is now rejected before the padding check; the function returns failure as before.
+
+### Notes
+
+- Atom `createdAt` must be whole seconds, since `knishio_atom_t.created_at` is `time_t` seconds; a
+  sub-second value is rejected with `KNISHIO_ERROR_INVALID_JSON` rather than truncated, which would
+  change the molecular hash.
+- The P and A isotopes are not representable, and `knishio_molecule_check()` does not honour a
+  `signingWallet` meta: it compares the signer with atoms[0]'s `walletAddress`.
+- The rest of `knishio/json/serializers.h` is not the wire format (for example,
+  `knishio_atom_to_json_obj()` writes `createdAt` in seconds); use `knishio_molecule_to_json()` and
+  `knishio_atom_to_json()`.
+- `CipherHashLive` reports Skipped, not Passed, when `CIPHERHASH_TEST_URL` is unset.
+- Evidence: the aarch64 edge-kit rig (stock Ubuntu 22.04, no network). In its round 2 this SDK
+  verifies all seven other SDKs' molecules (49/49 checks); in its round 3 it rejects all seven
+  peers' molecules whose signature had one character changed, which the 1.2.0 self-test (its
+  source built against this library) accepts.
+
 ## [1.2.0] — 2026-09-20
 
 ### Changed
@@ -377,7 +440,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.2.0...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.2.1...HEAD
+[1.2.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.1
 [1.2.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.0
 [1.1.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.1.0
 [1.0.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.0.0
