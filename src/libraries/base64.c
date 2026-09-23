@@ -100,7 +100,10 @@ bool knishio_base64_decode(const char* base64_str, unsigned char** data_output, 
     }
 
     size_t input_len = strlen(base64_str);
-    if (input_len % 4 != 0) {
+    /* An empty string has no padding to inspect: the two '=' checks below would read one and
+     * two bytes before it. check_ots() reaches this with an unsigned molecule, whose rebuilt
+     * OTS is "". Rejecting it keeps the previous result (knishio_malloc(0) returned NULL). */
+    if (input_len == 0 || input_len % 4 != 0) {
         return false;
     }
 

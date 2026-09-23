@@ -207,9 +207,9 @@ void test_molecule_check_basic_validation(void) {
     result = knishio_molecule_generate_hash(molecule);
     TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
     
-    /* Now validation should pass (for unsigned molecule) */
+    /* An unsigned molecule is rejected: no OTS fragments means there is no signature to verify. */
     result = knishio_molecule_check(molecule, NULL);
-    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
+    TEST_ASSERT_EQUAL(KNISHIO_ERROR_SIGNATURE_MISMATCH, result);
     
     knishio_molecule_free(molecule);
 }
@@ -372,21 +372,10 @@ void test_molecule_check_with_signature_validation(void) {
     result = knishio_molecule_generate_hash(molecule);
     TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
     
-    /* Test validation without sender wallet (should validate format only) */
-    result = knishio_molecule_check(molecule, NULL);
-    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result); /* Should pass basic format validation */
-    
-    /* Test validation with invalid sender wallet (signature will fail) */
-    knishio_wallet_t* test_wallet = NULL;
-    bool wallet_created = knishio_wallet_create(&test_wallet, "test_secret", "TEST", KNISHIO_FIXED_POSITION);
-    if (wallet_created && test_wallet) {
-        result = knishio_molecule_check(molecule, test_wallet);
-        /* This will likely fail because the OTS signature is fake */
-        /* The exact error depends on where the verification fails first */
-        TEST_ASSERT_NOT_EQUAL(KNISHIO_SUCCESS, result);
-        
-        knishio_wallet_free(test_wallet);
-    }
+    /* A 2048-character fake signature has the right length, so it reaches address
+     * reconstruction and fails there. sender_wallet only feeds the V balance check, so NULL
+     * is a full verification. */
+    TEST_ASSERT_EQUAL(KNISHIO_ERROR_SIGNATURE_MISMATCH, knishio_molecule_check(molecule, NULL));
     
     knishio_molecule_free(molecule);
 }

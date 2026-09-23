@@ -483,13 +483,19 @@ if(KNISHIO_BUILD_TESTS)
     # Policy engine test executable removed (not in JavaScript SDK)
     
     # Individual test targets for better control
-    add_test(NAME shake256_tests COMMAND knishio_tests test_shake256)
-    add_test(NAME wallet_tests COMMAND knishio_tests test_wallet)
-    add_test(NAME molecule_tests COMMAND knishio_tests test_molecule)
-    # `--filter=` (not a bare argument): test_main.c resets Unity.TestFailures per suite and main
-    # returns UnityEnd(), so an unfiltered run only reports the LAST suite's failures. Filtering
-    # makes this suite run alone, which is what makes its failures reach the exit code.
+    # Each entry runs ONE suite: main() reads only `--filter=` (tests/test_main.c), so a bare
+    # argument used to be ignored and ran every suite under every name. The exit status is
+    # non-zero if any suite that ran had a failure, or if the filter matched no suite at all.
+    add_test(NAME shake256_tests COMMAND knishio_tests --filter=shake256)
+    add_test(NAME wallet_tests COMMAND knishio_tests --filter=wallet)
+    add_test(NAME molecule_tests COMMAND knishio_tests --filter=molecule)
     add_test(NAME encrypted_transport_tests COMMAND knishio_tests --filter=encrypted_transport)
+    # The cross-SDK block ran under every positional-argument entry before; filtered, it needs
+    # its own.
+    add_test(NAME cross_sdk_tests COMMAND knishio_tests --filter=cross_sdk)
+    # A filter that matches no suite must fail rather than report "0 Tests 0 Failures" as a pass.
+    add_test(NAME filter_matching_nothing_fails COMMAND knishio_tests --filter=no_such_suite)
+    set_tests_properties(filter_matching_nothing_fails PROPERTIES WILL_FAIL TRUE)
 endif()
 
 # Examples
@@ -599,7 +605,10 @@ if(KNISHIO_BUILD_TESTS)
 
     # knishio_molecule_from_json() + knishio_molecule_check() must verify a molecule another SDK
     # signed (the frozen JS-signed wotsSignedMetadataMolecule), reject a forged signature or an
-    # altered hashed field, and accept every peer's JSON shape. Fixture path is baked in.
+    # altered hashed field, and accept every peer's JSON shape. C must also sign that molecule
+    # byte-identically and read its own output back, and reject a mismatched V-atom token; the
+    # json/serializers.h parse entry points must go through the same parser. Fixture path is
+    # baked in.
     add_executable(molecule_from_json tests/molecule_from_json.c)
     target_link_libraries(molecule_from_json PRIVATE
         knishio-client-static

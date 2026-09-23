@@ -12,6 +12,7 @@
 #include "knishio/utils/memory.h"
 #include "knishio/utils/string.h"
 #include "knishio/atom.h"
+#include "knishio/molecule.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -114,119 +115,20 @@ knishio_json_t* knishio_atom_to_json_obj(const knishio_atom_t* atom) {
 }
 
 knishio_error_t knishio_atom_from_json_obj(const knishio_json_t* json, knishio_atom_t** atom) {
+    /* The output is NULL on every failure, argument errors included. */
+    if (atom) *atom = NULL;
     if (!json || !atom || json->type != KNISHIO_JSON_OBJECT) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Extract required fields */
-    knishio_json_t *position_json = knishio_json_object_get(json, "position");
-    knishio_json_t *wallet_json = knishio_json_object_get(json, "walletAddress");
-    knishio_json_t *isotope_json = knishio_json_object_get(json, "isotope");
-    knishio_json_t *token_json = knishio_json_object_get(json, "token");
-    
-    const char *position = position_json ? knishio_json_get_string(position_json) : NULL;
-    const char *wallet_address = wallet_json ? knishio_json_get_string(wallet_json) : NULL;
-    const char *isotope_str = isotope_json ? knishio_json_get_string(isotope_json) : NULL;
-    const char *token = token_json ? knishio_json_get_string(token_json) : NULL;
-    
-    if (!position || !wallet_address || !isotope_str || !token) {
-        knishio_json_free(position_json);
-        knishio_json_free(wallet_json);
-        knishio_json_free(isotope_json);
-        knishio_json_free(token_json);
-        return KNISHIO_ERROR_INVALID_STATE;
-    }
-    
-    int isotope = knishio_isotope_from_string(isotope_str);
-    if (isotope == 0) {  /* UNKNOWN isotope */
-        knishio_json_free(position_json);
-        knishio_json_free(wallet_json);
-        knishio_json_free(isotope_json);
-        knishio_json_free(token_json);
-        return KNISHIO_ERROR_INVALID_STATE;
-    }
-    
-    /* Extract optional fields */
-    knishio_json_t *value_json = knishio_json_object_get(json, "value");
-    knishio_json_t *batch_json = knishio_json_object_get(json, "batchId");
-    
-    const char *value = value_json ? knishio_json_get_string(value_json) : NULL;
-    const char *batch_id = batch_json ? knishio_json_get_string(batch_json) : NULL;
-    
-    /* Create basic atom structure - simplified for compilation */
-    *atom = knishio_calloc(1, sizeof(knishio_atom_t));
-    if (!*atom) {
-        knishio_json_free(position_json);
-        knishio_json_free(wallet_json);
-        knishio_json_free(isotope_json);
-        knishio_json_free(token_json);
-        knishio_json_free(value_json);
-        knishio_json_free(batch_json);
+
+    /* One atom parser: knishio_atom_from_json(), the inverse of knishio_atom_to_json(). */
+    char *text = knishio_json_serialize(json, false);
+    if (!text) {
         return KNISHIO_ERROR_MEMORY;
     }
-    
-    /* Set basic properties */
-    (*atom)->position = position ? knishio_strdup(position) : NULL;
-    (*atom)->wallet_address = wallet_address ? knishio_strdup(wallet_address) : NULL;
-    (*atom)->isotope = isotope;
-    (*atom)->token = token ? knishio_strdup(token) : NULL;
-    (*atom)->value = value ? knishio_strdup(value) : NULL;
-    (*atom)->batch_id = batch_id ? knishio_strdup(batch_id) : NULL;
-    
-    /* Cleanup JSON objects */
-    knishio_json_free(position_json);
-    knishio_json_free(wallet_json);
-    knishio_json_free(isotope_json);
-    knishio_json_free(token_json);
-    knishio_json_free(value_json);
-    knishio_json_free(batch_json);
-    
-    /* Set optional properties */
-    knishio_json_t *index_json = knishio_json_object_get(json, "index");
-    if (index_json) {
-        int64_t index_val;
-        if (knishio_json_get_int(index_json, &index_val)) {
-            (*atom)->index = (int)index_val;
-        }
-        knishio_json_free(index_json);
-    }
-    
-    knishio_json_t *version_json = knishio_json_object_get(json, "version");
-    if (version_json) {
-        const char *version_str = knishio_json_get_string(version_json);
-        if (version_str) {
-            (*atom)->version = knishio_strdup(version_str);
-        }
-        knishio_json_free(version_json);
-    }
-    
-    knishio_json_t *ots_json = knishio_json_object_get(json, "otsFragment");
-    if (ots_json) {
-        const char *ots_str = knishio_json_get_string(ots_json);
-        if (ots_str) {
-            (*atom)->ots_fragment = knishio_strdup(ots_str);
-        }
-        knishio_json_free(ots_json);
-    }
-    
-    /* Handle meta array */
-    knishio_json_t *meta_json = knishio_json_object_get(json, "meta");
-    if (meta_json && meta_json->type == KNISHIO_JSON_ARRAY) {
-        size_t meta_count = knishio_json_array_size(meta_json);
-        for (size_t i = 0; i < meta_count; i++) {
-            knishio_json_t *meta_item = knishio_json_array_get(meta_json, i);
-            if (meta_item) {
-                knishio_meta_t *meta_obj;
-                if (knishio_meta_from_json_obj(meta_item, &meta_obj) == KNISHIO_SUCCESS) {
-                    knishio_atom_add_meta(*atom, meta_obj);
-                }
-                knishio_json_free(meta_item);
-            }
-        }
-        knishio_json_free(meta_json);
-    }
-    
-    return KNISHIO_SUCCESS;
+    knishio_error_t err = knishio_atom_from_json(text, atom);
+    cJSON_free(text);
+    return err;
 }
 
 /* Meta serialization */
@@ -298,13 +200,18 @@ knishio_json_t* knishio_molecule_to_json_obj(const knishio_molecule_t* molecule)
 }
 
 knishio_error_t knishio_molecule_from_json_obj(const knishio_json_t* json, knishio_molecule_t** molecule) {
+    if (molecule) *molecule = NULL;
     if (!json || !molecule || json->type != KNISHIO_JSON_OBJECT) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Placeholder implementation - would need actual knishio_molecule_t structure */
-    *molecule = NULL;
-    return KNISHIO_ERROR_NOT_IMPLEMENTED;
+
+    char *text = knishio_json_serialize(json, false);
+    if (!text) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+    knishio_error_t err = knishio_molecule_from_json(text, molecule);
+    cJSON_free(text);
+    return err;
 }
 
 /* GraphQL response handling */
@@ -385,14 +292,15 @@ knishio_json_t* knishio_json_create_atom_array(knishio_atom_t** atoms, size_t co
 }
 
 knishio_error_t knishio_json_parse_atom_array(const knishio_json_t* json, knishio_atom_t*** atoms, size_t* count) {
+    /* The outputs are empty on every failure, argument errors included. */
+    if (atoms) *atoms = NULL;
+    if (count) *count = 0;
     if (!json || !atoms || !count || json->type != KNISHIO_JSON_ARRAY) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     
     size_t array_size = knishio_json_array_size(json);
     if (array_size == 0) {
-        *atoms = NULL;
-        *count = 0;
         return KNISHIO_SUCCESS;
     }
     
@@ -401,20 +309,24 @@ knishio_error_t knishio_json_parse_atom_array(const knishio_json_t* json, knishi
         return KNISHIO_ERROR_MEMORY;
     }
     
-    size_t parsed_count = 0;
+    /* All or nothing, as knishio_molecule_from_json() treats a molecule: dropping an atom that
+     * does not parse would hand back a shorter array that still looks complete. */
     for (size_t i = 0; i < array_size; i++) {
         knishio_json_t *atom_json = knishio_json_array_get(json, i);
-        if (atom_json) {
-            knishio_atom_t *atom;
-            if (knishio_atom_from_json_obj(atom_json, &atom) == KNISHIO_SUCCESS) {
-                atom_array[parsed_count++] = atom;
+        const knishio_error_t err = atom_json ? knishio_atom_from_json_obj(atom_json, &atom_array[i])
+                                              : KNISHIO_ERROR_INVALID_JSON;
+        knishio_json_free(atom_json);
+        if (err != KNISHIO_SUCCESS) {
+            for (size_t j = 0; j < i; j++) {
+                knishio_atom_free_deep(atom_array[j]);
             }
-            knishio_json_free(atom_json);
+            knishio_free(atom_array);
+            return err;
         }
     }
-    
+
     *atoms = atom_array;
-    *count = parsed_count;
+    *count = array_size;
     return KNISHIO_SUCCESS;
 }
 
@@ -436,19 +348,5 @@ knishio_error_t knishio_atom_to_json_string(const knishio_atom_t* atom, char** j
 }
 
 knishio_error_t knishio_atom_from_json_string(const char* json_string, knishio_atom_t** atom) {
-    if (!json_string || !atom) {
-        return KNISHIO_ERROR_INVALID_ARGS;
-    }
-    
-    char *error_msg = NULL;
-    knishio_json_t *json = knishio_json_parse(json_string, &error_msg);
-    if (!json) {
-        if (error_msg) knishio_free(error_msg);
-        return KNISHIO_ERROR_INVALID_STATE;
-    }
-    
-    knishio_error_t result = knishio_atom_from_json_obj(json, atom);
-    knishio_json_free(json);
-    
-    return result;
+    return knishio_atom_from_json(json_string, atom);
 }

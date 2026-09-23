@@ -39,9 +39,13 @@ knishio_json_t* knishio_atom_to_json_obj(const knishio_atom_t* atom);
 
 /**
  * @brief Create atom from JSON object
+ *
+ * Parses with knishio_atom_from_json(), the inverse of knishio_atom_to_json(): every field that
+ * function emits is read, and an atom it would reject is rejected here.
  * @param json JSON object containing atom data
- * @param atom Output atom (caller must free)
- * @return KNISHIO_SUCCESS on success, error code on failure
+ * @param atom Output atom, NULL on failure; release it with knishio_atom_free_deep()
+ * @return KNISHIO_SUCCESS on success, KNISHIO_ERROR_INVALID_ARGS if json is not an object,
+ *         otherwise knishio_atom_from_json()'s error
  */
 knishio_error_t knishio_atom_from_json_obj(const knishio_json_t* json, knishio_atom_t** atom);
 
@@ -55,8 +59,10 @@ knishio_error_t knishio_atom_to_json_string(const knishio_atom_t* atom, char** j
 
 /**
  * @brief Create atom from JSON string
+ *
+ * Equivalent to knishio_atom_from_json().
  * @param json_string JSON string containing atom data
- * @param atom Output atom (caller must free)
+ * @param atom Output atom, NULL on failure; release it with knishio_atom_free_deep()
  * @return KNISHIO_SUCCESS on success, error code on failure
  */
 knishio_error_t knishio_atom_from_json_string(const char* json_string, knishio_atom_t** atom);
@@ -106,9 +112,13 @@ knishio_json_t* knishio_molecule_to_json_obj(const knishio_molecule_t* molecule)
 
 /**
  * @brief Create molecule from JSON object
+ *
+ * Parses with knishio_molecule_from_json(), the inverse of knishio_molecule_to_json().
  * @param json JSON object containing molecule data
- * @param molecule Output molecule (caller must free)
- * @return KNISHIO_SUCCESS on success, error code on failure
+ * @param molecule Output molecule, NULL on failure; it owns its atoms and their meta, so
+ *        release it with knishio_molecule_free_deep()
+ * @return KNISHIO_SUCCESS on success, KNISHIO_ERROR_INVALID_ARGS if json is not an object,
+ *         otherwise knishio_molecule_from_json()'s error
  */
 knishio_error_t knishio_molecule_from_json_obj(const knishio_json_t* json, knishio_molecule_t** molecule);
 
@@ -154,8 +164,14 @@ knishio_json_t* knishio_json_create_atom_array(knishio_atom_t** atoms, size_t co
 
 /**
  * @brief Parse JSON array into atom array
+ *
+ * Each element is parsed with knishio_atom_from_json_obj(). The array is all or nothing: if any
+ * element is missing or fails to parse, that element's error is returned
+ * (KNISHIO_ERROR_INVALID_JSON for a missing element). On every failure, argument errors
+ * included, *atoms is NULL and *count is 0.
  * @param json JSON array containing atoms
- * @param atoms Output atom array (caller must free)
+ * @param atoms Output atom array; release each atom with knishio_atom_free_deep(), then the
+ *        array with knishio_free()
  * @param count Output atom count
  * @return KNISHIO_SUCCESS on success, error code on failure
  */

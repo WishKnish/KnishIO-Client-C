@@ -31,20 +31,23 @@ void tearDown(void) {
 static void run_test_suite(const char *suite_name, void (*suite_func)(void)) {
     printf("\n=== Running %s Tests ===\n", suite_name);
     
-    /* Reset Unity state */
-    Unity.TestFailures = 0;
     Unity.CurrentTestFailed = 0;
-    
-    /* Run the test suite */
+
+    /* Unity's failure counter accumulates across suites, so UnityEnd() (the process exit
+     * status) covers every suite. It used to be reset here, which made the exit status
+     * report only the LAST suite and hid failing assertions in the others behind a green
+     * ctest. */
+    const UNITY_COUNTER_TYPE failures_before = Unity.TestFailures;
+
     suite_func();
-    
-    /* Update global counters */
-    if (Unity.TestFailures == 0) {
+
+    const UNITY_COUNTER_TYPE suite_failures = Unity.TestFailures - failures_before;
+    if (suite_failures == 0) {
         tests_passed++;
         printf("✓ %s: PASSED\n", suite_name);
     } else {
         tests_failed++;
-        printf("✗ %s: FAILED (%d failures)\n", suite_name, Unity.TestFailures);
+        printf("✗ %s: FAILED (%lu failures)\n", suite_name, (unsigned long)suite_failures);
     }
 }
 
@@ -114,14 +117,22 @@ int main(int argc, char *argv[]) {
     printf("Passed: %d\n", tests_passed);
     printf("Failed: %d\n", tests_failed);
     
+    if (tests_run == 0) {
+        /* A filter that matches no suite (a typo such as --filter=molecules) runs nothing,
+         * which must not read as a pass. */
+        printf("\n❌ No test suite matched --filter=%s\n", filter ? filter : "");
+        return 1;
+    }
     if (tests_failed == 0) {
         printf("\n🎉 All tests PASSED!\n");
     } else {
         printf("\n❌ %d test suite(s) FAILED\n", tests_failed);
     }
     
-    /* Unity final result */
-    return UnityEnd();
+    /* Non-zero if ANY suite failed. The cross-SDK block above counts into tests_failed
+     * without going through Unity, so both are checked. */
+    const int unity_failures = UnityEnd();
+    return (unity_failures != 0 || tests_failed != 0) ? 1 : 0;
 }
 
 /* Note: orphaned helpers test_version_check/test_initialization were removed —
