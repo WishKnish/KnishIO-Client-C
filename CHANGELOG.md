@@ -14,16 +14,7 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
-## [Unreleased]
-
-### Security
-
-- No behaviour change: `knishio_molecule_check()` already ignores a `signingWallet` meta and
-  compares the signer with atoms[0]'s `walletAddress`. The new `SigningWalletForgery` ctest pins
-  that with the cross-SDK fixture `tests/fixtures/signing-wallet-forgery.json` (built with JS
-  1.2.1): a molecule that claims one wallet's address but carries another wallet's signature, which
-  a verifier honouring the meta (and an offline verifier such as knishproof built on one) reports
-  as valid, must fail as `KNISHIO_ERROR_SIGNATURE_MISMATCH`.
+## [1.2.2] — 2026-09-26
 
 ### Fixed
 
@@ -55,6 +46,19 @@ substantiate a detail, the entry says so instead of guessing.
   not be decrypted`, unless the envelope already carried GraphQL errors.
 - `knishio_client_create_token()` released only the atom array of its molecule, leaking the C and I
   atoms and their meta on every call; it now frees them.
+
+### Security
+
+- No behaviour change: `knishio_molecule_check()` already ignores a `signingWallet` meta and
+  compares the signer with atoms[0]'s `walletAddress`. The new `SigningWalletForgery` ctest pins
+  that with the cross-SDK fixture `tests/fixtures/signing-wallet-forgery.json` (built with JS
+  1.2.1): a molecule that claims one wallet's address but carries another wallet's signature, which
+  a verifier honouring the meta (and an offline verifier such as knishproof built on one) reports
+  as valid, must fail as `KNISHIO_ERROR_SIGNATURE_MISMATCH`.
+
+### Notes
+
+- Tests only: test: assert SHAKE256 known answers; make self-test verdicts honest (472722d).
 
 ## [1.2.1] — 2026-09-23
 
@@ -482,7 +486,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.2.1...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.2.2...HEAD
+[1.2.2]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.2
 [1.2.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.1
 [1.2.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.0
 [1.1.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.1.0
