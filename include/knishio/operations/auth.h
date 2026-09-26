@@ -107,7 +107,13 @@ knishio_error_t knishio_client_request_guest_auth_token(
 /**
  * @brief Request profile authentication token
  * Equivalent to JavaScript: client.requestProfileAuthToken({ secret, encrypt })
- * 
+ *
+ * Queries ContinuId(bundle, USER) first. A returning identity's authorization is signed by the
+ * USER wallet at that position (validator 0.5.0+ then issues a proven token); a first login, or a
+ * pointer the secret does not own, is signed by a fresh AUTH wallet. A rejected pointer-signed
+ * proposal is retried once from a fresh AUTH wallet, so at most two molecules are proposed.
+ * ContinuID query and transport errors are returned without a retry.
+ *
  * @param client KnishIO client instance
  * @param params Request parameters
  * @param result Output auth result (allocated, must be freed)

@@ -103,7 +103,10 @@ knishio_error_t knishio_auth_token_create_with_wallet(knishio_auth_token_t** aut
 /**
  * @brief Restore AuthToken from snapshot
  * Equivalent to JavaScript: AuthToken.restore(snapshot, secret)
- * 
+ *
+ * The wallet is rebuilt with the snapshot's `wallet.token` (USER for a login signed from the
+ * ContinuID pointer); a snapshot without it restores an AUTH wallet.
+ *
  * @param auth_token Output AuthToken instance (allocated, must be freed)
  * @param snapshot_json JSON snapshot string from getSnapshot()
  * @param secret Secret for wallet restoration

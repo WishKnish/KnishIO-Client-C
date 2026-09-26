@@ -13,6 +13,10 @@
 #include "knishio/auth_token.h"
 #include "knishio/wallet.h"
 #include "knishio/client_ops.h"
+#include "knishio/client.h"
+#include "knishio/molecule.h"
+#include "knishio/operations/wallet.h"
+#include "knishio/utils/logging.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -210,57 +214,49 @@ knishio_error_t knishio_client_request_guest_auth_token(
     return KNISHIO_SUCCESS;
 }
 
-/* Request profile authentication token.
- * Builds + signs a real U-isotope authorization molecule (mirrors JS requestProfileAuthToken /
- * Molecule.initAuthorization): U-atom (AUTH wallet, meta encrypt/pubkey/characters) + ContinuID
- * I-atom, submitted via ProposeMolecule (PUBLIC). On acceptance, extracts the bundle-scoped JWT
- * (data.ProposeMolecule.payload.token) and sets it as the client auth token so subsequent ops
- * carry X-Auth-Token. (Replaces the prior broken M-isotope/unsigned/no-hash hand-roll.) */
-knishio_error_t knishio_client_request_profile_auth_token(
+/* Validator reason for a ProposeMolecule outcome (data.ProposeMolecule.reason), else the GraphQL
+ * errors. Malloc'd (caller frees), or NULL. */
+static char* knishio_extract_propose_reason(const knishio_graphql_response_t* response) {
+    char* reason = NULL;
+    knishio_json_t* json = response->data ? knishio_json_parse(response->data, NULL) : NULL;
+    if (json) {
+        knishio_json_t* node = knishio_json_get_path(json, "data.ProposeMolecule.reason");
+        if (node) {
+            const char* s = knishio_json_get_string(node);
+            if (s && s[0]) {
+                reason = knishio_strdup(s);
+            }
+            knishio_json_free(node);
+        }
+        knishio_json_free(json);
+    }
+    if (!reason && response->errors) {
+        reason = knishio_strdup(response->errors);
+    }
+    return reason;
+}
+
+/* Build, sign and propose one authorization molecule (mirrors JS Molecule.initAuthorization): a
+ * U-atom signed by `source` (meta encrypt/pubkey/walletPubkey/characters) + a ContinuID I-atom to a
+ * USER remainder at a FRESH random position, which designates the bundle's next chain head (JS
+ * Wallet.generatePosition). The I-atom's previousPosition is source->position. */
+static knishio_error_t knishio_propose_profile_auth(
     knishio_client_t* client,
-    const knishio_request_profile_auth_token_params_t* params,
-    knishio_request_profile_auth_token_result_t** result
+    knishio_wallet_t* source,
+    bool encrypt,
+    knishio_graphql_response_t** response
 ) {
-    if (!client || !params || !result) {
-        return KNISHIO_ERROR_INVALID_ARGS;
-    }
-    if (!params->secret) {
-        return KNISHIO_ERROR_INVALID_ARGS;
-    }
-
-    /* get_source_wallet derives the wallet from the client's stored secret. */
-    knishio_client_set_secret(client, params->secret);
-
-    knishio_wallet_t* source = NULL;     /* AUTH signing wallet (address = pubkey) */
-    knishio_wallet_t* remainder = NULL;  /* USER remainder (ContinuID I-atom) */
-    char* source_position = NULL;
+    knishio_wallet_t* remainder = NULL;
     char* remainder_position = NULL;
     knishio_molecule_t* molecule = NULL;
     char* molecule_json = NULL;
     char* variables = NULL;
-    knishio_graphql_response_t* response = NULL;
-    knishio_request_profile_auth_token_result_t* auth_result = NULL;
-
-    /* U-source (AUTH) at a FRESH random position. The U-atom is the index-0 OTS signer, so a fixed
-     * position is consumed (used_positions) and a 2nd auth from the same bundle would be rejected
-     * for OTS reuse. U-isotope SKIPS the ContinuID chain check, so any unused position is valid —
-     * mirrors JS `new Wallet({secret, token:'AUTH'})`, which uses a random position. */
     knishio_error_t error = KNISHIO_SUCCESS;
-    if (!knishio_generate_position(&source_position)) {
+
+    if (!knishio_generate_position(&remainder_position)) {
         return KNISHIO_ERROR_CRYPTO;
     }
-    error = knishio_wallet_create_simple(&source, params->secret, "AUTH", source_position);
-    if (error != KNISHIO_SUCCESS) {
-        goto cleanup;
-    }
-
-    /* USER remainder (ContinuID I-atom) at a FRESH random position — designates the bundle's next
-     * chain head (mirrors JS Wallet.generatePosition). */
-    if (!knishio_generate_position(&remainder_position)) {
-        error = KNISHIO_ERROR_CRYPTO;
-        goto cleanup;
-    }
-    error = knishio_wallet_create_simple(&remainder, params->secret, "USER", remainder_position);
+    error = knishio_wallet_create_simple(&remainder, source->secret, "USER", remainder_position);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -273,7 +269,7 @@ knishio_error_t knishio_client_request_profile_auth_token(
         goto cleanup;
     }
 
-    error = knishio_molecule_init_authorization(molecule, params->encrypt);
+    error = knishio_molecule_init_authorization(molecule, encrypt);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -311,67 +307,235 @@ knishio_error_t knishio_client_request_profile_auth_token(
             .is_mutation = true
         };
         /* Submit through a proper graphql client (slice 2a/2b-i: TLS + X-Auth-Token aware). */
-        error = knishio_client_execute_graphql(client, &operation, &response);
+        error = knishio_client_execute_graphql(client, &operation, response);
     }
+
+cleanup:
+    if (variables) knishio_free(variables);
+    if (molecule_json) knishio_free(molecule_json);
+    /* The molecule owns the U and I atoms init_authorization built; the wallets stay ours. */
+    if (molecule) knishio_molecule_free_deep(molecule);
+    if (remainder) knishio_wallet_free(remainder);
+    if (remainder_position) knishio_free(remainder_position);
+    return error;
+}
+
+/* The identity's ContinuID pointer as a signing wallet: the USER wallet derived from `secret` at
+ * the position ContinuId(bundle, USER) returns. *pointer is NULL (no error) when there is no
+ * pointer — genesis, an empty position, a non-USER wallet — or the validator's address differs
+ * from the derived one. Query and transport errors propagate. */
+static knishio_error_t knishio_resolve_continuid_signer(
+    knishio_client_t* client,
+    const char* secret,
+    knishio_wallet_t** pointer
+) {
+    *pointer = NULL;
+    const char* bundle = knishio_client_get_bundle(client);
+    if (!bundle) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    /* Public query (requires_auth=false, CipherHash-bypassed on a client that has never
+     * authenticated), sent with token USER: without the filter the validator falls back to the
+     * bundle's newest wallet of ANY token when the bundle has no ContinuID meta. */
+    knishio_continuId_result_t* cid = NULL;
+    knishio_error_t error = knishio_client_query_continuId(client, bundle, &cid);
     if (error != KNISHIO_SUCCESS) {
-        goto cleanup;
+        return error;
+    }
+    if (!cid->success) {
+        knishio_log(KNISHIO_LOG_WARN, "Profile auth: ContinuID query failed: %s",
+                    cid->error_message ? cid->error_message : "unknown error");
+        knishio_continuId_result_free(cid);
+        return KNISHIO_ERROR_INVALID_RESPONSE;
     }
 
-    auth_result = calloc(1, sizeof(knishio_request_profile_auth_token_result_t));
+    const knishio_wallet_t* head = cid->wallet;
+    if (head && head->token && strcmp(head->token, "USER") == 0
+        && head->position && head->position[0]) {
+        knishio_wallet_t* signer = NULL;
+        error = knishio_wallet_create_simple(&signer, secret, "USER", head->position);
+        if (error == KNISHIO_SUCCESS) {
+            const knishio_mlkem_param_t param =
+                (knishio_client_get_mlkem_parameter_set(client) == 768) ? KNISHIO_MLKEM_768 : KNISHIO_MLKEM_1024;
+            if (knishio_wallet_get_mlkem_param(signer) != param
+                && !knishio_wallet_set_mlkem_param(signer, param)) {
+                error = KNISHIO_ERROR_CRYPTO;
+            }
+        }
+        if (error != KNISHIO_SUCCESS) {
+            if (signer) knishio_wallet_free(signer);
+            knishio_continuId_result_free(cid);
+            return error;
+        }
+        if (head->address && head->address[0] && strcmp(head->address, signer->address) != 0) {
+            knishio_log(KNISHIO_LOG_INFO,
+                        "Profile auth: ContinuID address differs from the secret's USER wallet; "
+                        "signing from a fresh AUTH wallet");
+            knishio_wallet_free(signer);
+        } else {
+            *pointer = signer;
+        }
+    }
+
+    knishio_continuId_result_free(cid);
+    return KNISHIO_SUCCESS;
+}
+
+/* Turn a ProposeMolecule response into the caller's result (no client side effects). */
+static knishio_error_t knishio_build_profile_auth_result(
+    const knishio_graphql_response_t* response,
+    knishio_request_profile_auth_token_result_t** result
+) {
+    knishio_request_profile_auth_token_result_t* auth_result =
+        calloc(1, sizeof(knishio_request_profile_auth_token_result_t));
     if (!auth_result) {
-        error = KNISHIO_ERROR_MEMORY;
-        goto cleanup;
+        return KNISHIO_ERROR_MEMORY;
     }
-
     if (response->data && response->success) {
         auth_result->success = true;
         auth_result->response = knishio_strdup(response->data);
-
         /* Extract the JWT (data.ProposeMolecule.payload.token). */
         knishio_parse_profile_auth_response(response->data, auth_result);
-
-        /* Build + set the client auth token so subsequent ops carry X-Auth-Token. */
-        if (auth_result->token) {
-            knishio_auth_token_config_t token_config = {
-                .token = auth_result->token,
-                .expires_at = 0,
-                .encrypt = params->encrypt,
-                .pubkey = source->address
-            };
-            knishio_auth_token_t* auth_token = NULL;
-            if (knishio_auth_token_create(&auth_token, &token_config) == KNISHIO_SUCCESS && auth_token) {
-                knishio_client_set_auth_token(client, auth_token);
-            }
-        }
-
-        /* PQ-transport Phase E: plumb the validator's advertised ML-KEM pubkey + the AUTH source
-         * wallet (which decrypts CipherHash responses) into the client, and set the session
-         * encryption flag to match the requested mode. */
-        char* server_pubkey = knishio_extract_server_pubkey(response->data);
-        if (server_pubkey) {
-            knishio_client_set_cipher_context(client, server_pubkey, source);
-            knishio_free(server_pubkey);
-        }
-        knishio_client_set_encryption(client, params->encrypt);
     } else {
         auth_result->success = false;
         auth_result->error_message = knishio_strdup(
             response->errors ? response->errors : "Profile auth token request failed"
         );
     }
+    *result = auth_result;
+    return KNISHIO_SUCCESS;
+}
 
+/* Bind an accepted authorization to the client: the auth token (pubkey = the signing wallet's
+ * address), the validator's ML-KEM pubkey + the signing wallet (which decrypts CipherHash
+ * responses; its own token and position are kept), and the requested encryption mode. */
+static void knishio_bind_profile_auth(
+    knishio_client_t* client,
+    const knishio_request_profile_auth_token_params_t* params,
+    const knishio_wallet_t* source,
+    const knishio_graphql_response_t* response,
+    const knishio_request_profile_auth_token_result_t* auth_result
+) {
+    /* Build + set the client auth token so subsequent ops carry X-Auth-Token. */
+    if (auth_result->token) {
+        knishio_auth_token_config_t token_config = {
+            .token = auth_result->token,
+            .expires_at = 0,
+            .encrypt = params->encrypt,
+            .pubkey = source->address
+        };
+        knishio_auth_token_t* auth_token = NULL;
+        if (knishio_auth_token_create(&auth_token, &token_config) == KNISHIO_SUCCESS && auth_token) {
+            knishio_client_set_auth_token(client, auth_token);
+        }
+    }
+
+    char* server_pubkey = knishio_extract_server_pubkey(response->data);
+    if (server_pubkey) {
+        knishio_client_set_cipher_context(client, server_pubkey, source);
+        knishio_free(server_pubkey);
+    }
+    knishio_client_set_encryption(client, params->encrypt);
+}
+
+/* Request profile authentication token.
+ * Builds + signs a real U-isotope authorization molecule (mirrors JS requestProfileAuthToken /
+ * Molecule.initAuthorization) and submits it via ProposeMolecule (PUBLIC). On acceptance, extracts
+ * the bundle-scoped JWT (data.ProposeMolecule.payload.token) and sets it as the client auth token
+ * so subsequent ops carry X-Auth-Token.
+ *
+ * Signer (WOTS+ mitigation §12.5): a returning identity signs from its ContinuID pointer — the USER
+ * wallet at the position ContinuId(bundle, USER) returns — so validator 0.5.0+ marks the token
+ * proven (atoms[0] at the pointer, registered there) and moves the pointer to the I-atom's fresh
+ * position. With no pointer, a non-USER pointer or an address mismatch, it signs from a fresh AUTH
+ * wallet at a random position: U-isotope skips the ContinuID chain check, so any unused position is
+ * valid (JS `new Wallet({secret, token:'AUTH'})`), and a fixed one would be rejected for OTS reuse
+ * on the second login. A rejected pointer-signed proposal falls back to that AUTH login ONCE, so a
+ * login sends at most two authorization molecules (testnet: 3 auths/min/IP). */
+knishio_error_t knishio_client_request_profile_auth_token(
+    knishio_client_t* client,
+    const knishio_request_profile_auth_token_params_t* params,
+    knishio_request_profile_auth_token_result_t** result
+) {
+    if (!client || !params || !result) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!params->secret) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+
+    /* get_source_wallet derives the wallet from the client's stored secret. */
+    knishio_client_set_secret(client, params->secret);
+
+    knishio_wallet_t* source = NULL;     /* signing wallet: ContinuID pointer (USER) or fresh AUTH */
+    char* source_position = NULL;
+    knishio_graphql_response_t* response = NULL;
+    knishio_request_profile_auth_token_result_t* auth_result = NULL;
+
+    knishio_error_t error = knishio_resolve_continuid_signer(client, params->secret, &source);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
+
+    if (source) {
+        error = knishio_propose_profile_auth(client, source, params->encrypt, &response);
+        if (error != KNISHIO_SUCCESS) {
+            goto cleanup;
+        }
+        error = knishio_build_profile_auth_result(response, &auth_result);
+        if (error != KNISHIO_SUCCESS) {
+            goto cleanup;
+        }
+        if (auth_result->success && auth_result->token) {
+            knishio_log(KNISHIO_LOG_INFO, "Profile auth: token issued for the ContinuID pointer-signed login");
+            knishio_bind_profile_auth(client, params, source, response, auth_result);
+            *result = auth_result;
+            auth_result = NULL;
+            goto cleanup;
+        }
+
+        char* reason = knishio_extract_propose_reason(response);
+        knishio_log(KNISHIO_LOG_WARN,
+                    "Profile auth: ContinuID pointer-signed login rejected (%s); retrying once from a fresh AUTH wallet",
+                    reason ? reason : "no reason given");
+        if (reason) knishio_free(reason);
+        knishio_request_profile_auth_token_result_free(auth_result);
+        auth_result = NULL;
+        knishio_graphql_response_free(response);
+        response = NULL;
+        knishio_wallet_free(source);
+        source = NULL;
+    }
+
+    /* AUTH signer at a FRESH random position (first login, or the one fallback). */
+    if (!knishio_generate_position(&source_position)) {
+        error = KNISHIO_ERROR_CRYPTO;
+        goto cleanup;
+    }
+    error = knishio_wallet_create_simple(&source, params->secret, "AUTH", source_position);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+    error = knishio_propose_profile_auth(client, source, params->encrypt, &response);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+    error = knishio_build_profile_auth_result(response, &auth_result);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+    if (auth_result->success) {
+        knishio_log(KNISHIO_LOG_INFO, "Profile auth: token issued for the AUTH-wallet login");
+        knishio_bind_profile_auth(client, params, source, response, auth_result);
+    }
     *result = auth_result;
     auth_result = NULL;
 
 cleanup:
     if (response) knishio_graphql_response_free(response);
-    if (variables) knishio_free(variables);
-    if (molecule_json) knishio_free(molecule_json);
-    if (molecule) knishio_molecule_free(molecule);
     if (source) knishio_wallet_free(source);
-    if (remainder) knishio_wallet_free(remainder);
     if (source_position) knishio_free(source_position);
-    if (remainder_position) knishio_free(remainder_position);
     if (auth_result) knishio_request_profile_auth_token_result_free(auth_result);
     return error;
 }

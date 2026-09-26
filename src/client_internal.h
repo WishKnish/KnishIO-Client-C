@@ -57,7 +57,7 @@ struct knishio_client {
     /* PQ-transport (Phase E): ML-KEM CipherHash encrypted transport context (set at auth). */
     bool cipher_enabled;                /**< Encrypt subsequent ops via CipherHash */
     char *cipher_server_pubkey;         /**< Validator's ML-KEM pubkey (base64), for encrypt */
-    knishio_wallet_t *cipher_wallet;    /**< Owned copy of the AUTH wallet's identity */
+    knishio_wallet_t *cipher_wallet;    /**< Owned copy of the auth signing wallet's identity */
     int mlkem_parameter_set;            /**< ML-KEM parameter set: 1024 or 768 */
 };
 

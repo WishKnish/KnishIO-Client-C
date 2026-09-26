@@ -27,12 +27,15 @@
 
 /* PQ-transport (Phase E): whether an outgoing operation should be wrapped in CipherHash. Bypass
  * (plaintext): __schema/ContinuId queries, the AccessToken mutation, and the U-isotope
- * ProposeMolecule (auth bootstrap). Mirrors the validator/other-SDK bypass set. */
+ * ProposeMolecule (auth bootstrap). Mirrors the validator/other-SDK bypass set. The validator
+ * keys its bypass on the root field (ContinuId); the SDK's own ContinuId operation is named
+ * QueryContinuId (operations/wallet.c), and the profile login sends it before it has keys. */
 static bool cipher_should_encrypt(const knishio_graphql_operation_t* op) {
     if (!op || !op->name) {
         return true;
     }
-    if (strcmp(op->name, "__schema") == 0 || strcmp(op->name, "ContinuId") == 0) {
+    if (strcmp(op->name, "__schema") == 0 || strcmp(op->name, "ContinuId") == 0
+        || strcmp(op->name, "QueryContinuId") == 0) {
         return false;
     }
     if (strcmp(op->name, "AccessToken") == 0) {
@@ -408,7 +411,8 @@ knishio_error_t knishio_client_set_cipher_context(knishio_client_t* client,
         return KNISHIO_ERROR_MEMORY;
     }
 
-    /* Own a copy of the AUTH wallet's identity. Re-deriving from (secret, token, position) is
+    /* Own a copy of the auth signing wallet's identity (AUTH, or USER for a login signed from the
+     * ContinuID pointer). Re-deriving from (secret, token, position) is
      * deterministic, so the copy's ML-KEM keypair is byte-identical to the source wallet's — and
      * unlike a bare pubkey/privkey pair it also carries the KnishIO key the transport needs to
      * derive this wallet's OTHER ML-KEM identity for a legacy inbound envelope. */

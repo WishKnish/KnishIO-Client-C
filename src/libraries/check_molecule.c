@@ -733,11 +733,12 @@ static bool check_isotope_u(const knishio_molecule_t* molecule) {
     for (size_t i = 0; i < u_count; i++) {
         const knishio_atom_t* atom = u_atoms[i];
         
-        /* Must have AUTH token */
-        if (!atom->token || strcmp(atom->token, "AUTH") != 0) {
+        /* Must be signed by an AUTH wallet (first login) or the identity's USER wallet at its
+         * ContinuID pointer (a returning login the validator marks proven). */
+        if (!atom->token || (strcmp(atom->token, "AUTH") != 0 && strcmp(atom->token, "USER") != 0)) {
             free(u_atoms);
             #if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_isotope_u: FAIL - U atom token must be AUTH, got: %s\n", atom->token ? atom->token : "NULL");
+            printf("DEBUG check_isotope_u: FAIL - U atom token must be AUTH or USER, got: %s\n", atom->token ? atom->token : "NULL");
             #endif
             return false;
         }

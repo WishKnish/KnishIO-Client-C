@@ -25,6 +25,27 @@ substantiate a detail, the entry says so instead of guessing.
   a verifier honouring the meta (and an offline verifier such as knishproof built on one) reports
   as valid, must fail as `KNISHIO_ERROR_SIGNATURE_MISMATCH`.
 
+### Fixed
+
+- A returning user's login is now signed from the ContinuID pointer:
+  `knishio_client_request_profile_auth_token()` queries `ContinuId(bundle, USER)` and signs the
+  authorization with the USER wallet registered at that position, so validator 0.5.0+ issues a
+  proven token and the user keeps read and subscription access to permissioned and private cells.
+  A first login (no pointer) is unchanged. A rejected pointer-signed login falls back once to the
+  previous unproven login from a fresh AUTH wallet, so one login proposes at most two molecules.
+- `knishio_molecule_check()` accepts a U atom with token USER as well as AUTH; any other token is
+  still rejected. It rejected every pointer-signed authorization molecule.
+- `knishio_auth_token_get_snapshot()` records the bound wallet's token as `wallet.token`, and
+  `knishio_auth_token_restore()` rebuilds the wallet with it; a snapshot without it restores an
+  AUTH wallet as before. Restore always rebuilt an AUTH wallet, whose key and ML-KEM pair differ
+  from a USER-bound session's.
+- The profile login released only the atom array of its authorization molecule, leaking the U and
+  I atoms and their meta on every login; it now frees them.
+- The SDK's ContinuID query (operation `QueryContinuId`) was not in the encrypted-transport bypass
+  set, which named only `ContinuId`, so an encryption-enabled client without keys failed it with
+  `KNISHIO_ERROR_INVALID_STATE`. The profile login now sends it first, so it is sent in plaintext
+  like the rest of the auth bootstrap; the validator's bypass already includes it.
+
 ## [1.2.1] — 2026-09-23
 
 ### Added

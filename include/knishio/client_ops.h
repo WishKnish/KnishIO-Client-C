@@ -218,7 +218,7 @@ knishio_error_t knishio_client_execute_graphql(
 );
 
 /* PQ-transport (Phase E): ML-KEM CipherHash encrypted transport.
- * set_cipher_context supplies the validator's ML-KEM pubkey (base64) + the AUTH source wallet (its
+ * set_cipher_context supplies the validator's ML-KEM pubkey (base64) + the auth signing wallet (its
  * pubkey for hashShare + its raw private key for response decryption); set/switch_encryption toggle
  * the encrypted transport on the active session. Set once at auth. */
 knishio_error_t knishio_client_set_cipher_context(knishio_client_t* client,

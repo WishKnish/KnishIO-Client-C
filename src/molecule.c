@@ -1493,7 +1493,7 @@ knishio_error_t knishio_molecule_init_meta(
 /**
  * @brief Initialize an authorization molecule (matches JavaScript SDK Molecule.initAuthorization).
  * U-isotope atom (signed by source_wallet; no metaType/metaId; meta = [encrypt, pubkey, characters]
- * in JS order — encrypt from the caller, pubkey/characters from the AUTH wallet via setAtomWallet)
+ * in JS order — encrypt from the caller, pubkey/characters from the signing wallet via setAtomWallet)
  * + a ContinuID I-atom. The validator issues a bundle-scoped JWT from the U-atom's walletAddress.
  */
 knishio_error_t knishio_molecule_init_authorization(
@@ -1532,7 +1532,7 @@ knishio_error_t knishio_molecule_init_authorization(
         keys[n] = "encrypt"; vals[n] = encrypt ? "true" : "false"; n++;
         if (sw->pubkey) {
             keys[n] = "pubkey"; vals[n] = sw->pubkey; n++;
-            /* PQ-transport Phase E: convey the AUTH source wallet's ML-KEM768 public key as a SIGNED
+            /* PQ-transport Phase E: convey the signing wallet's ML-KEM public key as a SIGNED
              * walletPubkey U-atom meta (this U-atom is signed → MITM-proof), so the validator's
              * extract_enc_pubkey can encrypt CipherHash responses back to THIS wallet. */
             keys[n] = "walletPubkey"; vals[n] = sw->pubkey; n++;

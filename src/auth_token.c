@@ -113,6 +113,12 @@ knishio_error_t knishio_auth_token_restore(knishio_auth_token_t** auth_token,
     const char* pubkey_str = knishio_json_get_string_path(json, "pubkey");
     const char* position_str = knishio_json_get_string_path(json, "wallet.position");
     const char* characters_str = knishio_json_get_string_path(json, "wallet.characters");
+    /* The bound wallet's token: USER for a login signed from the ContinuID pointer. Snapshots
+     * written before it was recorded came from AUTH-signed logins. */
+    const char* wallet_token_str = knishio_json_get_string_path(json, "wallet.token");
+    if (!wallet_token_str || !wallet_token_str[0]) {
+        wallet_token_str = "AUTH";
+    }
     
     int64_t expires_at = 0;
     knishio_json_get_number_path(json, "expiresAt", (double*)&expires_at);
@@ -150,7 +156,7 @@ knishio_error_t knishio_auth_token_restore(knishio_auth_token_t** auth_token,
 
     /* Create wallet from snapshot data */
     knishio_wallet_t* wallet = NULL;
-    bool wallet_success = knishio_wallet_from_secret(&wallet, secret, "AUTH", position_str);
+    bool wallet_success = knishio_wallet_from_secret(&wallet, secret, wallet_token_str, position_str);
     knishio_error_t error = wallet_success ? KNISHIO_SUCCESS : KNISHIO_ERROR_INVALID_ARGS;
     if (error != KNISHIO_SUCCESS) {
         knishio_json_free(json);
@@ -309,8 +315,10 @@ knishio_error_t knishio_auth_token_get_snapshot(const knishio_auth_token_t* auth
         if (!wallet) { error = KNISHIO_ERROR_MEMORY; goto done; }
         const char* position = knishio_wallet_get_position(auth_token->wallet);
         const char* characters = knishio_wallet_get_characters(auth_token->wallet);
+        const char* wallet_token = auth_token->wallet->token;
         if (!cJSON_AddStringToObject(wallet, "position", position ? position : "")
             || !cJSON_AddStringToObject(wallet, "characters", characters ? characters : "")
+            || !cJSON_AddStringToObject(wallet, "token", wallet_token ? wallet_token : "AUTH")
             /* Persist the parameter set beside position/characters so a restored session keeps the
              * set it authenticated with instead of taking the (now 1024) constructor default. */
             || !cJSON_AddNumberToObject(wallet, "mlKemParameterSet",

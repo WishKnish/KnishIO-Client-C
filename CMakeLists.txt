@@ -643,6 +643,21 @@ if(KNISHIO_BUILD_TESTS)
     add_test(NAME SigningWalletForgery COMMAND signing_wallet_forgery)
     set_tests_properties(SigningWalletForgery PROPERTIES LABELS "vectors;parity;signature")
 
+    # Profile login from the ContinuID pointer: a returning user's authorization is signed by the
+    # USER wallet at the bundle's ContinuID position (validator 0.5.0 then marks the token proven),
+    # a first login keeps the fresh AUTH wallet, and a rejected pointer-signed login falls back to
+    # AUTH once. The binary serves the GraphQL endpoint itself on an ephemeral 127.0.0.1 port.
+    add_executable(profile_auth_continuid tests/profile_auth_continuid.c)
+    target_link_libraries(profile_auth_continuid PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(profile_auth_continuid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(profile_auth_continuid PRIVATE _GNU_SOURCE)
+    add_test(NAME ProfileAuthContinuId COMMAND profile_auth_continuid)
+    set_tests_properties(ProfileAuthContinuId PROPERTIES LABELS "auth;continuid" TIMEOUT 120)
+
     # Secret storage envelope tests (AES-256-GCM + PBKDF2 cross-SDK envelope, camelCase metadata, memory and file backends)
     add_executable(test_secret_storage tests/test_secret_storage.c)
     target_link_libraries(test_secret_storage PRIVATE
