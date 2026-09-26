@@ -266,7 +266,8 @@ cleanup:
     if (response) knishio_graphql_response_free(response);
     if (variables) knishio_free(variables);
     if (remainder_position) knishio_free(remainder_position);
-    if (molecule) knishio_molecule_free(molecule);
+    /* The molecule owns the C and I atoms init_token_creation built; the wallets stay ours. */
+    if (molecule) knishio_molecule_free_deep(molecule);
     if (source) knishio_wallet_free(source);
     if (recipient) knishio_wallet_free(recipient);
     if (remainder) knishio_wallet_free(remainder);

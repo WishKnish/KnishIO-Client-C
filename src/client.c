@@ -10,6 +10,7 @@
 #include "knishio/crypto/cipher_hash.h"
 #include "knishio/utils/memory.h"
 #include "client_internal.h"
+#include "graphql_internal.h"
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -367,24 +368,35 @@ knishio_error_t knishio_client_execute_graphql(
 
     error = knishio_graphql_execute(gql, exec_op, response);
 
-    /* Decrypt the CipherHash response envelope back to the inner GraphQL response JSON (replaces
-     * response->data for the normal downstream parse). The validator encrypts the response OBJECT,
-     * so the decrypted plaintext is the inner response JSON directly (no JSON-decode). */
-    if (error == KNISHIO_SUCCESS && encrypted_request && *response && (*response)->data) {
-        cJSON* root = cJSON_Parse((*response)->data);
-        if (root) {
-            cJSON* data = cJSON_GetObjectItem(root, "data");
-            cJSON* ch = data ? cJSON_GetObjectItem(data, "CipherHash") : NULL;
-            cJSON* hash = ch ? cJSON_GetObjectItem(ch, "hash") : NULL;
-            if (cJSON_IsString(hash)) {
-                char* inner = NULL;
-                if (knishio_cipher_hash_decrypt(cJSON_GetStringValue(hash), client->cipher_wallet,
-                                                &inner) == KNISHIO_SUCCESS && inner) {
-                    knishio_free((*response)->data);
-                    (*response)->data = inner;  /* ownership transferred (malloc'd) */
-                }
+    /* Decrypt the CipherHash response envelope back to the inner GraphQL response JSON and derive
+     * success, errors and molecularHash from THAT, as the ORIGINAL operation: the envelope reply
+     * came back for a CipherHash query, so it carries neither the inner errors nor the hash. The
+     * validator encrypts the response OBJECT, so the decrypted plaintext is the inner response
+     * JSON directly (no JSON-decode). A reply that does not decrypt fails closed, keeping any
+     * GraphQL errors the envelope itself carried. */
+    if (error == KNISHIO_SUCCESS && encrypted_request && *response) {
+        char* inner = NULL;
+        cJSON* root = (*response)->data ? cJSON_Parse((*response)->data) : NULL;
+        cJSON* data = root ? cJSON_GetObjectItem(root, "data") : NULL;
+        cJSON* ch = data ? cJSON_GetObjectItem(data, "CipherHash") : NULL;
+        cJSON* hash = ch ? cJSON_GetObjectItem(ch, "hash") : NULL;
+        if (cJSON_IsString(hash)
+            && knishio_cipher_hash_decrypt(cJSON_GetStringValue(hash), client->cipher_wallet,
+                                           &inner) != KNISHIO_SUCCESS && inner) {
+            free(inner);
+            inner = NULL;
+        }
+        if (root) cJSON_Delete(root);
+
+        if (inner) {
+            knishio_graphql_response_apply_body(*response, inner, operation->is_mutation);
+            free(inner);
+        } else {
+            (*response)->success = false;
+            if (!(*response)->errors) {
+                (*response)->errors =
+                    knishio_strdup("[{\"message\":\"CipherHash response could not be decrypted\"}]");
             }
-            cJSON_Delete(root);
         }
     }
 

@@ -14,6 +14,7 @@
 #include "knishio/utils/logging.h"
 #include "knishio/json/parser.h"
 #include "knishio/json/builder.h"
+#include "graphql_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -214,56 +215,66 @@ knishio_error_t knishio_graphql_execute(
     }
     
     resp->status_code = http_response->status_code;
-    resp->success = (http_response->status_code >= 200 && http_response->status_code < 300);
-    
-    /* Parse response body if present */
-    if (http_response->data) {
-        copy_graphql_string(&resp->data, http_response->data);
-        
-        /* Log response if debug mode enabled */
-        if (client->debug_mode) {
-            knishio_log(KNISHIO_LOG_DEBUG, "GraphQL Response: %s", http_response->data);
-        }
-        
-        /* Parse JSON response for error extraction */
-        char* parse_error = NULL;
-        knishio_json_t* response_json = knishio_json_parse(http_response->data, &parse_error);
-        if (response_json) {
-            /* Extract GraphQL errors if present */
-            char* errors_json = NULL;
-            if (extract_graphql_errors(response_json, &errors_json) == KNISHIO_SUCCESS && errors_json) {
-                resp->errors = errors_json;
-                resp->success = false;
-            }
-            
-            /* Extract molecular hash for mutations */
-            if (operation->is_mutation) {
-                knishio_json_t* data = knishio_json_object_get(response_json, "data");
-                if (data) {
-                    const char* hash = knishio_json_get_string_path(data, "ProposeMolecule.molecularHash");
-                    if (hash) {
-                        copy_graphql_string(&resp->molecular_hash, hash);
-                    }
-                    knishio_json_free(data);
-                }
-            }
-            
-            knishio_json_free(response_json);
-        }
-        
-        if (parse_error) {
-            knishio_log(KNISHIO_LOG_WARN, "Failed to parse GraphQL response JSON: %s", parse_error);
-            knishio_free(parse_error);
-        }
-    } else if (http_response->data) {
-        copy_graphql_string(&resp->errors, http_response->data);
-        resp->success = false;
+
+    /* Log response if debug mode enabled */
+    if (http_response->data && client->debug_mode) {
+        knishio_log(KNISHIO_LOG_DEBUG, "GraphQL Response: %s", http_response->data);
     }
-    
+
+    knishio_graphql_response_apply_body(resp, http_response->data, operation->is_mutation);
+
     knishio_http_response_free(http_response);
     *response = resp;
     
     return KNISHIO_SUCCESS;
+}
+
+void knishio_graphql_response_apply_body(knishio_graphql_response_t* resp, const char* body,
+                                         bool is_mutation) {
+    if (!resp) {
+        return;
+    }
+    free_graphql_string(&resp->data);
+    free_graphql_string(&resp->errors);
+    free_graphql_string(&resp->molecular_hash);
+    resp->success = (resp->status_code >= 200 && resp->status_code < 300);
+
+    /* Parse response body if present */
+    if (!body) {
+        return;
+    }
+    copy_graphql_string(&resp->data, body);
+
+    /* Parse JSON response for error extraction */
+    char* parse_error = NULL;
+    knishio_json_t* response_json = knishio_json_parse(body, &parse_error);
+    if (response_json) {
+        /* Extract GraphQL errors if present */
+        char* errors_json = NULL;
+        if (extract_graphql_errors(response_json, &errors_json) == KNISHIO_SUCCESS && errors_json) {
+            resp->errors = errors_json;
+            resp->success = false;
+        }
+
+        /* Extract molecular hash for mutations */
+        if (is_mutation) {
+            knishio_json_t* data = knishio_json_object_get(response_json, "data");
+            if (data) {
+                const char* hash = knishio_json_get_string_path(data, "ProposeMolecule.molecularHash");
+                if (hash) {
+                    copy_graphql_string(&resp->molecular_hash, hash);
+                }
+                knishio_json_free(data);
+            }
+        }
+
+        knishio_json_free(response_json);
+    }
+
+    if (parse_error) {
+        knishio_log(KNISHIO_LOG_WARN, "Failed to parse GraphQL response JSON: %s", parse_error);
+        knishio_free(parse_error);
+    }
 }
 
 knishio_error_t knishio_graphql_query(

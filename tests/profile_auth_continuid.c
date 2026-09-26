@@ -19,6 +19,10 @@
  * The same binary also pins two AUTH-token assumptions the pointer login makes wrong:
  * knishio_molecule_check() must accept a U atom with token USER (and still reject any other
  * token), and an auth-token snapshot must restore its wallet with the token it was bound to.
+ *
+ * Finally it drives a mutation (createToken) on an encrypted session: the stub opens the
+ * CipherHash request with its ML-KEM key and answers with a reply encrypted to the pointer USER
+ * wallet, so the client must read the result from the decrypted reply, not from the envelope.
  */
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -42,6 +46,11 @@
 #include "knishio/meta.h"
 #include "knishio/molecule.h"
 #include "knishio/operations/auth.h"
+#include "knishio/operations/token.h"
+#include "knishio/crypto/aes_gcm.h"
+#include "knishio/crypto/cipher_hash.h"
+#include "knishio/crypto/mlkem.h"
+#include "knishio/utils/encoding.h"
 #include "knishio/wallet.h"
 
 static int g_failures = 0;
@@ -74,10 +83,14 @@ typedef struct {
     const char *continuid_reply;
     const char *propose_replies[MAX_REQUESTS];
     size_t propose_reply_count;
+    /* Builds the malloc'd reply to a CipherHash (encrypted) request from its body. */
+    char *(*cipher_reply)(const char *body, void *ctx);
+    void *cipher_ctx;
 
     recorded_request_t requests[MAX_REQUESTS];
     size_t request_count;
     size_t propose_count;
+    size_t cipher_count;
 } stub_server_t;
 
 static const char *const REJECTED_REPLY =
@@ -168,9 +181,14 @@ static void *serve(void *arg) {
         bool has_auth = false;
         char *body = read_request(fd, &has_auth);
         const char *reply = "{\"errors\":[{\"message\":\"unreadable request\"}]}";
+        char *owned_reply = NULL;
         pthread_mutex_lock(&s->lock);
         if (body) {
-            if (strstr(body, "QueryContinuId")) {
+            if (strstr(body, "CipherHash") && s->cipher_reply) {
+                owned_reply = s->cipher_reply(body, s->cipher_ctx);
+                if (owned_reply) reply = owned_reply;
+                s->cipher_count++;
+            } else if (strstr(body, "QueryContinuId")) {
                 reply = s->continuid_reply;
             } else if (strstr(body, "ProposeMolecule")) {
                 reply = (s->propose_count < s->propose_reply_count)
@@ -193,6 +211,7 @@ static void *serve(void *arg) {
         if (send_all(fd, head, (size_t)head_len)) {
             send_all(fd, reply, strlen(reply));
         }
+        free(owned_reply);
         close(fd);
     }
     return NULL;
@@ -602,6 +621,225 @@ static void case_snapshot_restore(void) {
     knishio_wallet_free(w);
 }
 
+/* ------------------------------------------------------------------------------------------ */
+/* Mutations on an encrypted session                                                           */
+/* ------------------------------------------------------------------------------------------ */
+
+typedef enum {
+    REPLY_ACCEPTED,       /* the decrypted reply accepts the proposed molecule */
+    REPLY_GRAPHQL_ERROR,  /* the decrypted reply carries GraphQL errors */
+    REPLY_UNDECRYPTABLE   /* data.CipherHash.hash is not a CipherHash map */
+} cipher_reply_kind_t;
+
+typedef struct {
+    const knishio_wallet_t *validator;  /* holds the ML-KEM key the login advertised */
+    const char *recipient_pubkey;       /* the pointer USER wallet the login bound */
+    cipher_reply_kind_t kind;
+    bool request_opened;   /* the request opened under the validator key and is a ProposeMolecule */
+    char *molecular_hash;  /* of the molecule inside the encrypted request */
+    char *inner;           /* the plaintext reply the stub encrypted */
+    char *envelope;        /* the data.CipherHash.hash the stub sent */
+} cipher_script_t;
+
+/* The validator's CipherHash reply map: the reply OBJECT's bytes encrypted as-is and keyed by
+ * hashShare(recipient pubkey). knishio_cipher_hash_encrypt() encrypts a request body as a JSON
+ * string literal instead, which the client would decrypt to a quoted string. */
+static char *encrypt_reply(const char *inner, const char *pubkey_b64) {
+    unsigned char *pub = NULL;
+    size_t pub_len = 0;
+    uint8_t *sealed = NULL;
+    size_t sealed_len = 0;
+    char *ct_b64 = NULL, *msg_b64 = NULL, *share = NULL, *out = NULL;
+    knishio_mlkem_ciphertext_t kem_ct;
+    knishio_mlkem_shared_secret_t shared;
+    if (knishio_base64_decode(pubkey_b64, &pub, &pub_len)
+        && knishio_mlkem_encapsulate(pub, pub_len, &kem_ct, &shared) == KNISHIO_SUCCESS
+        && knishio_aes_gcm_encrypt((const uint8_t *)inner, strlen(inner), shared.shared_secret,
+                                   &sealed, &sealed_len) == KNISHIO_SUCCESS
+        && knishio_base64_encode(kem_ct.ciphertext, kem_ct.ciphertext_len, &ct_b64)
+        && knishio_base64_encode(sealed, sealed_len, &msg_b64)
+        && knishio_cipher_hash_share(pubkey_b64, &share) == KNISHIO_SUCCESS) {
+        cJSON *map = cJSON_CreateObject();
+        cJSON *entry = cJSON_AddObjectToObject(map, share);
+        cJSON_AddStringToObject(entry, "cipherText", ct_b64);
+        cJSON_AddStringToObject(entry, "encryptedMessage", msg_b64);
+        out = cJSON_PrintUnformatted(map);
+        cJSON_Delete(map);
+    }
+    free(pub);
+    free(sealed);
+    free(ct_b64);
+    free(msg_b64);
+    free(share);
+    return out;
+}
+
+/* Opens the CipherHash request like the validator (the envelope holds the request body as a JSON
+ * string literal), records the proposed molecule's hash, and answers per the script. */
+static char *scripted_cipher_reply(const char *body, void *ctx) {
+    cipher_script_t *c = ctx;
+    cJSON *root = cJSON_Parse(body);
+    cJSON *vars = root ? cJSON_GetObjectItemCaseSensitive(root, "variables") : NULL;
+    const char *hash_var = vars ? cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(vars, "Hash")) : NULL;
+    char *plain = NULL;
+    if (hash_var && knishio_cipher_hash_decrypt(hash_var, c->validator, &plain) == KNISHIO_SUCCESS
+        && plain) {
+        cJSON *literal = cJSON_Parse(plain);
+        cJSON *request = cJSON_IsString(literal) ? cJSON_Parse(cJSON_GetStringValue(literal)) : NULL;
+        cJSON *rvars = request ? cJSON_GetObjectItemCaseSensitive(request, "variables") : NULL;
+        cJSON *mol = rvars ? cJSON_GetObjectItemCaseSensitive(rvars, "molecule") : NULL;
+        const char *query = request ? cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(request, "query")) : NULL;
+        const char *mh = mol ? cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mol, "molecularHash")) : NULL;
+        if (query && strstr(query, "ProposeMolecule") && mh) {
+            c->request_opened = true;
+            free(c->molecular_hash);
+            c->molecular_hash = strdup(mh);
+        }
+        cJSON_Delete(request);
+        cJSON_Delete(literal);
+    }
+    free(plain);
+    cJSON_Delete(root);
+
+    free(c->inner);
+    c->inner = NULL;
+    free(c->envelope);
+    c->envelope = NULL;
+    if (c->kind == REPLY_UNDECRYPTABLE) {
+        c->envelope = strdup("malformed-cipher-hash");
+    } else {
+        cJSON *reply = cJSON_CreateObject();
+        if (c->kind == REPLY_ACCEPTED) {
+            cJSON *pm = cJSON_AddObjectToObject(cJSON_AddObjectToObject(reply, "data"), "ProposeMolecule");
+            cJSON_AddStringToObject(pm, "molecularHash", c->molecular_hash ? c->molecular_hash : "");
+            cJSON_AddStringToObject(pm, "status", "accepted");
+            cJSON_AddNullToObject(pm, "reason");
+            cJSON_AddNullToObject(pm, "payload");
+        } else {
+            cJSON_AddNullToObject(reply, "data");
+            cJSON *err = cJSON_CreateObject();
+            cJSON_AddStringToObject(err, "message", "x");
+            cJSON_AddItemToArray(cJSON_AddArrayToObject(reply, "errors"), err);
+        }
+        c->inner = cJSON_PrintUnformatted(reply);
+        cJSON_Delete(reply);
+        c->envelope = c->inner ? encrypt_reply(c->inner, c->recipient_pubkey) : NULL;
+    }
+
+    cJSON *out = cJSON_CreateObject();
+    cJSON *cipher = cJSON_AddObjectToObject(cJSON_AddObjectToObject(out, "data"), "CipherHash");
+    cJSON_AddStringToObject(cipher, "hash", c->envelope ? c->envelope : "");
+    char *text = cJSON_PrintUnformatted(out);
+    cJSON_Delete(out);
+    return text;
+}
+
+/* An accepted login reply whose payload advertises the validator's ML-KEM key (payload.key). */
+static char *accepted_reply_with_key(const char *validator_pubkey) {
+    cJSON *payload = cJSON_CreateObject();
+    cJSON_AddStringToObject(payload, "token", "jwt-accepted");
+    cJSON_AddStringToObject(payload, "key", validator_pubkey);
+    char *payload_text = cJSON_PrintUnformatted(payload);
+    cJSON_Delete(payload);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *pm = cJSON_AddObjectToObject(cJSON_AddObjectToObject(root, "data"), "ProposeMolecule");
+    cJSON_AddStringToObject(pm, "molecularHash", "h");
+    cJSON_AddStringToObject(pm, "status", "accepted");
+    cJSON_AddNullToObject(pm, "reason");
+    cJSON_AddStringToObject(pm, "payload", payload_text ? payload_text : "");
+    cJSON_AddStringToObject(pm, "createdAt", "0");
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    free(payload_text);
+    return text;
+}
+
+static void case_encrypted_session_mutation(const char *bundle, cipher_reply_kind_t kind,
+                                            const char *label) {
+    printf("encrypted session: createToken, %s\n", label);
+    knishio_wallet_t *w = NULL;
+    knishio_wallet_create_simple(&w, g_secret, "USER", POINTER_POSITION);
+    char *validator_secret = NULL;
+    knishio_generate_secret("profile-auth-continuid-validator", 2048, &validator_secret);
+    knishio_wallet_t *validator = NULL;
+    knishio_wallet_create_simple(&validator, validator_secret, "AUTH", POINTER_POSITION);
+    char *cid = continuid_reply("USER", POINTER_POSITION, w->address, bundle);
+    char *login_reply = accepted_reply_with_key(validator->pubkey);
+
+    cipher_script_t script = { .validator = validator, .recipient_pubkey = w->pubkey, .kind = kind };
+    stub_server_t s;
+    if (!server_start(&s)) { check(false, "stub server starts", NULL); return; }
+    s.continuid_reply = cid;
+    s.propose_replies[0] = login_reply;
+    s.propose_reply_count = 1;
+    s.cipher_reply = scripted_cipher_reply;
+    s.cipher_ctx = &script;
+
+    knishio_client_t *client = make_client(&s);
+    knishio_request_profile_auth_token_params_t params = { .secret = g_secret, .encrypt = true };
+    knishio_request_profile_auth_token_result_t *login = NULL;
+    knishio_error_t err = knishio_client_request_profile_auth_token(client, &params, &login);
+    check(err == KNISHIO_SUCCESS && login && login->success, "the encrypted login is accepted", NULL);
+
+    knishio_create_token_params_t token_params = {
+        .token = "ENCTOKEN", .name = "Encrypted session token", .amount = 1000,
+        .fungibility = KNISHIO_TOKEN_FUNGIBLE
+    };
+    knishio_create_token_result_t *created = NULL;
+    err = knishio_client_create_token(client, &token_params, &created);
+
+    char detail[256];
+    snprintf(detail, sizeof(detail), "cipher requests=%zu plaintext proposals=%zu opened=%d",
+             s.cipher_count, s.propose_count, (int)script.request_opened);
+    check(s.cipher_count == 1 && s.propose_count == 1 && script.request_opened,
+          "createToken goes out as one CipherHash envelope (no plaintext proposal)", detail);
+
+    if (kind != REPLY_UNDECRYPTABLE) {
+        char *roundtrip = NULL;
+        knishio_error_t de = script.envelope
+            ? knishio_cipher_hash_decrypt(script.envelope, w, &roundtrip) : KNISHIO_ERROR_INVALID_ARGS;
+        check(de == KNISHIO_SUCCESS && roundtrip && script.inner && strcmp(roundtrip, script.inner) == 0,
+              "the stub's reply decrypts to its plaintext reply under the pointer USER wallet", NULL);
+        free(roundtrip);
+    }
+
+    snprintf(detail, sizeof(detail), "err=%d success=%d hash=%.16s… error=%.120s", (int)err,
+             created ? (int)created->success : -1,
+             (created && created->molecular_hash) ? created->molecular_hash : "(null)",
+             (created && created->error_message) ? created->error_message : "(null)");
+    switch (kind) {
+    case REPLY_ACCEPTED:
+        check(err == KNISHIO_SUCCESS && created && created->success && created->molecular_hash
+                  && script.molecular_hash && strcmp(created->molecular_hash, script.molecular_hash) == 0,
+              "createToken succeeds with the proposed molecule's hash from the decrypted reply", detail);
+        break;
+    case REPLY_GRAPHQL_ERROR:
+        check(err == KNISHIO_SUCCESS && created && !created->success && created->error_message
+                  && strstr(created->error_message, "\"message\":\"x\""),
+              "createToken fails with the decrypted reply's GraphQL error", detail);
+        break;
+    case REPLY_UNDECRYPTABLE:
+        check(err == KNISHIO_SUCCESS && created && !created->success && created->error_message
+                  && strstr(created->error_message, "CipherHash response could not be decrypted"),
+              "an undecryptable reply fails closed", detail);
+        break;
+    }
+
+    knishio_create_token_result_free(created);
+    knishio_request_profile_auth_token_result_free(login);
+    knishio_client_destroy(client);
+    server_stop(&s);
+    free(script.molecular_hash);
+    free(script.inner);
+    free(script.envelope);
+    free(login_reply);
+    cJSON_free(cid);
+    knishio_wallet_free(validator);
+    free(validator_secret);
+    knishio_wallet_free(w);
+}
+
 int main(void) {
     printf("profile auth from the ContinuID pointer (SDK %s)\n", KNISHIO_VERSION_STRING);
     if (!knishio_generate_secret("profile-auth-continuid-test", 2048, &g_secret)) {
@@ -637,6 +875,10 @@ int main(void) {
 
     case_isotope_u_token();
     case_snapshot_restore();
+
+    case_encrypted_session_mutation(bundle, REPLY_ACCEPTED, "the decrypted reply accepts");
+    case_encrypted_session_mutation(bundle, REPLY_GRAPHQL_ERROR, "the decrypted reply has errors");
+    case_encrypted_session_mutation(bundle, REPLY_UNDECRYPTABLE, "the reply cannot be decrypted");
 
     free(bundle);
     free(g_secret);

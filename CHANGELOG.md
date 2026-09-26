@@ -45,6 +45,16 @@ substantiate a detail, the entry says so instead of guessing.
   set, which named only `ContinuId`, so an encryption-enabled client without keys failed it with
   `KNISHIO_ERROR_INVALID_STATE`. The profile login now sends it first, so it is sent in plaintext
   like the rest of the auth bootstrap; the validator's bypass already includes it.
+- Every mutation on an encryption-enabled session was reported as failed, and GraphQL errors in
+  an encrypted reply were ignored: `knishio_client_execute_graphql()` read success, errors and
+  `molecularHash` from the CipherHash envelope, a reply to a query, and only swapped in the
+  decrypted reply's text afterwards. This hit token creation, transfers (single and
+  multi-recipient), burns, buffer deposits and withdrawals, wallet creation, shadow-wallet claims
+  and `knishio_client_propose_molecule()`. It now derives them from the decrypted reply as the
+  original operation. A reply that cannot be decrypted fails closed with `CipherHash response could
+  not be decrypted`, unless the envelope already carried GraphQL errors.
+- `knishio_client_create_token()` released only the atom array of its molecule, leaking the C and I
+  atoms and their meta on every call; it now frees them.
 
 ## [1.2.1] — 2026-09-23
 
