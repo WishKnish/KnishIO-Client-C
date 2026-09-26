@@ -14,6 +14,17 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
+## [Unreleased]
+
+### Security
+
+- No behaviour change: `knishio_molecule_check()` already ignores a `signingWallet` meta and
+  compares the signer with atoms[0]'s `walletAddress`. The new `SigningWalletForgery` ctest pins
+  that with the cross-SDK fixture `tests/fixtures/signing-wallet-forgery.json` (built with JS
+  1.2.1): a molecule that claims one wallet's address but carries another wallet's signature, which
+  a verifier honouring the meta (and an offline verifier such as knishproof built on one) reports
+  as valid, must fail as `KNISHIO_ERROR_SIGNATURE_MISMATCH`.
+
 ## [1.2.1] — 2026-09-23
 
 ### Added

@@ -626,6 +626,23 @@ if(KNISHIO_BUILD_TESTS)
     add_test(NAME MoleculeFromJson COMMAND molecule_from_json)
     set_tests_properties(MoleculeFromJson PROPERTIES LABELS "vectors;parity;signature")
 
+    # The cross-SDK signingWallet forgery fixture (built with JS 1.2.1): knishio_molecule_check()
+    # accepts B's normally signed molecule and rejects B's signature under victim A's address even
+    # when atoms[0] names B in a signingWallet meta. Fixture path is baked in.
+    add_executable(signing_wallet_forgery tests/signing_wallet_forgery.c)
+    target_link_libraries(signing_wallet_forgery PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(signing_wallet_forgery PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(signing_wallet_forgery PRIVATE
+        _GNU_SOURCE
+        KNISHIO_SIGNING_WALLET_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/signing-wallet-forgery.json"
+    )
+    add_test(NAME SigningWalletForgery COMMAND signing_wallet_forgery)
+    set_tests_properties(SigningWalletForgery PROPERTIES LABELS "vectors;parity;signature")
+
     # Secret storage envelope tests (AES-256-GCM + PBKDF2 cross-SDK envelope, camelCase metadata, memory and file backends)
     add_executable(test_secret_storage tests/test_secret_storage.c)
     target_link_libraries(test_secret_storage PRIVATE
