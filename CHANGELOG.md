@@ -14,6 +14,65 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
+## [1.2.3] — 2026-09-28
+
+### Fixed
+
+- `knishio_client_replenish_token()` now mints with the C atom validator 0.6.0+ accepts
+  (`C(action "add") + I`, signed by the USER wallet at the ContinuID pointer, crediting the
+  identity's existing wallet for the token or a new one; contract 9.1). It called the
+  `RequestTokens` faucet through an invalid client cast. It gains `units`/`unit_count` for
+  stackable and non-fungible tokens; a stackable wallet without new units is refused with
+  `KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT`, a fungible amount ≤ 0 with
+  `KNISHIO_ERROR_NEGATIVE_AMOUNT`. New builder: `knishio_molecule_init_replenish()`.
+- `knishio_client_fuse_token()` (now declared in `knishio/operations/token.h`, with the cross-SDK
+  `bundleHash, tokenSlug, newTokenUnit, fusedTokenUnitIds` parameters) builds the stackable fusion
+  validator 0.6.0+ accepts: `V(source, -B)`, `V(burn, +(M-1))`, `F(recipient, +1, new unit whose
+  metas list the fused units)`, `V(remainder, +(B-M))`, no ContinuID atom (contract 9.2). It
+  emitted one negative F atom per unit with no metaType. Fewer than two units, a unit the source
+  does not hold, or a new id the source already holds is refused locally with
+  `KNISHIO_ERROR_TRANSFER_BALANCE` (`knishio_molecule_fusion_error()` gives the reason). New
+  builder: `knishio_molecule_init_fuse_token()`.
+- `knishio_client_claim_shadow_wallet()` without a `batch_id` claims the first shadow wallet
+  `knishio_client_query_wallets()` lists for the token, as the JS SDK does; it sent no batch id,
+  which the validator rejects ("Shadow wallet claim requires batch_id"). No shadow wallet →
+  `KNISHIO_ERROR_WALLET_SHADOW`, nothing sent. The claimed wallet gets a fresh position instead of
+  a fixed one.
+- `knishio_client_query_wallets()` sends the validator's `Wallet(bundleHash, token)` list query
+  through the client's GraphQL transport, defaults to the client's own bundle, and reads batch ids,
+  shadow flags and token units. It sent a `Wallets(…, token, includeShadow)` query the validator
+  does not have, through an invalid client cast.
+- `knishio_client_withdraw_buffer_token()` spends the identity's buffer wallet
+  (`Balance(type: "buffer")`) instead of its regular wallet, which validator 0.6.1 rejects
+  ("B-isotope: debit source is not a buffer wallet"); the remainder keeps the source's batch id at
+  a fresh position and the recipient gets a fresh batch id only when the source has one (contract
+  9.6). New: `knishio_client_query_balance_wallet_of_type()`; Balance wallets now carry `batchId`.
+- Every high-level operation that builds its own molecule (create token, replenish, fuse,
+  transfer, multi-transfer, burn, buffer deposit/withdraw, create wallet, claim shadow wallet,
+  create meta, policy, rule) now runs `knishio_molecule_check()` on it and sends nothing when it
+  fails, through the new `knishio_client_submit_molecule()` (contract 9.7). The raw
+  `knishio_client_propose_molecule()` stays unchecked, for deliberate negative tests.
+  `knishio_molecule_check()` reports a USER-signed molecule without a ContinuID atom as
+  `KNISHIO_ERROR_ATOMS_MISSING` (was `KNISHIO_ERROR_INVALID_STATE`), as JS `AtomsMissingException`.
+- `knishio_client_create_meta()` builds `M + I` signed at the ContinuID pointer; it sent an
+  unhashed, unsigned M-only molecule, which a USER-signed molecule without an I atom must never be.
+- Packaging (from 1.2.2's release package): the package now works with `find_package`,
+  `pkg-config` and plain `-I`/`-L`: dependencies link through imported targets instead of host
+  paths, the config file finds OpenSSL and uses `CMakeFindDependencyMacro`, `knishio-client.pc` is
+  relocatable and requires `libcjson`, and three installed headers compile on their own. CI checks
+  every consumer path on a relocated copy of the package before a Release exists.
+- The Release carries `knishio-client-c-<ver>-src.tar.gz`, built from the tagged tree including the
+  `external/mlkem-native` submodule; GitHub's own source archive omits the submodule and cannot
+  build. The tarball's symlink members now always have mode `0777`, so macOS and Linux produce
+  byte-identical tarballs (they differed only in symlink modes).
+
+### Notes
+
+- `self-test.c` P1 consumes the `token_replenish`, `stackable_fusion_conservation` and
+  `buffer_withdraw_fresh_remainder` vectors (plus each fusion case from a batch-bearing source).
+- New ctest `PhaseBClientOps` drives replenish, fuse, claim, withdraw and the pre-submit check
+  against a loopback GraphQL stub.
+
 ## [1.2.2] — 2026-09-26
 
 ### Fixed
@@ -486,7 +545,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.2.2...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.2.3...HEAD
+[1.2.3]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.3
 [1.2.2]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.2
 [1.2.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.1
 [1.2.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.0
