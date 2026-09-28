@@ -1,0 +1,1 @@
+operations/graphql_operations.h  # defines knishio_transfer_recipient_t with different members than operations/transfer.h, which it reaches through its own includes (query/queries.h -> graphql.h -> knishio.h -> client_ops.h); header of src/operations/graphql_operations.c, which the library does not compile

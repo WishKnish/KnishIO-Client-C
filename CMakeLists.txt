@@ -37,99 +37,104 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 endif()
 
-# Dependencies
+# Dependencies. Each one is linked through an imported target, so the exported CMake package
+# names targets rather than this machine's library paths. For each dependency found,
+# KNISHIO_CONFIG_DEPS collects the line cmake/KnishIOClientConfig.cmake.in replays to recreate
+# that target on the consumer's machine, and KNISHIO_PC_REQUIRES / KNISHIO_PC_LIBS_PRIVATE
+# collect its knishio-client.pc contribution.
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
-# Try to find liboqs
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBOQS liboqs)
+set(KNISHIO_CONFIG_DEPS "")
+set(KNISHIO_PC_REQUIRES "")
+set(KNISHIO_PC_LIBS_PRIVATE "")
 
-# Try to find libwebsockets
-pkg_check_modules(LIBWEBSOCKETS libwebsockets)
-
+# liboqs (optional)
+pkg_check_modules(LIBOQS IMPORTED_TARGET liboqs)
 if(LIBOQS_FOUND)
     message(STATUS "liboqs found via pkg-config: ${LIBOQS_VERSION}")
     set(HAVE_LIBOQS TRUE)
-    # Add library directories for pkg-config found libraries
-    if(LIBOQS_LIBRARY_DIRS)
-        link_directories(${LIBOQS_LIBRARY_DIRS})
-        message(STATUS "liboqs library directories: ${LIBOQS_LIBRARY_DIRS}")
-    endif()
+    set(KNISHIO_LIBOQS_TARGET PkgConfig::LIBOQS)
+    string(APPEND KNISHIO_CONFIG_DEPS "pkg_check_modules(LIBOQS REQUIRED IMPORTED_TARGET liboqs)\n")
+    list(APPEND KNISHIO_PC_LIBS_PRIVATE -loqs)
 else()
     message(STATUS "liboqs not found via pkg-config, trying find_package")
     find_package(liboqs CONFIG)
     if(liboqs_FOUND)
-        set(LIBOQS_LIBRARIES liboqs::oqs)
-        set(LIBOQS_INCLUDE_DIRS "")
         set(HAVE_LIBOQS TRUE)
+        set(KNISHIO_LIBOQS_TARGET liboqs::oqs)
+        string(APPEND KNISHIO_CONFIG_DEPS "find_dependency(liboqs CONFIG)\n")
+        list(APPEND KNISHIO_PC_LIBS_PRIVATE -loqs)
         message(STATUS "liboqs found via find_package")
     else()
         message(WARNING "liboqs not found, ML-KEM-768 and XMSS will not be available")
-        set(LIBOQS_LIBRARIES "")
-        set(LIBOQS_INCLUDE_DIRS "")
         set(HAVE_LIBOQS FALSE)
+        set(KNISHIO_LIBOQS_TARGET "")
     endif()
 endif()
 
-# Configure libwebsockets
+# libwebsockets (optional)
+pkg_check_modules(LIBWEBSOCKETS IMPORTED_TARGET libwebsockets)
 if(LIBWEBSOCKETS_FOUND)
     message(STATUS "libwebsockets found: ${LIBWEBSOCKETS_VERSION}")
     set(HAVE_LIBWEBSOCKETS TRUE)
-    # Add library directories for pkg-config found libraries
-    if(LIBWEBSOCKETS_LIBRARY_DIRS)
-        link_directories(${LIBWEBSOCKETS_LIBRARY_DIRS})
-        message(STATUS "libwebsockets library directories: ${LIBWEBSOCKETS_LIBRARY_DIRS}")
-    endif()
+    set(KNISHIO_LWS_TARGET PkgConfig::LIBWEBSOCKETS)
+    string(APPEND KNISHIO_CONFIG_DEPS "pkg_check_modules(LIBWEBSOCKETS REQUIRED IMPORTED_TARGET libwebsockets)\n")
+    list(APPEND KNISHIO_PC_LIBS_PRIVATE -lwebsockets)
 else()
     message(WARNING "libwebsockets not found, WebSocket subscriptions will use stub implementation")
     set(HAVE_LIBWEBSOCKETS FALSE)
+    set(KNISHIO_LWS_TARGET "")
 endif()
 
-# Find other dependencies
-pkg_check_modules(CURL libcurl)
-if(NOT CURL_FOUND)
+# curl (required)
+pkg_check_modules(CURL IMPORTED_TARGET libcurl)
+if(CURL_FOUND)
+    set(KNISHIO_CURL_TARGET PkgConfig::CURL)
+    string(APPEND KNISHIO_CONFIG_DEPS "pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)\n")
+    list(APPEND KNISHIO_PC_REQUIRES libcurl)
+else()
     find_package(CURL REQUIRED)
-    set(CURL_LIBRARIES ${CURL_LIBRARIES})
-else()
-    # Add library directories for pkg-config found libraries
-    if(CURL_LIBRARY_DIRS)
-        link_directories(${CURL_LIBRARY_DIRS})
-        message(STATUS "curl library directories: ${CURL_LIBRARY_DIRS}")
-    endif()
+    set(KNISHIO_CURL_TARGET CURL::libcurl)
+    string(APPEND KNISHIO_CONFIG_DEPS "find_dependency(CURL)\n")
+    list(APPEND KNISHIO_PC_LIBS_PRIVATE -lcurl)
 endif()
 
-# Find cjson for JSON handling
-pkg_check_modules(CJSON libcjson)
-if(NOT CJSON_FOUND)
-    pkg_check_modules(CJSON cjson)
-endif()
-
+# cJSON (required; the public policy headers include <cjson/cJSON.h>). Debian and Homebrew
+# name the pkg-config module libcjson; some distributions name it cjson.
+pkg_check_modules(CJSON IMPORTED_TARGET libcjson)
 if(CJSON_FOUND)
-    # Add library directories for pkg-config found libraries
-    if(CJSON_LIBRARY_DIRS)
-        link_directories(${CJSON_LIBRARY_DIRS})
-        message(STATUS "cjson library directories: ${CJSON_LIBRARY_DIRS}")
-    endif()
+    set(KNISHIO_CJSON_MODULE libcjson)
 else()
-    message(STATUS "cjson not found via pkg-config, will use bundled implementation")
-    set(CJSON_BUNDLED TRUE)
-    set(CJSON_LIBRARIES "")
-    set(CJSON_INCLUDE_DIRS "")
+    pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET cjson)
+    set(KNISHIO_CJSON_MODULE cjson)
 endif()
+string(APPEND KNISHIO_CONFIG_DEPS "pkg_check_modules(CJSON REQUIRED IMPORTED_TARGET ${KNISHIO_CJSON_MODULE})\n")
+list(APPEND KNISHIO_PC_REQUIRES ${KNISHIO_CJSON_MODULE})
 
-# Find GMP for BigInt arithmetic (required for wallet key derivation)
+# GMP for BigInt arithmetic (required for wallet key derivation). The package config
+# recreates KnishIO::GMP the same way on the consumer's machine.
 find_library(GMP_LIBRARY NAMES gmp libgmp)
 find_path(GMP_INCLUDE_DIR NAMES gmp.h)
 
 if(GMP_LIBRARY AND GMP_INCLUDE_DIR)
     set(GMP_FOUND TRUE)
-    set(GMP_LIBRARIES ${GMP_LIBRARY})
-    set(GMP_INCLUDE_DIRS ${GMP_INCLUDE_DIR})
     message(STATUS "GMP found: ${GMP_LIBRARY}")
 else()
     set(GMP_FOUND FALSE)
     message(FATAL_ERROR "GMP library not found. Please install GMP development package (libgmp-dev on Ubuntu/Debian, gmp-devel on CentOS/RHEL)")
+endif()
+add_library(KnishIO::GMP UNKNOWN IMPORTED)
+set_target_properties(KnishIO::GMP PROPERTIES
+    IMPORTED_LOCATION "${GMP_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${GMP_INCLUDE_DIR}"
+)
+pkg_check_modules(GMP_PC QUIET gmp)
+if(GMP_PC_FOUND)
+    list(APPEND KNISHIO_PC_REQUIRES gmp)
+else()
+    list(APPEND KNISHIO_PC_LIBS_PRIVATE -lgmp)
 endif()
 
 # Conditional WebSocket sources
@@ -270,11 +275,6 @@ add_library(KnishIO::ClientStatic ALIAS knishio-client-static)
 target_include_directories(knishio-client PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
-    ${LIBOQS_INCLUDE_DIRS}
-    ${CURL_INCLUDE_DIRS}
-    ${CJSON_INCLUDE_DIRS}
-    ${GMP_INCLUDE_DIRS}
-    ${LIBWEBSOCKETS_INCLUDE_DIRS}
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem/src>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/test>
@@ -283,11 +283,6 @@ target_include_directories(knishio-client PUBLIC
 target_include_directories(knishio-client-static PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
-    ${LIBOQS_INCLUDE_DIRS}
-    ${CURL_INCLUDE_DIRS}
-    ${CJSON_INCLUDE_DIRS}
-    ${GMP_INCLUDE_DIRS}
-    ${LIBWEBSOCKETS_INCLUDE_DIRS}
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem/src>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/mlkem>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/mlkem-native/test>
@@ -314,16 +309,13 @@ if(HAVE_LIBOQS)
     target_compile_definitions(knishio-client-static PUBLIC HAVE_LIBOQS=1)
 endif()
 
-# Find OpenSSL for liboqs compatibility
-find_package(OpenSSL REQUIRED)
-
 # Link libraries
 target_link_libraries(knishio-client PUBLIC
-    ${LIBOQS_LIBRARIES}
-    ${CURL_LIBRARIES}
-    ${CJSON_LIBRARIES}
-    ${GMP_LIBRARIES}
-    ${LIBWEBSOCKETS_LIBRARIES}
+    ${KNISHIO_LIBOQS_TARGET}
+    ${KNISHIO_CURL_TARGET}
+    PkgConfig::CJSON
+    KnishIO::GMP
+    ${KNISHIO_LWS_TARGET}
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
@@ -331,11 +323,11 @@ target_link_libraries(knishio-client PUBLIC
 )
 
 target_link_libraries(knishio-client-static PUBLIC
-    ${LIBOQS_LIBRARIES}
-    ${CURL_LIBRARIES}
-    ${CJSON_LIBRARIES}
-    ${GMP_LIBRARIES}
-    ${LIBWEBSOCKETS_LIBRARIES}
+    ${KNISHIO_LIBOQS_TARGET}
+    ${KNISHIO_CURL_TARGET}
+    PkgConfig::CJSON
+    KnishIO::GMP
+    ${KNISHIO_LWS_TARGET}
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
@@ -733,6 +725,8 @@ write_basic_package_version_file(
     COMPATIBILITY SameMajorVersion
 )
 
+# KNISHIO_CONFIG_DEPS (collected by the dependency discovery above) is substituted into the
+# template, so the installed config recreates every dependency target the exports link to.
 configure_package_config_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/KnishIOClientConfig.cmake.in
     KnishIOClientConfig.cmake
@@ -745,7 +739,13 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/KnishIOClient
 )
 
-# pkg-config file
+# pkg-config file. prefix is derived from the .pc file's own location (${pcfiledir}), so the
+# installed package works wherever it is extracted. Requires and Libs.private come from the
+# dependency discovery above.
+file(RELATIVE_PATH KNISHIO_PC_RELPREFIX "/${CMAKE_INSTALL_LIBDIR}/pkgconfig" "/")
+string(REGEX REPLACE "/$" "" KNISHIO_PC_RELPREFIX "${KNISHIO_PC_RELPREFIX}")
+list(JOIN KNISHIO_PC_REQUIRES ", " KNISHIO_PC_REQUIRES)
+list(JOIN KNISHIO_PC_LIBS_PRIVATE " " KNISHIO_PC_LIBS_PRIVATE)
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/knishio-client.pc.in
     knishio-client.pc

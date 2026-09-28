@@ -11,6 +11,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+/* knishio_error_t and knishio_client_config_t. knishio.h defines both before it includes
+ * this header, so the include guard makes the cycle harmless in either order. */
+#include "knishio/knishio.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,8 +21,6 @@ extern "C" {
 
 /* Forward declarations */
 typedef struct knishio_client knishio_client_t;
-
-/* knishio_error_t and knishio_client_config_t will be available when included via knishio.h */
 
 /* Forward declarations for auth integration */
 typedef struct knishio_auth_token knishio_auth_token_t;

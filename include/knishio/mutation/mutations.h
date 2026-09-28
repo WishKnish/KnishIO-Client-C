@@ -38,6 +38,9 @@ extern "C" {
 typedef struct knishio_graphql_client knishio_graphql_client_t;
 typedef struct knishio_molecule knishio_molecule_t;
 typedef struct knishio_wallet knishio_wallet_t;
+/* Buffer-token responses: no response header defines these; they are used only by pointer. */
+typedef struct knishio_response_deposit_buffer_token knishio_response_deposit_buffer_token_t;
+typedef struct knishio_response_withdraw_buffer_token knishio_response_withdraw_buffer_token_t;
 
 /* Mutation parameter structures */
 

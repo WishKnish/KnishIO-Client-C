@@ -1,10 +1,32 @@
 # KnishIO Client SDK Package Configuration
+#
+# Targets: KnishIO::knishio-client (shared) and KnishIO::knishio-client-static.
+# Their link interfaces name dependency targets (OpenSSL::, Threads::, PkgConfig::<PREFIX>,
+# KnishIO::GMP) rather than library paths; this file recreates each one on the consumer's
+# machine before loading the targets.
 
 @PACKAGE_INIT@
 
-include("${CMAKE_CURRENT_LIST_DIR}/KnishIOClientTargets.cmake")
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+find_dependency(OpenSSL)
+find_dependency(PkgConfig)
+@KNISHIO_CONFIG_DEPS@
+if(NOT TARGET KnishIO::GMP)
+    find_library(KNISHIO_GMP_LIBRARY NAMES gmp libgmp)
+    find_path(KNISHIO_GMP_INCLUDE_DIR NAMES gmp.h)
+    if(NOT KNISHIO_GMP_LIBRARY OR NOT KNISHIO_GMP_INCLUDE_DIR)
+        set(KnishIOClient_FOUND FALSE)
+        set(KnishIOClient_NOT_FOUND_MESSAGE "GMP (libgmp and gmp.h) not found")
+        return()
+    endif()
+    add_library(KnishIO::GMP UNKNOWN IMPORTED)
+    set_target_properties(KnishIO::GMP PROPERTIES
+        IMPORTED_LOCATION "${KNISHIO_GMP_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${KNISHIO_GMP_INCLUDE_DIR}"
+    )
+endif()
 
-# Required dependencies
-find_dependency(Threads REQUIRED)
+include("${CMAKE_CURRENT_LIST_DIR}/KnishIOClientTargets.cmake")
 
 check_required_components(KnishIOClient)

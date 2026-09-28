@@ -72,6 +72,17 @@ jobs:
       - name: Unit tests (knishio_tests)
         run: ctest --test-dir build --output-on-failure
 
+      # The release package's consumer gate on every push, not only at release: install to a
+      # staging tree as publish.yml does (Unity stripped) and build packaging/consumer against
+      # a relocated copy of it (headers alone, -I/-L, pkg-config, find_package shared + static).
+      - name: 'Consumer build gate (relocated package: headers, -I/-L, pkg-config, find_package)'
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/stage/pkg"
+          cmake --install build --prefix "$STAGE"
+          rm -rf "$STAGE/include/unity" "$STAGE/lib/libunity.a" "$STAGE/lib/cmake/unity"
+          bash packaging/check-release-package.sh "$STAGE" "$(sed -n '/^project(/,/)/s/^ *VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+
       # The cycle-115 lint gate (clang-tidy bugprone-*/performance-* over the first-party
       # sources, mlkem-native excluded). Last so a version-drift failure is cleanly isolated.
       - name: clang-tidy (lint gate)

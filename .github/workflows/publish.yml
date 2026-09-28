@@ -19,11 +19,12 @@
 # tag-triggered deploys, and there is no registry-side trusted-publisher config here that would
 # need one. If an environment is added later for its own sake, it must explicitly allow tag refs.
 #
-# Source distribution: GitHub already auto-attaches a source zip/tarball to every Release, so
-# this workflow does not build a custom source archive. That auto-generated archive (like any
-# plain `git archive` of a tag) does NOT include the external/mlkem-native submodule (~100MB of
-# pinned upstream history) -- building from it still requires `git submodule update --init`,
-# exactly as the README already documents via `git clone --recursive`. Nothing changes there.
+# Source distribution: the Release also carries knishio-client-c-<ver>-src.tar.gz, made by
+# .github/scripts/make-source-tarball.py from the tagged tree including the pinned
+# external/mlkem-native submodule (tracked files only, no git history), with a SHAKE256SUMS
+# manifest inside. The `source` job builds it and runs c_self_test from an extracted copy,
+# isolated from the checkout, before the Release exists. GitHub's automatic "Source code"
+# archive (like any plain `git archive`) omits the submodule and cannot build.
 name: Publish
 
 on:
@@ -170,23 +171,17 @@ jobs:
           rm -rf "dist/$STAGE_NAME/include/unity" "dist/$STAGE_NAME/lib/libunity.a" "dist/$STAGE_NAME/lib/cmake/unity"
           cp LICENSE README.md "dist/$STAGE_NAME/"
 
+      # Never release a package a consumer cannot build against. packaging/check-release-package.sh
+      # copies the staging tree to a new path and requires: no build-host path in the CMake
+      # config or the .pc file, every installed header compiling alone, and packaging/consumer
+      # building and printing the expected bundle hash via plain -I/-L, pkg-config, and
+      # find_package (shared and static). It only reads the staging tree, so SHAKE256SUMS and
+      # the tarball below still cover exactly what was installed.
+      - name: 'Consumer build gate (relocated package: headers, -I/-L, pkg-config, find_package)'
+        run: bash packaging/check-release-package.sh "dist/$STAGE_NAME" "${{ needs.version-gate.outputs.version }}"
+
       - name: Compute SHAKE256SUMS (FIPS 202, matches the validator Makefile pattern)
-        run: |
-          cd "dist/$STAGE_NAME"
-          python3 <<'PY'
-          import hashlib, os
-          lines = []
-          for root, _dirs, files in os.walk('.'):
-              for f in sorted(files):
-                  if f == 'SHAKE256SUMS':
-                      continue
-                  p = os.path.join(root, f)
-                  rel = os.path.relpath(p, '.')
-                  h = hashlib.shake_256(open(p, 'rb').read()).hexdigest(32)
-                  lines.append(f'{h}  {rel}')
-          lines.sort(key=lambda l: l.split('  ', 1)[1])
-          open('SHAKE256SUMS', 'w').write('\n'.join(lines) + '\n')
-          PY
+        run: python3 .github/scripts/shake256sums.py "dist/$STAGE_NAME"
 
       - name: Create tarball
         run: tar czf "dist/${STAGE_NAME}.tar.gz" -C dist "$STAGE_NAME"
@@ -197,9 +192,58 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  # The buildable source distribution: the tagged tree plus the pinned external/mlkem-native
+  # submodule, which GitHub's automatic "Source code" archive omits. It is extracted outside
+  # the checkout and built and self-tested from there, with the runner's default compiler
+  # (what a source consumer gets), before the Release can exist.
+  source:
+    name: source tarball (build + self-test from the extracted archive)
+    needs: version-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive   # the tarball must carry external/mlkem-native
+          persist-credentials: false
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libcurl4-openssl-dev libssl-dev \
+            libgmp-dev libcjson-dev
+
+      - name: Make source tarball
+        run: python3 .github/scripts/make-source-tarball.py --name knishio-client-c --version "${{ needs.version-gate.outputs.version }}" --out dist
+
+      # c_self_test runs from the extracted source root, so its vector fixtures
+      # (tests/fixtures/*.json) come from the tarball too.
+      - name: Build + self-test from the extracted tarball (isolated from the checkout)
+        env:
+          VERSION: ${{ needs.version-gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          SRC="$RUNNER_TEMP/src/knishio-client-c-$VERSION-src"
+          mkdir -p "$RUNNER_TEMP/src" "$RUNNER_TEMP/sr"
+          tar -xzf "dist/knishio-client-c-$VERSION-src.tar.gz" -C "$RUNNER_TEMP/src"
+          cmake -S "$SRC" -B "$RUNNER_TEMP/src-build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKNISHIO_BUILD_TESTS=OFF \
+            -DKNISHIO_BUILD_EXAMPLES=OFF
+          cmake --build "$RUNNER_TEMP/src-build" -j"$(nproc)"
+          cd "$SRC"
+          KNISHIO_DISABLE_CROSS_VALIDATION=true \
+          KNISHIO_SHARED_RESULTS="$RUNNER_TEMP/sr" \
+            "$RUNNER_TEMP/src-build/c_self_test"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: source
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   release:
     name: create GitHub Release
-    needs: [version-gate, package]
+    needs: [version-gate, package, source]
     if: github.event_name == 'push'   # dispatch = dry run; never creates a Release
     runs-on: ubuntu-latest
     steps:

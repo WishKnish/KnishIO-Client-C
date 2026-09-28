@@ -1,16 +1,17 @@
-prefix=@CMAKE_INSTALL_PREFIX@
+prefix=${pcfiledir}/@KNISHIO_PC_RELPREFIX@
 exec_prefix=${prefix}
-libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
 includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 
 Name: KnishIO Client C SDK
 Description: @PROJECT_DESCRIPTION@
 Version: @PROJECT_VERSION@
 URL: https://github.com/KnishIO/KnishIO-Client-SDK
-Requires: libcurl, cjson
+Requires: @KNISHIO_PC_REQUIRES@
+Requires.private: openssl
 
 Libs: -L${libdir} -lknishio-client
-Libs.private: -lm -lpthread @GMP_LIBRARIES@ @LIBOQS_LIBRARIES@
+Libs.private: -lm -lpthread @KNISHIO_PC_LIBS_PRIVATE@
 Cflags: -I${includedir}
 
 # Feature flags for dependent packages
