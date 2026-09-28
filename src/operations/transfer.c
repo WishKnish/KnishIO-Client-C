@@ -10,6 +10,7 @@
 #include "knishio/json/parser.h"
 #include "knishio/response/response_wallet_list.h"  /* knishio_response_wallet_list_to_client_wallet */
 #include "knishio/client_ops.h"  /* knishio_client_get_source_wallet_continuid, execute_graphql */
+#include "operations_internal.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -17,11 +18,11 @@
 
 /* QueryBalance GraphQL query template. Selects tokenUnits { id name metas } so
  * query_balance_wallet reads stackable units back (validator's Wallet.tokenUnits
- * resolver, gap SDK-001 Phase 1). resolve_token_wallet shares this query and simply
- * ignores the extra field. */
+ * resolver, gap SDK-001 Phase 1). `type` selects buffer rows ("buffer") or regular rows
+ * (absent, the default) — validator 0.6.1, contract 9.6. */
 static const char* QUERY_BALANCE =
-    "query QueryBalance($address: String, $bundleHash: String, $token: String) {"
-    "  Balance(address: $address, bundleHash: $bundleHash, token: $token) {"
+    "query QueryBalance($address: String, $bundleHash: String, $token: String, $type: String) {"
+    "  Balance(address: $address, bundleHash: $bundleHash, token: $token, type: $type) {"
     "    address"
     "    bundleHash"
     "    tokenSlug"
@@ -80,7 +81,6 @@ knishio_error_t knishio_client_transfer_tokens(
     char* tok_position = NULL;
     char* tok_amount = NULL;
     knishio_molecule_t* molecule = NULL;
-    char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
 
     /* 1. Resolve the client secret + bundle via the USER ContinuID wallet. */
@@ -202,30 +202,9 @@ knishio_error_t knishio_client_transfer_tokens(
         goto cleanup;
     }
 
-    /* 8. Serialize + submit via ProposeMolecule. */
-    {
-        char* molecule_json = NULL;
-        error = knishio_molecule_to_json(molecule, &molecule_json);
-        if (error != KNISHIO_SUCCESS) {
-            goto cleanup;
-        }
-        size_t var_len = strlen(molecule_json) + 32;
-        variables = knishio_malloc(var_len);
-        if (!variables) {
-            knishio_free(molecule_json);
-            error = KNISHIO_ERROR_MEMORY;
-            goto cleanup;
-        }
-        snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
-        knishio_free(molecule_json);
-    }
-    {
-        knishio_graphql_operation_t op = {
-            .name = "ProposeMolecule", .query = PROPOSE_MOLECULE_MUTATION,
-            .variables_json = variables, .requires_auth = true, .is_mutation = true
-        };
-        error = knishio_client_execute_graphql(client, &op, &response);
-    }
+    /* 8. Check (contract 9.7) + submit via ProposeMolecule. */
+    error = knishio_client_submit_molecule(client, molecule, "ProposeMolecule",
+                                           PROPOSE_MOLECULE_MUTATION, &response);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -252,7 +231,6 @@ knishio_error_t knishio_client_transfer_tokens(
 
 cleanup:
     if (response) knishio_graphql_response_free(response);
-    if (variables) knishio_free(variables);
     if (molecule) knishio_molecule_free(molecule);
     if (remainder_position) knishio_free(remainder_position);
     if (tok_position) knishio_free(tok_position);
@@ -291,7 +269,6 @@ knishio_error_t knishio_client_transfer_tokens_multi(
     char* tok_position = NULL;
     char* tok_amount = NULL;
     knishio_molecule_t* molecule = NULL;
-    char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
 
     amounts = knishio_calloc(n, sizeof(int));
@@ -446,30 +423,9 @@ knishio_error_t knishio_client_transfer_tokens_multi(
         goto cleanup;
     }
 
-    /* 8. Serialize + submit via ProposeMolecule. */
-    {
-        char* molecule_json = NULL;
-        error = knishio_molecule_to_json(molecule, &molecule_json);
-        if (error != KNISHIO_SUCCESS) {
-            goto cleanup;
-        }
-        size_t var_len = strlen(molecule_json) + 32;
-        variables = knishio_malloc(var_len);
-        if (!variables) {
-            knishio_free(molecule_json);
-            error = KNISHIO_ERROR_MEMORY;
-            goto cleanup;
-        }
-        snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
-        knishio_free(molecule_json);
-    }
-    {
-        knishio_graphql_operation_t op = {
-            .name = "ProposeMolecule", .query = PROPOSE_MOLECULE_MUTATION,
-            .variables_json = variables, .requires_auth = true, .is_mutation = true
-        };
-        error = knishio_client_execute_graphql(client, &op, &response);
-    }
+    /* 8. Check (contract 9.7) + submit via ProposeMolecule. */
+    error = knishio_client_submit_molecule(client, molecule, "ProposeMolecule",
+                                           PROPOSE_MOLECULE_MUTATION, &response);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -496,7 +452,6 @@ knishio_error_t knishio_client_transfer_tokens_multi(
 
 cleanup:
     if (response) knishio_graphql_response_free(response);
-    if (variables) knishio_free(variables);
     if (molecule) knishio_molecule_free(molecule);
     if (remainder_position) knishio_free(remainder_position);
     if (tok_position) knishio_free(tok_position);
@@ -603,6 +558,15 @@ knishio_error_t knishio_client_query_balance_wallet(
     const char* token,
     knishio_wallet_t** wallet
 ) {
+    return knishio_client_query_balance_wallet_of_type(client, token, NULL, wallet);
+}
+
+knishio_error_t knishio_client_query_balance_wallet_of_type(
+    knishio_client_t* client,
+    const char* token,
+    const char* type,
+    knishio_wallet_t** wallet
+) {
     if (!client || !token || !wallet) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
@@ -620,9 +584,14 @@ knishio_error_t knishio_client_query_balance_wallet(
         return KNISHIO_ERROR_INVALID_STATE;
     }
 
-    char variables[256];
-    snprintf(variables, sizeof(variables),
-             "{\"bundleHash\":\"%s\",\"token\":\"%s\"}", id->bundle_hash, token);
+    char variables[320];
+    if (type) {
+        snprintf(variables, sizeof(variables),
+                 "{\"bundleHash\":\"%s\",\"token\":\"%s\",\"type\":\"%s\"}", id->bundle_hash, token, type);
+    } else {
+        snprintf(variables, sizeof(variables),
+                 "{\"bundleHash\":\"%s\",\"token\":\"%s\"}", id->bundle_hash, token);
+    }
     knishio_wallet_free(id);
 
     /* Balance reads are auth-gated by the validator -> requires_auth=true fails fast (KNISHIO_ERROR_AUTH)
@@ -737,7 +706,6 @@ knishio_error_t knishio_client_burn_tokens(
     char* tok_position = NULL;
     char* tok_amount = NULL;
     knishio_molecule_t* molecule = NULL;
-    char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
 
     /* 1. Resolve the client secret + bundle via the USER ContinuID wallet. */
@@ -825,30 +793,9 @@ knishio_error_t knishio_client_burn_tokens(
         goto cleanup;
     }
 
-    /* 7. Serialize + submit via ProposeMolecule. */
-    {
-        char* molecule_json = NULL;
-        error = knishio_molecule_to_json(molecule, &molecule_json);
-        if (error != KNISHIO_SUCCESS) {
-            goto cleanup;
-        }
-        size_t var_len = strlen(molecule_json) + 32;
-        variables = knishio_malloc(var_len);
-        if (!variables) {
-            knishio_free(molecule_json);
-            error = KNISHIO_ERROR_MEMORY;
-            goto cleanup;
-        }
-        snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
-        knishio_free(molecule_json);
-    }
-    {
-        knishio_graphql_operation_t op = {
-            .name = "ProposeMolecule", .query = PROPOSE_MOLECULE_MUTATION,
-            .variables_json = variables, .requires_auth = true, .is_mutation = true
-        };
-        error = knishio_client_execute_graphql(client, &op, &response);
-    }
+    /* 7. Check (contract 9.7) + submit via ProposeMolecule. */
+    error = knishio_client_submit_molecule(client, molecule, "ProposeMolecule",
+                                           PROPOSE_MOLECULE_MUTATION, &response);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -875,7 +822,6 @@ knishio_error_t knishio_client_burn_tokens(
 
 cleanup:
     if (response) knishio_graphql_response_free(response);
-    if (variables) knishio_free(variables);
     if (molecule) knishio_molecule_free(molecule);
     if (remainder_position) knishio_free(remainder_position);
     if (tok_position) knishio_free(tok_position);
@@ -886,18 +832,13 @@ cleanup:
     return error;
 }
 
-/* Deposit tokens to buffer */
-/**
- * @brief Resolve the funded token wallet to spend from
- *
- * Mirrors steps 1-3 of knishio_client_transfer_token: USER ContinuID -> Balance(bundle,
- * token) -> a source wallet re-derived at the funded position and carrying its balance.
- * Both buffer operations need exactly this. On success the caller owns *out_user and
- * *out_source; on failure both are NULL and nothing is left allocated.
- */
-static knishio_error_t resolve_funded_source(
+/* Declared in operations_internal.h: buffer operations and fusion spend through this.
+ * Deposit spends the regular wallet (type NULL); withdraw the buffer wallet ("buffer",
+ * contract 9.6). */
+knishio_error_t knishio_resolve_funded_source(
     knishio_client_t* client,
     const char* token,
+    const char* type,
     knishio_wallet_t** out_user,
     knishio_wallet_t** out_source
 ) {
@@ -905,51 +846,35 @@ static knishio_error_t resolve_funded_source(
     *out_source = NULL;
 
     knishio_wallet_t* user = NULL;
+    knishio_wallet_t* found = NULL;
     knishio_wallet_t* source = NULL;
-    char* tok_position = NULL;
-    char* tok_amount = NULL;
-    knishio_graphql_response_t* response = NULL;
 
     knishio_error_t error = knishio_client_get_source_wallet_continuid(client, "USER", &user);
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
-
-    {
-        char vars[256];
-        snprintf(vars, sizeof(vars), "{\"bundleHash\":\"%s\",\"token\":\"%s\"}",
-                 user->bundle_hash, token);
-        knishio_graphql_operation_t op = {
-            .name = "QueryBalance", .query = QUERY_BALANCE,
-            .variables_json = vars, .requires_auth = false, .is_mutation = false
-        };
-        error = knishio_client_execute_graphql(client, &op, &response);
-        if (error != KNISHIO_SUCCESS) {
-            goto cleanup;
-        }
-        if (response->success && response->data) {
-            knishio_json_t* root = knishio_json_parse(response->data, NULL);
-            if (root) {
-                const char* p = knishio_json_get_string_path(root, "data.Balance.position");
-                const char* a = knishio_json_get_string_path(root, "data.Balance.amount");
-                if (p) tok_position = knishio_strdup(p);
-                if (a) tok_amount = knishio_strdup(a);
-                knishio_json_free(root);
-            }
-        }
-        knishio_graphql_response_free(response);
-        response = NULL;
-        if (!tok_position || strlen(tok_position) != 64 || !tok_amount) {
-            error = KNISHIO_ERROR_INVALID_RESPONSE;  /* no funded wallet for this token */
-            goto cleanup;
-        }
-    }
-
-    error = knishio_wallet_create_simple(&source, user->secret, token, tok_position);
+    error = knishio_client_query_balance_wallet_of_type(client, token, type, &found);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
-    source->balance = (double) atoi(tok_amount);
+    if (!found || !found->position || strlen(found->position) != 64) {
+        error = KNISHIO_ERROR_BALANCE_INSUFFICIENT;  /* no wallet of this type holds the token */
+        goto cleanup;
+    }
+
+    error = knishio_wallet_create_simple(&source, user->secret, token, found->position);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+    source->balance = found->balance;
+    if (found->batch_id) {
+        source->batch_id = knishio_strdup(found->batch_id);
+    }
+    /* The re-derived source has no units, so ownership moves from `found` as is. */
+    source->token_units = found->token_units;
+    source->token_unit_count = found->token_unit_count;
+    found->token_units = NULL;
+    found->token_unit_count = 0;
 
     *out_user = user;
     *out_source = source;
@@ -957,9 +882,7 @@ static knishio_error_t resolve_funded_source(
     source = NULL;
 
 cleanup:
-    if (response) knishio_graphql_response_free(response);
-    if (tok_position) knishio_free(tok_position);
-    if (tok_amount) knishio_free(tok_amount);
+    if (found) knishio_wallet_free(found);
     if (source) knishio_wallet_free(source);
     if (user) knishio_wallet_free(user);
     return error;
@@ -977,7 +900,6 @@ static knishio_error_t sign_and_propose(
     const char* signing_bundle,
     knishio_transfer_result_t** result
 ) {
-    char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
 
     knishio_error_t error = knishio_molecule_generate_hash(molecule);
@@ -989,29 +911,8 @@ static knishio_error_t sign_and_propose(
         goto cleanup;
     }
 
-    {
-        char* molecule_json = NULL;
-        error = knishio_molecule_to_json(molecule, &molecule_json);
-        if (error != KNISHIO_SUCCESS) {
-            goto cleanup;
-        }
-        size_t var_len = strlen(molecule_json) + 32;
-        variables = knishio_malloc(var_len);
-        if (!variables) {
-            knishio_free(molecule_json);
-            error = KNISHIO_ERROR_MEMORY;
-            goto cleanup;
-        }
-        snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
-        knishio_free(molecule_json);
-    }
-    {
-        knishio_graphql_operation_t op = {
-            .name = "ProposeMolecule", .query = PROPOSE_MOLECULE_MUTATION,
-            .variables_json = variables, .requires_auth = true, .is_mutation = true
-        };
-        error = knishio_client_execute_graphql(client, &op, &response);
-    }
+    error = knishio_client_submit_molecule(client, molecule, "ProposeMolecule",
+                                           PROPOSE_MOLECULE_MUTATION, &response);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -1037,7 +938,6 @@ static knishio_error_t sign_and_propose(
 
 cleanup:
     if (response) knishio_graphql_response_free(response);
-    if (variables) knishio_free(variables);
     return error;
 }
 
@@ -1072,7 +972,7 @@ knishio_error_t knishio_client_deposit_buffer_token(
     char* remainder_position = NULL;
     knishio_molecule_t* molecule = NULL;
 
-    knishio_error_t error = resolve_funded_source(client, token, &user, &source);
+    knishio_error_t error = knishio_resolve_funded_source(client, token, NULL, &user, &source);
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
@@ -1131,15 +1031,15 @@ cleanup:
 }
 
 /**
- * @brief Withdraw tokens from a buffer to a recipient bundle
+ * @brief Withdraw tokens from a buffer to a recipient bundle (contract 9.6)
  *
  * Emits B(-balance) -> V(+amount) -> B(+remainder), matching JS
- * Molecule.initWithdrawBuffer. The recipient is a shadow wallet keyed by bundle, so the
- * V atom's metaId is the RECIPIENT's bundle while the remainder B atom keeps its own —
- * the reverse of the deposit case. See init_buffer_common in molecule.c.
- *
- * Replaces the same incompatible single-V-atom form described on the deposit above;
- * buffer_id is likewise gone, replaced by the recipient bundle the protocol requires.
+ * Molecule.initWithdrawBuffer. The source is the identity's BUFFER wallet
+ * (Balance(token, type: "buffer")), never the regular wallet: validator 0.6.1 rejects a B debit
+ * from a non-buffer row. The recipient is an addressless wallet keyed by bundle (its V atom's
+ * metaId is the RECIPIENT's bundle) with a fresh batch id only when the source has one; the
+ * remainder B atom goes to a FRESH position keeping the source's batch id, so no value is
+ * credited behind the consumed signing key. See init_buffer_common in molecule.c.
  */
 knishio_error_t knishio_client_withdraw_buffer_token(
     knishio_client_t* client,
@@ -1159,7 +1059,7 @@ knishio_error_t knishio_client_withdraw_buffer_token(
     char* remainder_position = NULL;
     knishio_molecule_t* molecule = NULL;
 
-    knishio_error_t error = resolve_funded_source(client, token, &user, &source);
+    knishio_error_t error = knishio_resolve_funded_source(client, token, "buffer", &user, &source);
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
@@ -1168,8 +1068,8 @@ knishio_error_t knishio_client_withdraw_buffer_token(
         goto cleanup;
     }
 
-    /* Recipient = a shadow wallet for the recipient bundle: no secret, so empty
-     * position/address; the validator keys the claimable shadow by bundle + token. */
+    /* Recipient = an addressless wallet for the recipient bundle: no secret, so empty
+     * position/address; the validator credits one of that bundle's rows (or a shadow). */
     recipient = knishio_calloc(1, sizeof(knishio_wallet_t));
     if (!recipient) {
         error = KNISHIO_ERROR_MEMORY;
@@ -1179,10 +1079,12 @@ knishio_error_t knishio_client_withdraw_buffer_token(
     recipient->bundle_hash = knishio_strdup(recipient_bundle);
     recipient->position = knishio_strdup("");
     recipient->address = knishio_strdup("");
-    if (source->batch_id) {
-        recipient->batch_id = knishio_strdup(source->batch_id);
+    if (source->batch_id && !knishio_generate_position(&recipient->batch_id)) {
+        error = KNISHIO_ERROR_CRYPTO;  /* fresh batch id, as JS initBatchId for a recipient */
+        goto cleanup;
     }
 
+    /* Remainder: a fresh position (JS sourceWallet.createRemainder), keeping the source's batch. */
     if (!knishio_generate_position(&remainder_position)) {
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
@@ -1190,6 +1092,9 @@ knishio_error_t knishio_client_withdraw_buffer_token(
     error = knishio_wallet_create_simple(&remainder, user->secret, token, remainder_position);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
+    }
+    if (source->batch_id) {
+        remainder->batch_id = knishio_strdup(source->batch_id);
     }
 
     error = knishio_molecule_create(

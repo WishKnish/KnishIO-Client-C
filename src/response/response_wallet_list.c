@@ -50,6 +50,11 @@ knishio_wallet_t* knishio_response_wallet_list_to_client_wallet(knishio_json_t *
         wallet->pubkey = knishio_strdup(pubkey);
     }
 
+    const char *batch_id = knishio_json_get_string_path(wallet_data, "batchId");
+    if (batch_id && batch_id[0]) {
+        wallet->batch_id = knishio_strdup(batch_id);
+    }
+
     const char *created_at = knishio_json_get_string_path(wallet_data, "createdAt");
     if (created_at) {
         wallet->created_at = knishio_strdup(created_at);

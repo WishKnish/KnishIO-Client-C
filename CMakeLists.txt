@@ -650,6 +650,21 @@ if(KNISHIO_BUILD_TESTS)
     add_test(NAME ProfileAuthContinuId COMMAND profile_auth_continuid)
     set_tests_properties(ProfileAuthContinuId PROPERTIES LABELS "auth;continuid" TIMEOUT 120)
 
+    # Phase B client operations (validator 0.6.x): replenish sends C(action add)+I, fuse sends
+    # V V F V, claim without a batch id claims the first shadow wallet, withdraw spends the buffer
+    # wallet into a fresh remainder, and a built molecule that fails the SDK check is never sent
+    # (the raw propose path still is). Same loopback GraphQL stub pattern as ProfileAuthContinuId.
+    add_executable(phaseb_client_ops tests/phaseb_client_ops.c)
+    target_link_libraries(phaseb_client_ops PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(phaseb_client_ops PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(phaseb_client_ops PRIVATE _GNU_SOURCE)
+    add_test(NAME PhaseBClientOps COMMAND phaseb_client_ops)
+    set_tests_properties(PhaseBClientOps PROPERTIES LABELS "phaseb;token;buffer;check" TIMEOUT 120)
+
     # Secret storage envelope tests (AES-256-GCM + PBKDF2 cross-SDK envelope, camelCase metadata, memory and file backends)
     add_executable(test_secret_storage tests/test_secret_storage.c)
     target_link_libraries(test_secret_storage PRIVATE

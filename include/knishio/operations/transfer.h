@@ -137,6 +137,28 @@ knishio_error_t knishio_client_query_balance_wallet(
 );
 
 /**
+ * @brief Query the balance wallet of a given type for the authenticated bundle + token
+ * Equivalent to JavaScript: client.queryBalance({ token, type })
+ *
+ * type "buffer" returns only buffer wallets (the rows a B atom credited); NULL or any other
+ * type returns only regular wallets (validator 0.6.1). The wallet carries address, position,
+ * balance, batchId and token units; it has no keys. A null Balance leaves *wallet NULL and
+ * returns KNISHIO_SUCCESS.
+ *
+ * @param client KnishIO client instance
+ * @param token Token slug to query
+ * @param type Wallet type ("buffer"), or NULL for the regular wallet
+ * @param wallet Output wallet (allocated, must be freed), or NULL when there is none
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_client_query_balance_wallet_of_type(
+    knishio_client_t* client,
+    const char* token,
+    const char* type,
+    knishio_wallet_t** wallet
+);
+
+/**
  * @brief Query source wallet for transfers with validation
  * Equivalent to JavaScript: client.querySourceWallet({ token, amount, type })
  * 

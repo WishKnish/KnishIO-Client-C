@@ -152,6 +152,30 @@ knishio_error_t knishio_client_claim_shadow_wallet(
     if (!params->token) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
+
+    /* No batch id given: claim the first SHADOW wallet queryWallets(token) lists (JS
+     * claimShadowWallet, contract 11.2b). The validator rejects a claim without a batch id. */
+    char* resolved_batch_id = NULL;
+    if (!params->batch_id) {
+        knishio_wallet_list_params_t wallet_params = { .bundle = NULL, .token = params->token, .include_shadow = true };
+        knishio_wallet_list_result_t* wallets = NULL;
+        knishio_error_t list_error = knishio_client_query_wallets(client, &wallet_params, &wallets);
+        if (list_error != KNISHIO_SUCCESS) {
+            return list_error;
+        }
+        for (size_t i = 0; wallets && wallets->success && i < wallets->wallet_count; i++) {
+            const knishio_wallet_t* w = wallets->wallets[i];
+            if (w && w->is_shadow && w->batch_id && w->batch_id[0]) {
+                resolved_batch_id = knishio_strdup(w->batch_id);
+                break;
+            }
+        }
+        knishio_wallet_list_result_free(wallets);
+        if (!resolved_batch_id) {
+            return KNISHIO_ERROR_WALLET_SHADOW;  /* no shadow wallet for this token */
+        }
+    }
+    const char* batch_id = params->batch_id ? params->batch_id : resolved_batch_id;
     
     /* Cycle 39 (slice 1): build the PARITY-CORRECT shadow-wallet-claim molecule (C-atom 'wallet'
      * with meta [shadowWalletClaim, then the 7 prefixed wallet* keys] + a ContinuID I-atom) via
@@ -163,7 +187,6 @@ knishio_error_t knishio_client_claim_shadow_wallet(
     knishio_wallet_t* remainder = NULL;
     char* remainder_position = NULL;
     knishio_molecule_t* molecule = NULL;
-    char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
     knishio_claim_shadow_wallet_result_t* claim_result = NULL;
 
@@ -172,20 +195,24 @@ knishio_error_t knishio_client_claim_shadow_wallet(
         (knishio_client_t*)client, "USER", &source
     );
     if (error != KNISHIO_SUCCESS) {
-        return error;
+        goto cleanup;
     }
 
-    /* The shadow wallet being claimed (caller's token; canonical claim position for this slice),
-     * from the source secret. Carry the caller's batch_id so it rides on walletBatchId. */
-    error = knishio_wallet_create_simple(
-        &claim_wallet, source->secret, params->token,
-        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-    );
+    /* The wallet the shadow balance is claimed into: a fresh position for the caller's token,
+     * carrying the shadow wallet's batch id on walletBatchId (JS: Wallet.create({ secret, token,
+     * batchId })). */
+    if (!knishio_generate_position(&remainder_position)) {
+        error = KNISHIO_ERROR_CRYPTO;
+        goto cleanup;
+    }
+    error = knishio_wallet_create_simple(&claim_wallet, source->secret, params->token, remainder_position);
+    knishio_free(remainder_position);
+    remainder_position = NULL;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
-    if (params->batch_id && !claim_wallet->batch_id) {
-        claim_wallet->batch_id = knishio_strdup(params->batch_id);
+    if (!claim_wallet->batch_id) {
+        claim_wallet->batch_id = knishio_strdup(batch_id);
     }
 
     /* Remainder (ContinuID I-atom) at a FRESH random position — the bundle's NEXT chain head. */
@@ -223,35 +250,9 @@ knishio_error_t knishio_client_claim_shadow_wallet(
         goto cleanup;
     }
 
-    /* Serialize + submit (transport/auth unverified — next slice). */
-    {
-        char* molecule_json = NULL;
-        error = knishio_molecule_to_json(molecule, &molecule_json);
-        if (error != KNISHIO_SUCCESS) {
-            goto cleanup;
-        }
-        size_t var_len = strlen(molecule_json) + 32;
-        variables = knishio_malloc(var_len);
-        if (!variables) {
-            knishio_free(molecule_json);
-            error = KNISHIO_ERROR_MEMORY;
-            goto cleanup;
-        }
-        snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
-        knishio_free(molecule_json);
-    }
-
-    {
-        knishio_graphql_operation_t operation = {
-            .name = "ClaimShadowWallet",
-            .query = CLAIM_SHADOW_WALLET_MUTATION,
-            .variables_json = variables,
-            .requires_auth = true,
-            .is_mutation = true
-        };
-        /* Submit through a proper graphql client (auth token propagates), not the old cast. */
-        error = knishio_client_execute_graphql(client, &operation, &response);
-    }
+    /* Check (contract 9.7) + submit. */
+    error = knishio_client_submit_molecule(client, molecule, "ClaimShadowWallet",
+                                           CLAIM_SHADOW_WALLET_MUTATION, &response);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -290,7 +291,7 @@ knishio_error_t knishio_client_claim_shadow_wallet(
 
 cleanup:
     if (response) knishio_graphql_response_free(response);
-    if (variables) knishio_free(variables);
+    knishio_free(resolved_batch_id);
     if (remainder_position) knishio_free(remainder_position);
     if (molecule) knishio_molecule_free(molecule);
     if (source) knishio_wallet_free(source);

@@ -8,6 +8,9 @@
 #include "knishio/client_ops.h"
 #include "knishio/graphql.h"
 #include "knishio/json/parser.h"
+#include "knishio/response/response_wallet_list.h"  /* knishio_response_wallet_list_to_client_wallet */
+
+#include <cjson/cJSON.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -24,18 +27,21 @@ static const char* CREATE_WALLET_MUTATION =
     "  }"
     "}";
 
-/* QueryWalletList GraphQL query template */
-static const char* QUERY_WALLET_LIST = 
-    "query QueryWalletList($bundle: String, $token: String, $includeShadow: Boolean) {"
-    "  Wallets(bundleHash: $bundle, token: $token, includeShadow: $includeShadow) {"
+/* QueryWalletList GraphQL query template: the validator's SDK-compatible Wallet(bundleHash,
+ * token) list (JS QueryWalletList). It lists shadow wallets too (isShadow = no address). */
+static const char* QUERY_WALLET_LIST =
+    "query QueryWalletList($bundleHash: String, $token: String) {"
+    "  Wallet(bundleHash: $bundleHash, token: $token) {"
     "    address"
     "    bundleHash"
-    "    token"
+    "    tokenSlug"
     "    amount"
     "    position"
     "    batchId"
     "    characters"
+    "    pubkey"
     "    isShadow"
+    "    tokenUnits { id name metas }"
     "  }"
     "}";
 
@@ -89,7 +95,6 @@ knishio_error_t knishio_client_create_wallet(
     knishio_wallet_t* remainder = NULL;
     char* remainder_position = NULL;
     knishio_molecule_t* molecule = NULL;
-    char* variables = NULL;
     knishio_graphql_response_t* response = NULL;
 
     /* Source wallet at the bundle's LIVE on-ledger ContinuID position (slice 2c). */
@@ -100,13 +105,16 @@ knishio_error_t knishio_client_create_wallet(
         return error;
     }
 
-    /* The new wallet being defined (caller's token + position; fall back to a canonical 64-hex
-     * position if the caller didn't supply a valid one), from the source secret. */
-    {
-        const char* new_pos = (params->position && strlen(params->position) == 64)
-            ? params->position
-            : "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
-        error = knishio_wallet_create_simple(&new_wallet, source->secret, params->token, new_pos);
+    /* The new wallet being defined: the caller's token + position, else a FRESH position (JS
+     * Wallet.create; a fixed fallback collided with every other wallet created the same way). */
+    if (params->position && strlen(params->position) == 64) {
+        error = knishio_wallet_create_simple(&new_wallet, source->secret, params->token, params->position);
+    } else if (!knishio_generate_position(&remainder_position)) {
+        error = KNISHIO_ERROR_CRYPTO;
+    } else {
+        error = knishio_wallet_create_simple(&new_wallet, source->secret, params->token, remainder_position);
+        knishio_free(remainder_position);
+        remainder_position = NULL;
     }
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -147,35 +155,8 @@ knishio_error_t knishio_client_create_wallet(
         goto cleanup;
     }
 
-    /* Serialize + submit (transport/auth unverified — next slice). */
-    {
-        char* molecule_json = NULL;
-        error = knishio_molecule_to_json(molecule, &molecule_json);
-        if (error != KNISHIO_SUCCESS) {
-            goto cleanup;
-        }
-        size_t var_len = strlen(molecule_json) + 32;
-        variables = knishio_malloc(var_len);
-        if (!variables) {
-            knishio_free(molecule_json);
-            error = KNISHIO_ERROR_MEMORY;
-            goto cleanup;
-        }
-        snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
-        knishio_free(molecule_json);
-    }
-
-    {
-        knishio_graphql_operation_t operation = {
-            .name = "CreateWallet",
-            .query = CREATE_WALLET_MUTATION,
-            .variables_json = variables,
-            .requires_auth = true,
-            .is_mutation = true
-        };
-        /* Submit through a proper graphql client (auth token propagates), not the old cast. */
-        error = knishio_client_execute_graphql(client, &operation, &response);
-    }
+    /* Check (contract 9.7) + submit. */
+    error = knishio_client_submit_molecule(client, molecule, "CreateWallet", CREATE_WALLET_MUTATION, &response);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -203,7 +184,6 @@ knishio_error_t knishio_client_create_wallet(
 
 cleanup:
     if (response) knishio_graphql_response_free(response);
-    if (variables) knishio_free(variables);
     if (remainder_position) knishio_free(remainder_position);
     if (molecule) knishio_molecule_free(molecule);
     if (source) knishio_wallet_free(source);
@@ -212,7 +192,8 @@ cleanup:
     return error;
 }
 
-/* Query list of wallets */
+/* Query list of wallets (JS queryWallets): the bundle's wallets, optionally for one token. A
+ * NULL bundle means the client's own (canonical 64-hex) bundle. */
 knishio_error_t knishio_client_query_wallets(
     knishio_client_t* client,
     const knishio_wallet_list_params_t* params,
@@ -221,32 +202,40 @@ knishio_error_t knishio_client_query_wallets(
     if (!client || !result) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Build variables JSON */
-    char variables[512] = "{";
-    bool first = true;
-    
-    if (params) {
-        if (params->bundle) {
-            strcat(variables, "\"bundle\":\"");
-            strcat(variables, params->bundle);
-            strcat(variables, "\"");
-            first = false;
+    *result = NULL;
+
+    char* own_bundle = NULL;
+    const char* bundle = params ? params->bundle : NULL;
+    if (!bundle) {
+        knishio_wallet_t* id = NULL;
+        knishio_error_t id_error = knishio_client_get_source_wallet_continuid(client, "USER", &id);
+        if (id_error != KNISHIO_SUCCESS) {
+            return id_error;
         }
-        if (params->token) {
-            if (!first) strcat(variables, ",");
-            strcat(variables, "\"token\":\"");
-            strcat(variables, params->token);
-            strcat(variables, "\"");
-            first = false;
+        own_bundle = (id && id->bundle_hash) ? knishio_strdup(id->bundle_hash) : NULL;
+        if (id) knishio_wallet_free(id);
+        if (!own_bundle) {
+            return KNISHIO_ERROR_INVALID_STATE;
         }
-        if (!first) strcat(variables, ",");
-        strcat(variables, "\"includeShadow\":");
-        strcat(variables, params->include_shadow ? "true" : "false");
+        bundle = own_bundle;
     }
-    strcat(variables, "}");
-    
-    /* Execute query */
+
+    cJSON* vars = cJSON_CreateObject();
+    if (!vars) {
+        knishio_free(own_bundle);
+        return KNISHIO_ERROR_MEMORY;
+    }
+    cJSON_AddStringToObject(vars, "bundleHash", bundle);
+    if (params && params->token) {
+        cJSON_AddStringToObject(vars, "token", params->token);
+    }
+    char* variables = cJSON_PrintUnformatted(vars);
+    cJSON_Delete(vars);
+    knishio_free(own_bundle);
+    if (!variables) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+
     knishio_graphql_response_t* response = NULL;
     knishio_graphql_operation_t operation = {
         .name = "QueryWalletList",
@@ -255,105 +244,53 @@ knishio_error_t knishio_client_query_wallets(
         .requires_auth = false,
         .is_mutation = false
     };
-    
-    knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
-    knishio_error_t error = knishio_graphql_execute(graphql_client, &operation, &response);
-    
+    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
+    cJSON_free(variables);
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
-    
-    /* Create result */
+
     knishio_wallet_list_result_t* res = knishio_calloc(1, sizeof(knishio_wallet_list_result_t));
     if (!res) {
         knishio_graphql_response_free(response);
         return KNISHIO_ERROR_MEMORY;
     }
-    
-    if (response->success && response->data) {
+
+    knishio_json_t* root = (response->success && response->data)
+        ? knishio_json_parse(response->data, NULL) : NULL;
+    knishio_json_t* list = root ? knishio_json_get_path(root, "data.Wallet") : NULL;
+    if (list && knishio_json_get_type(list) == KNISHIO_JSON_ARRAY) {
         res->success = true;
-        
-        /* Parse wallet list from GraphQL response following 2025 C17 best practices */
-        knishio_json_t* json_root = knishio_json_parse(response->data, NULL);
-        if (json_root) {
-            /* Extract Wallets array from data.Wallets */
-            knishio_json_t* wallets_array = knishio_json_get_path(json_root, "data.Wallets");
-            if (wallets_array && knishio_json_get_type(wallets_array) == KNISHIO_JSON_ARRAY) {
-                size_t array_size = knishio_json_array_size(wallets_array);
-                
-                if (array_size > 0) {
-                    /* Allocate wallet array */
-                    res->wallets = knishio_calloc(array_size, sizeof(knishio_wallet_t*));
-                    if (res->wallets) {
-                        res->wallet_count = 0;
-                        
-                        /* Parse each wallet in the array */
-                        for (size_t i = 0; i < array_size; i++) {
-                            knishio_json_t* wallet_obj = knishio_json_array_get(wallets_array, i);
-                            if (wallet_obj && knishio_json_get_type(wallet_obj) == KNISHIO_JSON_OBJECT) {
-                                knishio_wallet_t* wallet = knishio_calloc(1, sizeof(knishio_wallet_t));
-                                if (wallet) {
-                                    /* Extract wallet fields */
-                                    const char* address = knishio_json_get_string_path(wallet_obj, "address");
-                                    const char* bundle_hash = knishio_json_get_string_path(wallet_obj, "bundleHash");
-                                    const char* token = knishio_json_get_string_path(wallet_obj, "token");
-                                    const char* amount = knishio_json_get_string_path(wallet_obj, "amount");
-                                    const char* position = knishio_json_get_string_path(wallet_obj, "position");
-                                    const char* batch_id = knishio_json_get_string_path(wallet_obj, "batchId");
-                                    
-                                    /* Populate wallet structure with extracted data */
-                                    if (address) wallet->address = knishio_strdup(address);
-                                    if (bundle_hash) wallet->bundle_hash = knishio_strdup(bundle_hash);
-                                    if (token) wallet->token = knishio_strdup(token);
-                                    if (amount) wallet->balance = strtod(amount, NULL);
-                                    if (position) wallet->position = knishio_strdup(position);
-                                    if (batch_id) wallet->batch_id = knishio_strdup(batch_id);
-                                    
-                                    /* Extract shadow wallet flag */
-                                    bool is_shadow = false;
-                                    knishio_json_get_bool_path(wallet_obj, "isShadow", &is_shadow);
-                                    wallet->is_shadow = is_shadow;
-                                    
-                                    res->wallets[res->wallet_count] = wallet;
-                                    res->wallet_count++;
-                                } else {
-                                    /* Memory allocation failed for individual wallet */
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        /* Failed to allocate wallet array */
-                        res->success = false;
-                        res->error_message = knishio_strdup("Failed to allocate memory for wallet list");
-                    }
-                } else {
-                    /* Empty wallet list */
-                    res->wallets = NULL;
-                    res->wallet_count = 0;
-                }
-            } else {
-                /* No Wallets array found in response */
-                res->wallets = NULL;
-                res->wallet_count = 0;
+        size_t n = knishio_json_array_size(list);
+        res->wallets = n > 0 ? knishio_calloc(n, sizeof(knishio_wallet_t*)) : NULL;
+        for (size_t i = 0; res->wallets && i < n; i++) {
+            knishio_json_t* item = knishio_json_array_get(list, i);
+            if (!item || knishio_json_get_type(item) != KNISHIO_JSON_OBJECT) {
+                continue;
             }
-            
-            knishio_json_free(json_root);
-        } else {
-            /* JSON parsing failed */
-            res->success = false;
-            res->error_message = knishio_strdup("Failed to parse JSON response");
+            /* Shared Balance/Wallet parser: fields, amount, batchId, tokenUnits. */
+            knishio_wallet_t* w = knishio_response_wallet_list_to_client_wallet(item, NULL);
+            if (!w) {
+                continue;
+            }
+            bool is_shadow = (w->address == NULL);
+            knishio_json_get_bool_path(item, "isShadow", &is_shadow);
+            w->is_shadow = is_shadow;
+            if (w->is_shadow && params && !params->include_shadow) {
+                knishio_wallet_free(w);
+                continue;
+            }
+            res->wallets[res->wallet_count++] = w;
         }
     } else {
         res->success = false;
-        res->error_message = response->errors ? 
-            knishio_strdup(response->errors) : 
-            knishio_strdup("Query failed");
+        res->error_message = knishio_strdup(response->errors ? response->errors : "Wallet list query failed");
     }
-    
+    if (list) knishio_json_free(list);
+    if (root) knishio_json_free(root);
+
     knishio_graphql_response_free(response);
     *result = res;
-    
     return KNISHIO_SUCCESS;
 }
 

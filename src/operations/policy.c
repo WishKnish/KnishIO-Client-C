@@ -184,65 +184,13 @@ knishio_error_t knishio_client_create_policy(
         return error;
     }
     
-    /* Sign molecule */
+    /* Sign, then check (contract 9.7) + submit. */
     error = knishio_molecule_sign(molecule, NULL, false, false);
-    if (error != KNISHIO_SUCCESS) {
-        knishio_molecule_free(molecule);
-        return error;
-    }
-    
-    /* Convert molecule to JSON */
-    char* molecule_json = NULL;
-    error = knishio_molecule_to_json(molecule, &molecule_json);
-    if (error != KNISHIO_SUCCESS || !molecule_json) {
-        knishio_molecule_free(molecule);
-        return error;
+    knishio_graphql_response_t* response = NULL;
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_client_submit_molecule(client, molecule, "CreatePolicy", CREATE_POLICY_MUTATION, &response);
     }
     knishio_molecule_free(molecule);
-    
-    if (!molecule_json) {
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    /* Build variables JSON */
-    cJSON* variables_obj = cJSON_CreateObject();
-    cJSON* molecule_obj = cJSON_Parse(molecule_json);
-    
-    if (!variables_obj || !molecule_obj) {
-        if (variables_obj) cJSON_Delete(variables_obj);
-        if (molecule_obj) cJSON_Delete(molecule_obj);
-        free(molecule_json);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    cJSON_AddItemToObject(variables_obj, "molecule", molecule_obj);
-    char* variables_json = cJSON_PrintUnformatted(variables_obj);
-    
-    cJSON_Delete(variables_obj);
-    free(molecule_json);
-    
-    if (!variables_json) {
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    /* Execute GraphQL mutation */
-    knishio_graphql_response_t* response = NULL;
-    knishio_graphql_operation_t operation = {
-        .name = "CreatePolicy",
-        .query = CREATE_POLICY_MUTATION,
-        .variables_json = variables_json,
-        .requires_auth = true,
-        .is_mutation = true
-    };
-    
-    error = knishio_graphql_execute(
-        (knishio_graphql_client_t*)client,
-        &operation,
-        &response
-    );
-    
-    free(variables_json);
-    
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
@@ -416,65 +364,13 @@ knishio_error_t knishio_client_create_rule(
         return error;
     }
     
-    /* Sign molecule */
+    /* Sign, then check (contract 9.7) + submit. */
     error = knishio_molecule_sign(molecule, NULL, false, false);
-    if (error != KNISHIO_SUCCESS) {
-        knishio_molecule_free(molecule);
-        return error;
-    }
-    
-    /* Convert molecule to JSON */
-    char* molecule_json = NULL;
-    error = knishio_molecule_to_json(molecule, &molecule_json);
-    if (error != KNISHIO_SUCCESS || !molecule_json) {
-        knishio_molecule_free(molecule);
-        return error;
+    knishio_graphql_response_t* response = NULL;
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_client_submit_molecule(client, molecule, "CreateRule", CREATE_RULE_MUTATION, &response);
     }
     knishio_molecule_free(molecule);
-    
-    if (!molecule_json) {
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    /* Build variables JSON */
-    cJSON* variables_obj = cJSON_CreateObject();
-    cJSON* molecule_obj = cJSON_Parse(molecule_json);
-    
-    if (!variables_obj || !molecule_obj) {
-        if (variables_obj) cJSON_Delete(variables_obj);
-        if (molecule_obj) cJSON_Delete(molecule_obj);
-        free(molecule_json);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    cJSON_AddItemToObject(variables_obj, "molecule", molecule_obj);
-    char* variables_json = cJSON_PrintUnformatted(variables_obj);
-    
-    cJSON_Delete(variables_obj);
-    free(molecule_json);
-    
-    if (!variables_json) {
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    /* Execute GraphQL mutation */
-    knishio_graphql_response_t* response = NULL;
-    knishio_graphql_operation_t operation = {
-        .name = "CreateRule",
-        .query = CREATE_RULE_MUTATION,
-        .variables_json = variables_json,
-        .requires_auth = true,
-        .is_mutation = true
-    };
-    
-    error = knishio_graphql_execute(
-        (knishio_graphql_client_t*)client,
-        &operation,
-        &response
-    );
-    
-    free(variables_json);
-    
     if (error != KNISHIO_SUCCESS) {
         return error;
     }

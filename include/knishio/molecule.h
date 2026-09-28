@@ -24,6 +24,7 @@ extern "C" {
 typedef struct knishio_atom knishio_atom_t;
 typedef struct knishio_wallet knishio_wallet_t;
 typedef struct knishio_molecule knishio_molecule_t;
+typedef struct knishio_token_unit knishio_token_unit_t;
 
 /* Constants */
 #define KNISHIO_MOLECULAR_HASH_LENGTH 64      /**< Molecular hash length in hex chars */
@@ -359,15 +360,18 @@ knishio_error_t knishio_molecule_init_deposit_buffer(
 
 /**
  * @brief Initialize a buffer-WITHDRAW molecule (B-isotope), matching initWithdrawBuffer
- * across the other SDKs.
+ * across the other SDKs (contract 9.6).
  *
  * Emits three atoms in order:
- *   B  source    = -(full source balance) (metaType "walletBundle", metaId source bundle)
+ *   B  source    = -(full source balance) (metaType "walletBundle", metaId source bundle;
+ *                                          tokenUnits of the source when it has any)
  *   V  recipient = +amount                (metaType "walletBundle", metaId recipient bundle)
  *   B  remainder = +(balance - amount)    (metaType "walletBundle", metaId remainder bundle)
  *
  * The mirror of init_deposit_buffer: the buffer is the source here, so the outer atoms are
- * B and the recipient is V. Same full-balance debit, same conservation requirement.
+ * B and the recipient is V. Same full-balance debit, same conservation requirement. The
+ * source must be the buffer wallet itself and the remainder a FRESH position: validator
+ * 0.6.1 rejects value credited to the consumed signing position.
  *
  * @param molecule Molecule to initialize (source_wallet and remainder_wallet must be set)
  * @param recipient_wallet Wallet receiving the withdrawn amount (V atom)
@@ -378,6 +382,73 @@ knishio_error_t knishio_molecule_init_withdraw_buffer(
     knishio_molecule_t* molecule,
     knishio_wallet_t* recipient_wallet,
     int amount
+);
+
+/**
+ * @brief Initialize a token-REPLENISH molecule (contract 9.1): mint more supply of an existing
+ * token with a C atom, then the ContinuID I atom.
+ *
+ * The C atom is signed by molecule->source_wallet (the identity's USER wallet, as createToken);
+ * metaType "token", metaId = credited_wallet->token, batchId = the credited wallet's; value =
+ * amount (fungible) or unit_count (stackable/non-fungible). Meta, in order: action "add", the
+ * credited wallet's address, position and pubkey, its batchId (only when it has one), and
+ * tokenUnits (only when units are given, as compact [id, name, metas] triples).
+ *
+ * @param molecule Molecule (source_wallet + remainder_wallet set)
+ * @param credited_wallet The identity's wallet for the token that receives the new supply
+ * @param amount Amount to add; with units it must be 0 or equal unit_count
+ * @param units New token units (stackable/non-fungible), or NULL
+ * @param unit_count Number of units (0 for a fungible replenish)
+ * @return KNISHIO_SUCCESS; KNISHIO_ERROR_NEGATIVE_AMOUNT (fungible amount <= 0);
+ *         KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT (amount disagrees with the unit count)
+ */
+knishio_error_t knishio_molecule_init_replenish(
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* credited_wallet,
+    int amount,
+    const knishio_token_unit_t* units,
+    size_t unit_count
+);
+
+/**
+ * @brief Why a stackable fusion request is invalid, or NULL when it is valid (contract 9.2)
+ *
+ * Messages: "Token fusion requires at least two token units" (fewer than two ids);
+ * "Token fusion unit not found in the source wallet" (an id the source does not hold);
+ * "Token fusion requires a new token unit id"; "Token fusion unit id already exists in the
+ * source wallet" (new id equals a source unit id). knishio_molecule_init_fuse_token returns
+ * KNISHIO_ERROR_TRANSFER_BALANCE exactly when this is non-NULL.
+ * @return Static message (do not free) or NULL
+ */
+const char* knishio_molecule_fusion_error(
+    const knishio_wallet_t* source_wallet,
+    const char* const* fused_ids,
+    size_t fused_count,
+    const char* new_unit_id
+);
+
+/**
+ * @brief Initialize a stackable-FUSION molecule (contract 9.2)
+ *
+ * Fuses fused_count (M >= 2) units of molecule->source_wallet (balance B, with its token_units)
+ * into one new unit N delivered to recipient_wallet. Emits, in order, with no I atom:
+ *   V  source    = -B      tokenUnits = the fused units (source order)
+ *   V  burn      = +(M-1)  metaType walletBundle, metaId 64 zeros, tokenUnits = fused[0..M-2]
+ *   F  recipient = +1      metaType walletBundle, metaId recipient bundle, tokenUnits = [N],
+ *                          N = [id, id, {"fusedTokenUnits": all M fused triples, caller order}]
+ *   V  remainder = +(B-M)  metaType walletBundle, metaId remainder bundle, tokenUnits = the kept
+ *                          units (source order; the meta is omitted when none are kept)
+ * When the source has a batchId, the remainder keeps it and the burn and F atoms get fresh ones.
+ *
+ * @return KNISHIO_SUCCESS; KNISHIO_ERROR_TRANSFER_BALANCE (see knishio_molecule_fusion_error);
+ *         KNISHIO_ERROR_BALANCE_INSUFFICIENT (B < M)
+ */
+knishio_error_t knishio_molecule_init_fuse_token(
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* recipient_wallet,
+    const char* const* fused_ids,
+    size_t fused_count,
+    const char* new_unit_id
 );
 
 /**

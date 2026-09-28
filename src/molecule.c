@@ -19,6 +19,8 @@
 #include "knishio/json/parser.h"
 #include "atom_internal.h"
 
+#include <cjson/cJSON.h>
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -2048,9 +2050,12 @@ static knishio_error_t init_buffer_common(
         return result;
     }
 
-    /* B atoms must carry walletBundle meta; the V source in a deposit does not. */
+    /* B atoms must carry walletBundle meta; the V source in a deposit does not. A withdraw's
+     * source B atom also carries the buffer wallet's tokenUnits when it has any (contract 9.6;
+     * a fungible buffer has none, so the atom is unchanged). */
     if (outer == KNISHIO_ISOTOPE_B) {
         set_wallet_bundle_meta(source_atom, molecule->source_wallet->bundle_hash);
+        attach_token_units_meta(source_atom, molecule->source_wallet);
     }
 
     result = knishio_molecule_add_atom(molecule, source_atom);
@@ -2230,6 +2235,352 @@ knishio_error_t knishio_molecule_init_burn(
     }
 
     return KNISHIO_SUCCESS;
+}
+
+/* --- Phase B builders: token replenish (contract 9.1) and stackable fusion (contract 9.2) --- */
+
+#define KNISHIO_ZERO_BUNDLE "0000000000000000000000000000000000000000000000000000000000000000"
+
+/* Give an atom exactly these meta pairs, in order. A NULL or empty value is skipped, as JS
+ * AtomMeta skips it (the molecular hash skips NULL meta, so storing "" would change the hash). */
+static knishio_error_t set_atom_meta_pairs(knishio_atom_t* atom, const char** keys, const char** vals, size_t n) {
+    atom->meta = NULL;
+    atom->meta_count = 0;
+    if (n == 0) {
+        return KNISHIO_SUCCESS;
+    }
+    atom->meta = malloc(sizeof(knishio_meta_t*) * n);
+    if (!atom->meta) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (!vals[i] || !vals[i][0]) {
+            continue;
+        }
+        if (knishio_meta_create(&atom->meta[atom->meta_count], keys[i], vals[i]) != KNISHIO_SUCCESS) {
+            return KNISHIO_ERROR_MEMORY;
+        }
+        atom->meta_count++;
+    }
+    return KNISHIO_SUCCESS;
+}
+
+/* One unit as the canonical wire triple [id, name, metas] (metas parsed from metas_json, "{}"
+ * when absent or unparseable). */
+static cJSON* token_unit_triple(const knishio_token_unit_t* u) {
+    cJSON* triple = cJSON_CreateArray();
+    if (!triple) {
+        return NULL;
+    }
+    cJSON_AddItemToArray(triple, cJSON_CreateString(u->id ? u->id : ""));
+    cJSON_AddItemToArray(triple, cJSON_CreateString(u->name ? u->name : ""));
+    cJSON* metas = (u->metas_json && u->metas_json[0]) ? cJSON_Parse(u->metas_json) : NULL;
+    cJSON_AddItemToArray(triple, metas ? metas : cJSON_CreateObject());
+    return triple;
+}
+
+/* Compact JSON (JSON.stringify form) of the units, as an array of triples. Caller frees
+ * with knishio_free. NULL on allocation failure. */
+static char* token_units_to_json(const knishio_token_unit_t* const* units, size_t n) {
+    cJSON* arr = cJSON_CreateArray();
+    if (!arr) {
+        return NULL;
+    }
+    for (size_t i = 0; i < n; i++) {
+        cJSON_AddItemToArray(arr, token_unit_triple(units[i]));
+    }
+    char* printed = cJSON_PrintUnformatted(arr);
+    cJSON_Delete(arr);
+    char* out = printed ? knishio_strdup(printed) : NULL;
+    cJSON_free(printed);
+    return out;
+}
+
+knishio_error_t knishio_molecule_init_replenish(
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* credited_wallet,
+    int amount,
+    const knishio_token_unit_t* units,
+    size_t unit_count
+) {
+    if (!molecule || !credited_wallet || !credited_wallet->token || (unit_count > 0 && !units)) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!molecule->source_wallet || !molecule->remainder_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+    /* Stackable / non-fungible: the value is the unit count, and amount may only restate it. */
+    if (unit_count > 0 && amount != 0 && (size_t)amount != unit_count) {
+        return KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT;
+    }
+    if (unit_count == 0 && amount <= 0) {
+        return KNISHIO_ERROR_NEGATIVE_AMOUNT;
+    }
+
+    char value[32];
+    if (unit_count > 0) {
+        snprintf(value, sizeof(value), "%zu", unit_count);
+    } else {
+        snprintf(value, sizeof(value), "%d", amount);
+    }
+
+    char* units_json = NULL;
+    if (unit_count > 0) {
+        const knishio_token_unit_t** list = knishio_calloc(unit_count, sizeof(*list));
+        if (!list) {
+            return KNISHIO_ERROR_MEMORY;
+        }
+        for (size_t i = 0; i < unit_count; i++) {
+            list[i] = &units[i];
+        }
+        units_json = token_units_to_json(list, unit_count);
+        knishio_free(list);
+        if (!units_json) {
+            return KNISHIO_ERROR_MEMORY;
+        }
+    }
+
+    /* The C atom is signed by the identity's USER wallet, exactly like createToken's; its
+     * batchId is the credited wallet's (createToken uses the recipient's). */
+    knishio_atom_t* atom = NULL;
+    knishio_error_t result = knishio_atom_create(
+        &atom,
+        molecule->source_wallet->position,
+        molecule->source_wallet->address,
+        KNISHIO_ISOTOPE_C,
+        molecule->source_wallet->token,
+        value,
+        credited_wallet->batch_id
+    );
+    if (result != KNISHIO_SUCCESS) {
+        knishio_free(units_json);
+        return result;
+    }
+    if (atom->meta_type) knishio_free(atom->meta_type);
+    if (atom->meta_id) knishio_free(atom->meta_id);
+    atom->meta_type = knishio_strdup("token");
+    atom->meta_id = knishio_strdup(credited_wallet->token);
+
+    /* Contract 9.1 meta order: action, the credited wallet's address/position/pubkey, its
+     * batchId (only when it has one), then tokenUnits (only for stackable/non-fungible). */
+    const char* keys[] = { "action", "address", "position", "pubkey", "batchId", "tokenUnits" };
+    const char* vals[] = { "add", credited_wallet->address, credited_wallet->position,
+                           credited_wallet->pubkey, credited_wallet->batch_id, units_json };
+    result = set_atom_meta_pairs(atom, keys, vals, sizeof(keys) / sizeof(keys[0]));
+    knishio_free(units_json);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free_deep(atom);
+        return result;
+    }
+
+    result = knishio_molecule_add_atom(molecule, atom);
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free_deep(atom);
+        return result;
+    }
+    return add_continuid_atom(molecule);
+}
+
+static const knishio_token_unit_t* find_token_unit(const knishio_wallet_t* w, const char* id) {
+    for (size_t i = 0; id && i < w->token_unit_count; i++) {
+        if (w->token_units[i].id && strcmp(w->token_units[i].id, id) == 0) {
+            return &w->token_units[i];
+        }
+    }
+    return NULL;
+}
+
+const char* knishio_molecule_fusion_error(
+    const knishio_wallet_t* source_wallet,
+    const char* const* fused_ids,
+    size_t fused_count,
+    const char* new_unit_id
+) {
+    if (fused_count < 2 || !fused_ids) {
+        return "Token fusion requires at least two token units";
+    }
+    if (!source_wallet) {
+        return "Token fusion unit not found in the source wallet";
+    }
+    for (size_t i = 0; i < fused_count; i++) {
+        if (!find_token_unit(source_wallet, fused_ids[i])) {
+            return "Token fusion unit not found in the source wallet";
+        }
+    }
+    if (!new_unit_id || !new_unit_id[0]) {
+        return "Token fusion requires a new token unit id";
+    }
+    if (find_token_unit(source_wallet, new_unit_id)) {
+        return "Token fusion unit id already exists in the source wallet";
+    }
+    return NULL;
+}
+
+/* A value-bearing atom with metaType walletBundle and an optional tokenUnits meta. */
+static knishio_error_t add_bundle_atom(
+    knishio_molecule_t* molecule,
+    knishio_isotope_t isotope,
+    const char* position,
+    const char* address,
+    const char* token,
+    const char* value,
+    const char* batch_id,
+    const char* meta_id,
+    const char* units_json
+) {
+    knishio_atom_t* atom = NULL;
+    knishio_error_t result = knishio_atom_create(&atom, position, address, isotope, token, value, batch_id);
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+    if (meta_id) {
+        set_wallet_bundle_meta(atom, meta_id);
+    }
+    const char* keys[] = { "tokenUnits" };
+    const char* vals[] = { units_json };
+    result = set_atom_meta_pairs(atom, keys, vals, 1);
+    if (result == KNISHIO_SUCCESS) {
+        result = knishio_molecule_add_atom(molecule, atom);
+    }
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free_deep(atom);
+    }
+    return result;
+}
+
+knishio_error_t knishio_molecule_init_fuse_token(
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* recipient_wallet,
+    const char* const* fused_ids,
+    size_t fused_count,
+    const char* new_unit_id
+) {
+    if (!molecule || !recipient_wallet || !recipient_wallet->bundle_hash) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    const knishio_wallet_t* source = molecule->source_wallet;
+    const knishio_wallet_t* remainder = molecule->remainder_wallet;
+    if (!source || !remainder) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+    if (knishio_molecule_fusion_error(source, fused_ids, fused_count, new_unit_id)) {
+        return KNISHIO_ERROR_TRANSFER_BALANCE;
+    }
+    const int balance = (int)source->balance;
+    if (balance < (int)fused_count) {
+        return KNISHIO_ERROR_BALANCE_INSUFFICIENT;
+    }
+
+    knishio_error_t result = KNISHIO_ERROR_MEMORY;
+    const size_t n_src = source->token_unit_count;
+    const knishio_token_unit_t** sent = knishio_calloc(n_src + 1, sizeof(*sent));   /* source order */
+    const knishio_token_unit_t** kept = knishio_calloc(n_src + 1, sizeof(*kept));   /* source order */
+    const knishio_token_unit_t** fused = knishio_calloc(fused_count, sizeof(*fused)); /* caller order */
+    char* sent_json = NULL;
+    char* burn_json = NULL;
+    char* fused_json = NULL;
+    char* new_json = NULL;
+    char* kept_json = NULL;
+    char* burn_batch = NULL;
+    char* fusion_batch = NULL;
+    size_t n_sent = 0, n_kept = 0;
+
+    if (!sent || !kept || !fused) {
+        goto done;
+    }
+    for (size_t i = 0; i < fused_count; i++) {
+        fused[i] = find_token_unit(source, fused_ids[i]);
+    }
+    for (size_t i = 0; i < n_src; i++) {
+        bool is_fused = false;
+        for (size_t j = 0; j < fused_count; j++) {
+            if (fused[j] == &source->token_units[i]) {
+                is_fused = true;
+                break;
+            }
+        }
+        if (is_fused) {
+            sent[n_sent++] = &source->token_units[i];
+        } else {
+            kept[n_kept++] = &source->token_units[i];
+        }
+    }
+
+    sent_json = token_units_to_json(sent, n_sent);
+    burn_json = token_units_to_json(fused, fused_count - 1);   /* every fused unit but the last */
+    fused_json = token_units_to_json(fused, fused_count);
+    kept_json = n_kept > 0 ? token_units_to_json(kept, n_kept) : NULL;  /* empty list: no meta */
+    if (!sent_json || !burn_json || !fused_json || (n_kept > 0 && !kept_json)) {
+        goto done;
+    }
+    {
+        /* N = [id, id, {"fusedTokenUnits": [the fused triples, caller order]}] */
+        size_t metas_len = strlen(fused_json) + 24;
+        char* metas = knishio_malloc(metas_len);
+        if (!metas) {
+            goto done;
+        }
+        snprintf(metas, metas_len, "{\"fusedTokenUnits\":%s}", fused_json);
+        knishio_token_unit_t n_unit = { 0 };
+        n_unit.id = (char*)new_unit_id;
+        n_unit.name = (char*)new_unit_id;
+        n_unit.metas_json = metas;
+        const knishio_token_unit_t* n_list[] = { &n_unit };
+        new_json = token_units_to_json(n_list, 1);
+        knishio_free(metas);
+        if (!new_json) {
+            goto done;
+        }
+    }
+
+    /* A batch-bearing source makes every V atom carry a batch id (CheckMolecule.batchId): the
+     * burn and F recipients get fresh ones, the remainder keeps the source's. */
+    if (source->batch_id && source->batch_id[0]) {
+        if (!knishio_generate_position(&burn_batch) || !knishio_generate_position(&fusion_batch)) {
+            result = KNISHIO_ERROR_CRYPTO;
+            goto done;
+        }
+    }
+
+    char v_source[32], v_burn[32], v_remainder[32];
+    snprintf(v_source, sizeof(v_source), "-%d", balance);
+    snprintf(v_burn, sizeof(v_burn), "%zu", fused_count - 1);
+    snprintf(v_remainder, sizeof(v_remainder), "%d", balance - (int)fused_count);
+
+    /* 0: V source, -B, carrying the SENT set (the fused units, source order). */
+    result = add_bundle_atom(molecule, KNISHIO_ISOTOPE_V, source->position, source->address,
+                             source->token, v_source, source->batch_id, NULL, sent_json);
+    /* 1: V burn, +(M-1), to the all-zeros bundle (as init_burn builds its burn recipient). */
+    if (result == KNISHIO_SUCCESS) {
+        result = add_bundle_atom(molecule, KNISHIO_ISOTOPE_V, "", "", source->token, v_burn,
+                                 burn_batch, KNISHIO_ZERO_BUNDLE, burn_json);
+    }
+    /* 2: F recipient, +1, the new unit N. */
+    if (result == KNISHIO_SUCCESS) {
+        result = add_bundle_atom(molecule, KNISHIO_ISOTOPE_F,
+                                 recipient_wallet->position ? recipient_wallet->position : "",
+                                 recipient_wallet->address ? recipient_wallet->address : "",
+                                 source->token, "1", fusion_batch, recipient_wallet->bundle_hash, new_json);
+    }
+    /* 3: V remainder, +(B-M), the KEPT units (emitted even at value 0). No I atom. */
+    if (result == KNISHIO_SUCCESS) {
+        result = add_bundle_atom(molecule, KNISHIO_ISOTOPE_V, remainder->position, remainder->address,
+                                 source->token, v_remainder, source->batch_id, remainder->bundle_hash,
+                                 kept_json);
+    }
+
+done:
+    knishio_free(sent);
+    knishio_free(kept);
+    knishio_free(fused);
+    knishio_free(sent_json);
+    knishio_free(burn_json);
+    knishio_free(fused_json);
+    knishio_free(new_json);
+    knishio_free(kept_json);
+    knishio_free(burn_batch);
+    knishio_free(fusion_batch);
+    return result;
 }
 
 /**

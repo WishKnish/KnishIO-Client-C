@@ -25,6 +25,7 @@ extern "C" {
 /* Forward declarations */
 typedef struct knishio_client knishio_client_t;
 typedef struct knishio_meta knishio_meta_t;
+typedef struct knishio_token_unit knishio_token_unit_t;
 
 /**
  * @brief Token fungibility types
@@ -118,19 +119,60 @@ knishio_error_t knishio_client_request_tokens(
 );
 
 /**
- * @brief Replenish token supply
- * Equivalent to JavaScript: client.replenishToken({ token, amount })
- * 
- * @param client KnishIO client instance
+ * @brief Replenish the supply of a token this identity created (contract 9.1)
+ * Equivalent to JavaScript: client.replenishToken({ token, amount, units })
+ *
+ * Builds C(action "add") + I, signed by the USER wallet at the ContinuID pointer, crediting the
+ * identity's existing wallet for the token (Balance) or a new one. Validator 0.6.0+ accepts it
+ * only from the token's creator bundle and only for supply "infinite" or "replenishable".
+ * The molecule is checked locally before it is sent.
+ *
+ * @param client KnishIO client instance (authenticated, secret set)
  * @param token Token slug to replenish
- * @param amount Amount to add to supply
+ * @param amount Amount to add (fungible); 0 or the unit count when units are given
+ * @param units New units for a stackable/non-fungible token (id, name, metas_json), or NULL
+ * @param unit_count Number of units
  * @param result Output result (allocated, must be freed)
- * @return KNISHIO_SUCCESS on success, error code on failure
+ * @return KNISHIO_SUCCESS when the validator answered (see result->success and the response
+ *         status); KNISHIO_ERROR_NEGATIVE_AMOUNT (fungible amount <= 0);
+ *         KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT (stackable wallet but no units, or amount != unit
+ *         count); transport and check errors otherwise
  */
 knishio_error_t knishio_client_replenish_token(
     knishio_client_t* client,
     const char* token,
     int amount,
+    const knishio_token_unit_t* units,
+    size_t unit_count,
+    knishio_request_tokens_result_t** result
+);
+
+/**
+ * @brief Fuse units of a stackable token into one new unit (contract 9.2)
+ * Equivalent to JavaScript: client.fuseToken({ bundleHash, tokenSlug, newTokenUnit, fusedTokenUnitIds })
+ *
+ * Spends the identity's regular wallet of token_slug (Balance). Emits V(source,-B),
+ * V(burn,+(M-1)), F(recipient,+1, unit new_token_unit whose metas list the fused units),
+ * V(remainder,+(B-M)); no ContinuID atom. The molecule is checked locally before it is sent.
+ *
+ * @param client KnishIO client instance (authenticated, secret set)
+ * @param bundle_hash Recipient bundle of the new unit; NULL for the identity's own bundle
+ * @param token_slug Stackable token slug
+ * @param new_token_unit Id (and name) of the new unit
+ * @param fused_token_unit_ids Unit ids to fuse (M >= 2), in caller order
+ * @param fused_count M
+ * @param result Output result (allocated, must be freed)
+ * @return KNISHIO_SUCCESS when the validator answered; KNISHIO_ERROR_TRANSFER_BALANCE for a
+ *         request knishio_molecule_fusion_error() rejects (e.g. fewer than two units), before
+ *         anything is sent; KNISHIO_ERROR_BALANCE_INSUFFICIENT when there is no wallet
+ */
+knishio_error_t knishio_client_fuse_token(
+    knishio_client_t* client,
+    const char* bundle_hash,
+    const char* token_slug,
+    const char* new_token_unit,
+    const char* const* fused_token_unit_ids,
+    size_t fused_count,
     knishio_request_tokens_result_t** result
 );
 

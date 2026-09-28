@@ -187,6 +187,7 @@ typedef struct {
     molecule_test_result_t wallet_creation;
     molecule_test_result_t shadow_wallet_claim;
     molecule_test_result_t buffer_family;
+    molecule_test_result_t phase_b;          /**< P1: replenish, stackable fusion, fresh-remainder withdraw */
     molecule_test_result_t wots_roundtrip;
     mlkem768_test_result_t mlkem768;
     molecule_test_result_t mlkem768_vector;  /**< 5b: passed / skipped / validation_error only */
@@ -2247,6 +2248,356 @@ static bool test_buffer_family(test_results_t *results) {
     return all_pass;
 }
 
+/* ---- P1. Phase B vectors: replenish, stackable fusion, fresh-remainder withdraw ---------
+ *
+ * Contract 9.1 / 9.2 / 9.6 (validator 0.6.0/0.6.1). Each case builds the molecule with the
+ * SDK's own builder, signs it, and asserts what the vector pins: isotopes and values in order,
+ * metaType/metaId, the replenish `action` and meta order, every atom's tokenUnits ids, the
+ * fused unit's fusedTokenUnits ids, the V+B/V+F sum — and that knishio_molecule_check accepts
+ * the molecule. Molecular hashes are not frozen (positions are random). */
+
+static const char *atom_meta_value(const knishio_atom_t *atom, const char *key) {
+    for (size_t i = 0; atom && i < atom->meta_count; i++) {
+        if (atom->meta[i] && atom->meta[i]->key && strcmp(atom->meta[i]->key, key) == 0) {
+            return atom->meta[i]->value;
+        }
+    }
+    return NULL;
+}
+
+/* Unit ids of a tokenUnits JSON value (triples or bare ids), compared with a JSON array of
+ * expected ids. An absent meta reads as []; `expected` JSON null (or absent) requires no meta. */
+static bool unit_ids_match(const char *units_json, const cJSON *expected) {
+    if (!expected || cJSON_IsNull(expected)) {
+        return units_json == NULL;
+    }
+    cJSON *units = units_json ? cJSON_Parse(units_json) : cJSON_CreateArray();
+    bool ok = units && cJSON_IsArray(units) && cJSON_GetArraySize(units) == cJSON_GetArraySize(expected);
+    for (int i = 0; ok && i < cJSON_GetArraySize(expected); i++) {
+        const cJSON *u = cJSON_GetArrayItem(units, i);
+        const cJSON *id = cJSON_IsArray(u) ? cJSON_GetArrayItem(u, 0) : u;
+        ok = cJSON_IsString(id) &&
+             safe_strcmp(cJSON_GetStringValue(id), cJSON_GetStringValue(cJSON_GetArrayItem(expected, i)));
+    }
+    if (units) cJSON_Delete(units);
+    return ok;
+}
+
+/* Wallet token units from a JSON array of triples [id, name, metas] or bare ids. */
+static knishio_token_unit_t *units_from_json(const cJSON *arr, size_t *count) {
+    *count = arr ? (size_t)cJSON_GetArraySize(arr) : 0;
+    if (*count == 0) return NULL;
+    knishio_token_unit_t *units = knishio_calloc(*count, sizeof(*units));
+    for (size_t i = 0; units && i < *count; i++) {
+        const cJSON *u = cJSON_GetArrayItem(arr, (int)i);
+        const char *id = cJSON_IsArray(u) ? cJSON_GetStringValue(cJSON_GetArrayItem(u, 0)) : cJSON_GetStringValue(u);
+        const char *name = cJSON_IsArray(u) ? cJSON_GetStringValue(cJSON_GetArrayItem(u, 1)) : id;
+        const cJSON *metas = cJSON_IsArray(u) ? cJSON_GetArrayItem(u, 2) : NULL;
+        char *metas_json = metas ? cJSON_PrintUnformatted(metas) : NULL;
+        units[i].id = safe_strdup(id ? id : "");
+        units[i].name = safe_strdup(name ? name : "");
+        units[i].metas_json = safe_strdup(metas_json ? metas_json : "{}");
+        if (metas_json) cJSON_free(metas_json);
+    }
+    return units;
+}
+
+static void units_free(knishio_token_unit_t *units, size_t count) {
+    for (size_t i = 0; units && i < count; i++) {
+        knishio_free(units[i].id);
+        knishio_free(units[i].name);
+        knishio_free(units[i].metas_json);
+    }
+    knishio_free(units);
+}
+
+static knishio_wallet_t *fresh_wallet(const char *secret, const char *token) {
+    char *position = NULL;
+    knishio_wallet_t *w = NULL;
+    if (knishio_generate_position(&position)) {
+        knishio_wallet_create_simple(&w, secret, token, position);
+    }
+    if (position) knishio_free(position);
+    return w;
+}
+
+static bool isotopes_match(const knishio_molecule_t *m, const cJSON *expected) {
+    static const char *names = "VMICTURBF";
+    static const knishio_isotope_t codes[] = {
+        KNISHIO_ISOTOPE_V, KNISHIO_ISOTOPE_M, KNISHIO_ISOTOPE_I, KNISHIO_ISOTOPE_C, KNISHIO_ISOTOPE_T,
+        KNISHIO_ISOTOPE_U, KNISHIO_ISOTOPE_R, KNISHIO_ISOTOPE_B, KNISHIO_ISOTOPE_F,
+    };
+    if (!expected || (size_t)cJSON_GetArraySize(expected) != m->atom_count) return false;
+    for (size_t i = 0; i < m->atom_count; i++) {
+        const char *want = cJSON_GetStringValue(cJSON_GetArrayItem(expected, (int)i));
+        const char *at = want ? strchr(names, want[0]) : NULL;
+        if (!at || m->atoms[i]->isotope != codes[at - names]) return false;
+    }
+    return true;
+}
+
+static long long value_sum(const knishio_molecule_t *m) {
+    long long sum = 0;
+    for (size_t i = 0; i < m->atom_count; i++) {
+        const knishio_atom_t *a = m->atoms[i];
+        if (a->value && (a->isotope == KNISHIO_ISOTOPE_V || a->isotope == KNISHIO_ISOTOPE_B ||
+                         a->isotope == KNISHIO_ISOTOPE_F)) {
+            sum += strtoll(a->value, NULL, 10);
+        }
+    }
+    return sum;
+}
+
+static bool sum_matches(const knishio_molecule_t *m, const cJSON *tv) {
+    char sum[32];
+    snprintf(sum, sizeof(sum), "%lld", value_sum(m));
+    return safe_strcmp(sum, vec_str(tv, "expectedSum"));
+}
+
+/* token_replenish: C(action add) + I. */
+static bool phase_b_replenish_case(const cJSON *tv, const char *secret, const char *bundle, int *atoms) {
+    const char *token = vec_str(tv, "token");
+    const cJSON *amount_item = cJSON_GetObjectItem(tv, "amount");
+    int amount = cJSON_IsNumber(amount_item) ? (int)cJSON_GetNumberValue(amount_item) : 0;
+    size_t unit_count = 0;
+    knishio_token_unit_t *units = units_from_json(cJSON_GetObjectItem(tv, "units"), &unit_count);
+
+    knishio_wallet_t *source = fresh_wallet(secret, "USER");
+    knishio_wallet_t *remainder = fresh_wallet(secret, "USER");
+    knishio_wallet_t *credited = fresh_wallet(secret, token);
+    knishio_molecule_t *m = NULL;
+    bool ok = source && remainder && credited &&
+              knishio_molecule_create(&m, secret, bundle, source, remainder, NULL, "V4") == KNISHIO_SUCCESS &&
+              knishio_molecule_init_replenish(m, credited, amount, units, unit_count) == KNISHIO_SUCCESS;
+    if (ok) {
+        set_canonical_timestamps(m);
+        ok = knishio_molecule_sign(m, bundle, false, true) == KNISHIO_SUCCESS;
+    }
+    const knishio_atom_t *c = (ok && m->atom_count > 0) ? m->atoms[0] : NULL;
+    ok = ok && isotopes_match(m, cJSON_GetObjectItem(tv, "expectedIsotopes"));
+    ok = ok && c && safe_strcmp(c->value, vec_str(tv, "expectedCValue")) &&
+         safe_strcmp(c->meta_type, vec_str(tv, "expectedMetaType")) &&
+         safe_strcmp(c->meta_id, vec_str(tv, "expectedMetaId"));
+    /* Meta order: action, address, position, pubkey, [batchId], [tokenUnits] — nothing else. */
+    ok = ok && c->meta_count == (unit_count > 0 ? 5u : 4u) &&
+         safe_strcmp(c->meta[0]->key, "action") && safe_strcmp(c->meta[0]->value, vec_str(tv, "expectedAction")) &&
+         safe_strcmp(c->meta[1]->key, "address") && safe_strcmp(c->meta[1]->value, credited->address) &&
+         safe_strcmp(c->meta[2]->key, "position") && safe_strcmp(c->meta[2]->value, credited->position) &&
+         safe_strcmp(c->meta[3]->key, "pubkey") && safe_strcmp(c->meta[3]->value, credited->pubkey);
+    ok = ok && unit_ids_match(atom_meta_value(c, "tokenUnits"), cJSON_GetObjectItem(tv, "expectedTokenUnitIds"));
+    ok = ok && knishio_molecule_check(m, NULL) == KNISHIO_SUCCESS;
+
+    char label[160];
+    snprintf(label, sizeof(label), "replenish %s: C(action add)+I, value and units as the vector", vec_str(tv, "name"));
+    log_test(label, ok, ok ? NULL : "shape, meta or verification failed");
+    if (m) {
+        *atoms += (int)m->atom_count;
+        knishio_molecule_free_deep(m);
+    }
+    if (source) knishio_wallet_free(source);
+    if (remainder) knishio_wallet_free(remainder);
+    if (credited) knishio_wallet_free(credited);
+    units_free(units, unit_count);
+    return ok;
+}
+
+/* stackable_fusion_conservation: V(S) V(burn) F(N) V(remainder), or a client-side refusal.
+ * source_batch: give S a batch id and require the batch rule (remainder keeps it; burn and F
+ * get fresh ones) that every SDK's CheckMolecule.batchId needs. */
+static bool phase_b_fusion_case(const cJSON *tv, const char *secret, const char *bundle,
+                                const char *source_batch, int *atoms) {
+    const char *token = "FUSETOK";
+    const cJSON *fuse = cJSON_GetObjectItem(tv, "fuse");
+    size_t fused_count = fuse ? (size_t)cJSON_GetArraySize(fuse) : 0;
+    const char *fused_ids[16] = {0};
+    for (size_t i = 0; i < fused_count && i < 16; i++) {
+        fused_ids[i] = cJSON_GetStringValue(cJSON_GetArrayItem(fuse, (int)i));
+    }
+    const char *new_id = vec_str(tv, "newUnitId");
+
+    knishio_wallet_t *source = fresh_wallet(secret, token);
+    knishio_wallet_t *remainder = fresh_wallet(secret, token);
+    knishio_wallet_t *recipient = fresh_wallet(secret, token);
+    knishio_molecule_t *m = NULL;
+    bool ok = source && remainder && recipient;
+    if (ok) {
+        source->token_units = units_from_json(cJSON_GetObjectItem(tv, "sourceUnits"), &source->token_unit_count);
+        source->balance = (double)source->token_unit_count;
+        if (source_batch) source->batch_id = safe_strdup(source_batch);
+        ok = knishio_molecule_create(&m, secret, bundle, source, remainder, NULL, "V4") == KNISHIO_SUCCESS;
+    }
+    knishio_error_t built = ok ? knishio_molecule_init_fuse_token(m, recipient, fused_ids, fused_count, new_id)
+                               : KNISHIO_ERROR_INVALID_STATE;
+    char label[200];
+    const cJSON *must_reject = cJSON_GetObjectItem(tv, "mustReject");
+    if (cJSON_IsTrue(must_reject)) {
+        const char *why = knishio_molecule_fusion_error(source, fused_ids, fused_count, new_id);
+        ok = ok && built == KNISHIO_ERROR_TRANSFER_BALANCE && m->atom_count == 0 &&
+             why && strstr(why, vec_str(tv, "expectedErrorContains")) != NULL;
+        snprintf(label, sizeof(label), "fusion %s: refused client-side (%s)", vec_str(tv, "name"), why ? why : "no reason");
+    } else {
+        ok = ok && built == KNISHIO_SUCCESS;
+        if (ok) {
+            set_canonical_timestamps(m);
+            ok = knishio_molecule_sign(m, bundle, false, true) == KNISHIO_SUCCESS;
+        }
+        ok = ok && isotopes_match(m, cJSON_GetObjectItem(tv, "expectedIsotopes"));
+        const knishio_atom_t *s = ok ? m->atoms[0] : NULL;
+        const knishio_atom_t *b = ok ? m->atoms[1] : NULL;
+        const knishio_atom_t *f = ok ? m->atoms[2] : NULL;
+        const knishio_atom_t *r = ok ? m->atoms[3] : NULL;
+        ok = ok && safe_strcmp(s->value, vec_str(tv, "expectedSourceValue")) &&
+             safe_strcmp(b->value, vec_str(tv, "expectedBurnValue")) &&
+             safe_strcmp(f->value, vec_str(tv, "expectedFusionValue")) &&
+             safe_strcmp(r->value, vec_str(tv, "expectedRemainderValue"));
+        ok = ok && safe_strcmp(b->meta_type, "walletBundle") &&
+             safe_strcmp(b->meta_id, "0000000000000000000000000000000000000000000000000000000000000000") &&
+             safe_strcmp(f->meta_type, "walletBundle") && safe_strcmp(f->meta_id, recipient->bundle_hash) &&
+             safe_strcmp(r->meta_type, "walletBundle") && safe_strcmp(r->meta_id, remainder->bundle_hash);
+        ok = ok && unit_ids_match(atom_meta_value(s, "tokenUnits"), cJSON_GetObjectItem(tv, "expectedSourceUnitIds")) &&
+             unit_ids_match(atom_meta_value(b, "tokenUnits"), cJSON_GetObjectItem(tv, "expectedBurnUnitIds")) &&
+             unit_ids_match(atom_meta_value(r, "tokenUnits"), cJSON_GetObjectItem(tv, "expectedRemainderUnitIds"));
+        /* F carries exactly [N]; N = [id, id, {"fusedTokenUnits": the fused triples}]. */
+        cJSON *fu = ok ? cJSON_Parse(atom_meta_value(f, "tokenUnits") ? atom_meta_value(f, "tokenUnits") : "") : NULL;
+        const cJSON *n = (fu && cJSON_GetArraySize(fu) == 1) ? cJSON_GetArrayItem(fu, 0) : NULL;
+        const cJSON *fused_units = n ? cJSON_GetObjectItem(cJSON_GetArrayItem(n, 2), "fusedTokenUnits") : NULL;
+        char *fused_units_json = fused_units ? cJSON_PrintUnformatted(fused_units) : NULL;
+        ok = ok && n && safe_strcmp(cJSON_GetStringValue(cJSON_GetArrayItem(n, 0)), new_id) &&
+             safe_strcmp(cJSON_GetStringValue(cJSON_GetArrayItem(n, 1)), new_id) &&
+             unit_ids_match(fused_units_json, cJSON_GetObjectItem(tv, "expectedFusedTokenUnitIds"));
+        if (fused_units_json) cJSON_free(fused_units_json);
+        if (fu) cJSON_Delete(fu);
+        ok = ok && sum_matches(m, tv);
+        if (source_batch) {
+            ok = ok && safe_strcmp(s->batch_id, source_batch) && safe_strcmp(r->batch_id, source_batch) &&
+                 b->batch_id && f->batch_id && strlen(b->batch_id) == 64 && strlen(f->batch_id) == 64 &&
+                 !safe_strcmp(b->batch_id, source_batch) && !safe_strcmp(f->batch_id, source_batch) &&
+                 !safe_strcmp(b->batch_id, f->batch_id);
+        } else {
+            ok = ok && !s->batch_id && !b->batch_id && !f->batch_id && !r->batch_id;
+        }
+        ok = ok && knishio_molecule_check(m, NULL) == KNISHIO_SUCCESS;
+        snprintf(label, sizeof(label), "fusion %s%s: V V F V conserves, units and fusedTokenUnits as the vector",
+                 vec_str(tv, "name"), source_batch ? " (batch-bearing source)" : "");
+    }
+    log_test(label, ok, ok ? NULL : "shape, units, batch or verification failed");
+    if (m) {
+        *atoms += (int)m->atom_count;
+        knishio_molecule_free_deep(m);
+    }
+    if (source) knishio_wallet_free(source);
+    if (remainder) knishio_wallet_free(remainder);
+    if (recipient) knishio_wallet_free(recipient);
+    return ok;
+}
+
+/* buffer_withdraw_fresh_remainder: B(S) V(recipient) B(fresh remainder). */
+static bool phase_b_withdraw_case(const cJSON *tv, const char *secret, const char *bundle, int *atoms) {
+    knishio_wallet_t *source = fresh_wallet(secret, "BUFTOK");
+    knishio_wallet_t *remainder = fresh_wallet(secret, "BUFTOK");
+    knishio_wallet_t *recipient = knishio_calloc(1, sizeof(knishio_wallet_t));
+    knishio_molecule_t *m = NULL;
+    bool ok = source && remainder && recipient;
+    if (ok) {
+        source->balance = vec_int(tv, "sourceBalance");
+        recipient->token = safe_strdup("BUFTOK");
+        recipient->bundle_hash = safe_strdup("1111111111111111111111111111111111111111111111111111111111111111");
+        recipient->position = safe_strdup("");
+        recipient->address = safe_strdup("");
+        ok = knishio_molecule_create(&m, secret, bundle, source, remainder, NULL, "V4") == KNISHIO_SUCCESS &&
+             knishio_molecule_init_withdraw_buffer(m, recipient, vec_int(tv, "amount")) == KNISHIO_SUCCESS;
+    }
+    if (ok) {
+        set_canonical_timestamps(m);
+        ok = knishio_molecule_sign(m, bundle, false, true) == KNISHIO_SUCCESS;
+    }
+    ok = ok && isotopes_match(m, cJSON_GetObjectItem(tv, "expectedIsotopes")) &&
+         safe_strcmp(m->atoms[0]->value, vec_str(tv, "expectedSourceValue")) &&
+         safe_strcmp(m->atoms[1]->value, vec_str(tv, "expectedRecipientValue")) &&
+         safe_strcmp(m->atoms[2]->value, vec_str(tv, "expectedRemainderValue")) &&
+         safe_strcmp(m->atoms[1]->meta_id, recipient->bundle_hash) &&
+         safe_strcmp(m->atoms[1]->position, "") && sum_matches(m, tv);
+    const cJSON *distinct = cJSON_GetObjectItem(tv, "expectedRemainderPositionDistinctFromSource");
+    ok = ok && (!cJSON_IsTrue(distinct) || !safe_strcmp(m->atoms[2]->position, m->atoms[0]->position));
+    ok = ok && knishio_molecule_check(m, source) == KNISHIO_SUCCESS;
+    char label[160];
+    snprintf(label, sizeof(label), "withdraw %s: B V B conserves, remainder at a fresh position", vec_str(tv, "name"));
+    log_test(label, ok, ok ? NULL : "shape, remainder position or verification failed");
+    if (m) {
+        *atoms += (int)m->atom_count;
+        knishio_molecule_free_deep(m);
+    }
+    if (source) knishio_wallet_free(source);
+    if (remainder) knishio_wallet_free(remainder);
+    if (recipient) knishio_wallet_free(recipient);
+    return ok;
+}
+
+static bool test_phase_b_vectors(test_results_t *results) {
+    log_message("\nP1. Phase B Vectors (replenish, stackable fusion, fresh-remainder withdraw)", COLOR_BLUE);
+
+    cJSON *vectors_root = load_canonical_vectors();
+    if (!vectors_root) {
+        const char *require = getenv("KNISHIO_REQUIRE_VECTORS");
+        bool must_have = require && strcmp(require, "true") == 0;
+        results->phase_b.passed = false;
+        results->phase_b.skipped = !must_have;
+        results->phase_b.validation_error = safe_strdup("canonical-patent-vectors.json absent");
+        log_message(must_have ? "  FAILED: canonical-patent-vectors.json absent (KNISHIO_REQUIRE_VECTORS=true)"
+                              : "  SKIPPED: canonical-patent-vectors.json absent (standalone CI)",
+                    must_have ? COLOR_RED : COLOR_YELLOW);
+        return !must_have;
+    }
+
+    const cJSON *vectors = cJSON_GetObjectItem(vectors_root, "vectors");
+    char *secret = NULL;
+    char *bundle = NULL;
+    bool all_pass = knishio_generate_secret("phase-b-self-test-seed", 2048, &secret) &&
+                    knishio_generate_bundle_hash(secret, NULL, NULL, &bundle);
+    int atoms = 0;
+    int cases = 0;
+
+    const char *families[] = { "token_replenish", "stackable_fusion_conservation", "buffer_withdraw_fresh_remainder" };
+    for (size_t fam = 0; all_pass && fam < sizeof(families) / sizeof(families[0]); fam++) {
+        const cJSON *family = cJSON_GetObjectItem(vectors, families[fam]);
+        const cJSON *tests = family ? cJSON_GetObjectItem(family, "tests") : NULL;
+        if (!tests || cJSON_GetArraySize(tests) == 0) {
+            printf("  %s✗%s %s absent from vectors\n", COLOR_RED, COLOR_RESET, families[fam]);
+            all_pass = false;
+            continue;
+        }
+        const cJSON *tv = NULL;
+        cJSON_ArrayForEach(tv, tests) {
+            bool ok;
+            if (fam == 0) {
+                ok = phase_b_replenish_case(tv, secret, bundle, &atoms);
+            } else if (fam == 1) {
+                ok = phase_b_fusion_case(tv, secret, bundle, NULL, &atoms);
+                if (!cJSON_IsTrue(cJSON_GetObjectItem(tv, "mustReject"))) {
+                    ok = phase_b_fusion_case(tv, secret, bundle,
+                                             "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+                                             &atoms) && ok;
+                }
+            } else {
+                ok = phase_b_withdraw_case(tv, secret, bundle, &atoms);
+            }
+            all_pass = all_pass && ok;
+            cases++;
+        }
+    }
+
+    results->phase_b.passed = all_pass && cases > 0;
+    results->phase_b.skipped = false;
+    results->phase_b.atom_count = atoms;
+    if (!results->phase_b.passed) {
+        results->phase_b.validation_error = safe_strdup("Phase B vector assertions failed");
+    }
+    if (secret) knishio_free(secret);
+    if (bundle) knishio_free(bundle);
+    cJSON_Delete(vectors_root);
+    return results->phase_b.passed;
+}
+
 /* ---- 6. Negative cases ---------------------------------------------------------------
  *
  * Each case injects ONE defect into an otherwise well-formed molecule and passes only
@@ -3013,6 +3364,13 @@ static bool save_results(void) {
     cJSON_AddItemToObject(buffer_family, "validationError", cJSON_CreateString(g_results.buffer_family.validation_error ? g_results.buffer_family.validation_error : "null"));
     cJSON_AddItemToObject(tests, "bufferFamily", buffer_family);
 
+    cJSON *phase_b = cJSON_CreateObject();
+    cJSON_AddItemToObject(phase_b, "passed", cJSON_CreateBool(g_results.phase_b.passed));
+    cJSON_AddItemToObject(phase_b, "skipped", cJSON_CreateBool(g_results.phase_b.skipped));
+    cJSON_AddItemToObject(phase_b, "atomCount", cJSON_CreateNumber(g_results.phase_b.atom_count));
+    cJSON_AddItemToObject(phase_b, "validationError", cJSON_CreateString(g_results.phase_b.validation_error ? g_results.phase_b.validation_error : "null"));
+    cJSON_AddItemToObject(tests, "phaseBVectors", phase_b);
+
     /* ML-KEM768 test */
     cJSON *mlkem768 = cJSON_CreateObject();
     cJSON_AddItemToObject(mlkem768, "passed", cJSON_CreateBool(g_results.mlkem768.passed));
@@ -3120,7 +3478,7 @@ static void display_summary(void) {
     /* Count passed tests (including cross-SDK validation). A step skipped for a missing
      * fixture, or cross-validation disabled for Round 1, is never counted as passed and
      * is listed under Skipped Tests rather than Failed Tests. */
-    int total_tests = 13; // crypto + 3 base + 3 extended + WOTS + buffer family + ML-KEM768 + ML-KEM768 vector + negative + cross-SDK
+    int total_tests = 14; // crypto + 3 base + 3 extended + WOTS + buffer family + Phase B + ML-KEM768 + ML-KEM768 vector + negative + cross-SDK
     int passed_tests = 0;
     if (g_results.crypto.passed) passed_tests++;
     if (g_results.meta_creation.passed) passed_tests++;
@@ -3131,6 +3489,7 @@ static void display_summary(void) {
     if (g_results.shadow_wallet_claim.passed) passed_tests++;
     if (g_results.wots_roundtrip.passed) passed_tests++;
     if (g_results.buffer_family.passed) passed_tests++;
+    if (g_results.phase_b.passed) passed_tests++;
     if (g_results.mlkem768.passed) passed_tests++;
     if (g_results.mlkem768_vector.passed) passed_tests++;
     if (g_results.negative_cases.passed) passed_tests++;
@@ -3138,6 +3497,7 @@ static void display_summary(void) {
     int skipped_tests = 0;
     if (g_results.wots_roundtrip.skipped) skipped_tests++;
     if (g_results.buffer_family.skipped) skipped_tests++;
+    if (g_results.phase_b.skipped) skipped_tests++;
     if (g_results.mlkem768_vector.skipped) skipped_tests++;
     if (!g_results.cross_validation_ran) skipped_tests++;
     const int failed_tests = total_tests - passed_tests - skipped_tests;
@@ -3179,6 +3539,10 @@ static void display_summary(void) {
             printf("  - bufferFamily: %s\n",
                    g_results.buffer_family.validation_error ? g_results.buffer_family.validation_error : "Validation failed");
         }
+        if (!g_results.phase_b.passed && !g_results.phase_b.skipped) {
+            printf("  - phaseBVectors: %s\n",
+                   g_results.phase_b.validation_error ? g_results.phase_b.validation_error : "Validation failed");
+        }
         if (!g_results.mlkem768.passed) {
             printf("  - mlkem768: %s\n", g_results.mlkem768.error ? g_results.mlkem768.error : "Validation failed");
         }
@@ -3205,6 +3569,10 @@ static void display_summary(void) {
         if (g_results.buffer_family.skipped) {
             printf("  - bufferFamily: %s (SKIPPED — missing coverage, not a pass)\n",
                    g_results.buffer_family.validation_error ? g_results.buffer_family.validation_error : "fixture absent");
+        }
+        if (g_results.phase_b.skipped) {
+            printf("  - phaseBVectors: %s (SKIPPED — missing coverage, not a pass)\n",
+                   g_results.phase_b.validation_error ? g_results.phase_b.validation_error : "fixture absent");
         }
         if (g_results.mlkem768_vector.skipped) {
             printf("  - mlkem768Vector: %s (SKIPPED — missing coverage, not a pass)\n",
@@ -3525,6 +3893,7 @@ int main(void) {
     bool shadow_result = test_shadow_wallet_claim(&g_results, tests_config);
     bool wots_result = test_wots_roundtrip(&g_results);
     bool buffer_result = test_buffer_family(&g_results);
+    bool phase_b_result = test_phase_b_vectors(&g_results);
     bool mlkem768_result = test_mlkem768(&g_results, tests_config);
     bool mlkem768_vector_result = test_mlkem768_vector_assertion(&g_results);
     bool negative_result = test_negative_cases(&g_results, tests_config);
@@ -3540,11 +3909,11 @@ int main(void) {
     display_summary();
 
     /* Exit with appropriate code */
-    int total_tests = 13; // crypto + 3 base + 3 extended (token/wallet/shadow) + WOTS + buffer family + ML-KEM768 + ML-KEM768 vector + negative + cross-SDK
+    int total_tests = 14; // crypto + 3 base + 3 extended (token/wallet/shadow) + WOTS + buffer family + Phase B + ML-KEM768 + ML-KEM768 vector + negative + cross-SDK
     int passed_tests = (crypto_result ? 1 : 0) + (meta_result ? 1 : 0) +
                       (simple_result ? 1 : 0) + (complex_result ? 1 : 0) +
                       (token_result ? 1 : 0) + (wallet_result ? 1 : 0) + (shadow_result ? 1 : 0) +
-                      (wots_result ? 1 : 0) + (buffer_result ? 1 : 0) +
+                      (wots_result ? 1 : 0) + (buffer_result ? 1 : 0) + (phase_b_result ? 1 : 0) +
                       (mlkem768_result ? 1 : 0) + (mlkem768_vector_result ? 1 : 0) + (negative_result ? 1 : 0) +
                       (cross_sdk_result ? 1 : 0);
     return (passed_tests == total_tests) ? EXIT_SUCCESS : EXIT_FAILURE;

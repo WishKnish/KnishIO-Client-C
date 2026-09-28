@@ -555,6 +555,50 @@ knishio_error_t knishio_client_propose_molecule(
     return error;
 }
 
+knishio_error_t knishio_client_submit_molecule(
+    knishio_client_t* client,
+    const knishio_molecule_t* molecule,
+    const char* operation_name,
+    const char* mutation,
+    knishio_graphql_response_t** response
+) {
+    if (!client || !molecule || !operation_name || !mutation || !response) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    *response = NULL;
+
+    /* Contract 9.7: a molecule that fails the SDK's own check never leaves the client. */
+    knishio_error_t error = knishio_molecule_check(molecule, NULL);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
+
+    char* molecule_json = NULL;
+    error = knishio_molecule_to_json(molecule, &molecule_json);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
+    size_t var_len = strlen(molecule_json) + 32;
+    char* variables = knishio_malloc(var_len);
+    if (!variables) {
+        knishio_free(molecule_json);
+        return KNISHIO_ERROR_MEMORY;
+    }
+    snprintf(variables, var_len, "{\"molecule\":%s}", molecule_json);
+    knishio_free(molecule_json);
+
+    knishio_graphql_operation_t operation = {
+        .name = operation_name,
+        .query = mutation,
+        .variables_json = variables,
+        .requires_auth = true,
+        .is_mutation = true
+    };
+    error = knishio_client_execute_graphql(client, &operation, response);
+    knishio_free(variables);
+    return error;
+}
+
 /* Query batch information */
 knishio_error_t knishio_client_query_batch(
     knishio_client_t* client,
@@ -618,7 +662,8 @@ knishio_error_t knishio_client_query_batch_history(
     return knishio_client_execute_query(client, query, variables, result);
 }
 
-/* Create metadata */
+/* Create metadata: an M atom signed by the USER wallet at the ContinuID pointer plus the
+ * ContinuID I atom (JS createMeta -> initMeta), checked before it is sent. */
 knishio_error_t knishio_client_create_meta(
     knishio_client_t* client,
     const char* meta_type,
@@ -627,67 +672,74 @@ knishio_error_t knishio_client_create_meta(
     size_t meta_count,
     char** molecular_hash
 ) {
-    if (!client || !meta_type || !molecular_hash) {
+    if (!client || !meta_type || !molecular_hash || (meta_count > 0 && !meta)) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Get source wallet */
-    knishio_wallet_t* wallet = NULL;
-    knishio_error_t error = knishio_client_get_source_wallet(client, "USER", &wallet);
-    if (error != KNISHIO_SUCCESS) {
-        return error;
-    }
-    
-    /* Create molecule */
+    *molecular_hash = NULL;
+
+    knishio_wallet_t* source = NULL;
+    knishio_wallet_t* remainder = NULL;
+    char* remainder_position = NULL;
     knishio_molecule_t* molecule = NULL;
-    error = knishio_client_create_molecule(client, wallet, "meta", &molecule);
+    knishio_graphql_response_t* response = NULL;
+    const char** keys = NULL;
+    const char** vals = NULL;
+
+    knishio_error_t error = knishio_client_get_source_wallet_continuid(client, "USER", &source);
     if (error != KNISHIO_SUCCESS) {
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
         return error;
     }
-    
-    /* Create meta atom */
-    knishio_atom_t* atom = NULL;
-    error = knishio_atom_create_with_meta(
-        &atom,
-        wallet->position,
-        wallet->address,
-        KNISHIO_ISOTOPE_M,  /* Meta isotope */
-        "USER",
-        NULL,  /* no value for meta */
-        NULL,  /* no batch ID */
-        meta_type,
-        meta_id,
-        meta,
-        meta_count
-    );
-    
-    if (error != KNISHIO_SUCCESS) {
-        knishio_molecule_free(molecule);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return error;
+    if (!knishio_generate_position(&remainder_position)) {
+        error = KNISHIO_ERROR_CRYPTO;
+        goto cleanup;
     }
-    
-    /* Add atom to molecule */
-    error = knishio_molecule_add_atom(molecule, atom);
+    error = knishio_wallet_create_simple(&remainder, source->secret, "USER", remainder_position);
     if (error != KNISHIO_SUCCESS) {
-        knishio_atom_free(atom);
-        knishio_molecule_free(molecule);
-        knishio_wallet_cleanup(wallet);
-        knishio_free(wallet);
-        return error;
+        goto cleanup;
     }
-    
-    /* Propose molecule */
-    error = knishio_client_propose_molecule(client, molecule, molecular_hash);
-    
-    /* Cleanup */
-    knishio_molecule_free(molecule);
-    knishio_wallet_cleanup(wallet);
-    knishio_free(wallet);
-    
+    error = knishio_molecule_create(&molecule, source->secret, source->bundle_hash, source, remainder,
+                                    knishio_client_get_cell_slug(client), "V4");
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+    if (meta_count > 0) {
+        keys = knishio_calloc(meta_count, sizeof(*keys));
+        vals = knishio_calloc(meta_count, sizeof(*vals));
+        if (!keys || !vals) {
+            error = KNISHIO_ERROR_MEMORY;
+            goto cleanup;
+        }
+        for (size_t i = 0; i < meta_count; i++) {
+            keys[i] = meta[i] ? meta[i]->key : NULL;
+            vals[i] = meta[i] ? meta[i]->value : NULL;
+        }
+    }
+    error = knishio_molecule_init_meta(molecule, meta_type, meta_id ? meta_id : source->bundle_hash,
+                                       keys, vals, meta_count);
+    if (error == KNISHIO_SUCCESS) error = knishio_molecule_generate_hash(molecule);
+    if (error == KNISHIO_SUCCESS) error = knishio_molecule_sign(molecule, source->bundle_hash, false, true);
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_client_submit_molecule(client, molecule, "CreateMeta",
+            "mutation CreateMeta($molecule: MoleculeInput!) {"
+            "  ProposeMolecule(molecule: $molecule) { molecularHash status reason payload }"
+            "}", &response);
+    }
+    if (error == KNISHIO_SUCCESS) {
+        if (response->success && response->molecular_hash) {
+            *molecular_hash = knishio_strdup(response->molecular_hash);
+        } else {
+            error = KNISHIO_ERROR_INVALID_RESPONSE;
+        }
+    }
+
+cleanup:
+    if (response) knishio_graphql_response_free(response);
+    knishio_free(keys);
+    knishio_free(vals);
+    if (molecule) knishio_molecule_free_deep(molecule);
+    if (remainder_position) knishio_free(remainder_position);
+    if (remainder) knishio_wallet_free(remainder);
+    if (source) knishio_wallet_free(source);
     return error;
 }
 

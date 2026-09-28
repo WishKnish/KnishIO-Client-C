@@ -92,7 +92,9 @@ knishio_error_t knishio_molecule_check(
     if (!check_molecular_hash(molecule))   return KNISHIO_ERROR_MOLECULAR_HASH_MISMATCH;
     if (!check_ots(molecule))              return KNISHIO_ERROR_SIGNATURE_MISMATCH;
     if (!check_batch_id(molecule))         return KNISHIO_ERROR_BATCH_ID;
-    if (!check_continuid(molecule))        return KNISHIO_ERROR_INVALID_STATE;
+    /* A USER-signed molecule without an I atom: JS CheckMolecule.continuId() throws
+     * AtomsMissingException, and validator 0.6.1 answers "AtomsMissing" — same code here. */
+    if (!check_continuid(molecule))        return KNISHIO_ERROR_ATOMS_MISSING;
     if (!check_isotope_m(molecule))        return KNISHIO_ERROR_META_MISSING;
     if (!check_isotope_t(molecule))        return KNISHIO_ERROR_INVALID_STATE;
     if (!check_isotope_c(molecule))        return KNISHIO_ERROR_INVALID_STATE;

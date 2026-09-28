@@ -186,9 +186,13 @@ knishio_error_t knishio_client_create_molecule(
 );
 
 /**
- * @brief Propose a molecule to the network
- * Equivalent to JavaScript: client.proposeMolecule(molecule)
- * 
+ * @brief Propose a caller-built molecule to the network, as given
+ * Equivalent to JavaScript: client.proposeMolecule(molecule) / MutationProposeMolecule
+ *
+ * The raw path: the molecule is sent unchanged and NOT checked locally, so negative tests and
+ * chaos probes can submit deliberately invalid molecules (the validator's own checks protect
+ * this path). Every high-level operation goes through knishio_client_submit_molecule instead.
+ *
  * @param client KnishIO client instance
  * @param molecule Molecule to propose
  * @param molecular_hash Output molecular hash (allocated, must be freed)
@@ -198,6 +202,30 @@ knishio_error_t knishio_client_propose_molecule(
     knishio_client_t* client,
     knishio_molecule_t* molecule,
     char** molecular_hash
+);
+
+/**
+ * @brief Check a signed molecule the SDK built, then submit it (contract 9.7)
+ *
+ * Runs knishio_molecule_check() on the molecule first. A molecule that fails its own check is
+ * refused locally with that check's error (e.g. KNISHIO_ERROR_ATOMS_MISSING for a USER-signed
+ * molecule without a ContinuID atom) and nothing is sent. Otherwise it is serialized as
+ * {"molecule": ...} and sent as `mutation` through knishio_client_execute_graphql. Every
+ * high-level operation that builds its own molecule submits through here.
+ *
+ * @param client KnishIO client instance
+ * @param molecule Signed molecule (hash generated)
+ * @param operation_name GraphQL operation name
+ * @param mutation GraphQL mutation text taking $molecule: MoleculeInput!
+ * @param response Output response (free with knishio_graphql_response_free)
+ * @return KNISHIO_SUCCESS when a response was received; the check's or transport's error otherwise
+ */
+knishio_error_t knishio_client_submit_molecule(
+    knishio_client_t* client,
+    const knishio_molecule_t* molecule,
+    const char* operation_name,
+    const char* mutation,
+    knishio_graphql_response_t** response
 );
 
 /**
