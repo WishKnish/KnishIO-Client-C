@@ -266,6 +266,8 @@ list(APPEND KNISHIO_SOURCES src/crypto/mlkem_native_multilevel.c)
 # Create shared library
 add_library(knishio-client SHARED ${KNISHIO_SOURCES})
 add_library(KnishIO::Client ALIAS knishio-client)
+# Versioned shared library: libknishio-client.<version> with install name / SONAME at the major.
+set_target_properties(knishio-client PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
 
 # Create static library
 add_library(knishio-client-static STATIC ${KNISHIO_SOURCES})

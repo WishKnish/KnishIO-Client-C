@@ -4,11 +4,12 @@
 # usage: packaging/check-release-package.sh <stage-dir> <version>
 #
 # Checks that a copy of the package moved to a new directory works through every consumer
-# path: the CMake package config and the pkg-config file carry no build-host paths, every
-# installed header compiles on its own, and consumer/main.c builds and prints the expected
-# bundle hash with plain -I/-L flags, with pkg-config, and with find_package (shared and
-# static). Prints `PASS <check>` or `FAIL <check>: <detail>` per check and exits 1 if any
-# check failed. It never writes into <stage-dir>; all work happens in a temporary directory.
+# path: the CMake package config and the pkg-config file carry no build-host paths, the shared
+# library carries its version (install name / SONAME at the major version), every installed
+# header compiles on its own, and consumer/main.c builds and prints the expected bundle hash
+# with plain -I/-L flags, with pkg-config, and with find_package (shared and static). Prints
+# `PASS <check>` or `FAIL <check>: <detail>` per check and exits 1 if any check failed. It
+# never writes into <stage-dir>; all work happens in a temporary directory.
 #
 # Headers listed in header-check-exclusions.txt (`relpath  # reason`, relative to
 # include/knishio) are skipped by the headers check and reported as SKIP.
@@ -106,6 +107,34 @@ else
     exit 1
 fi
 PCP="$R/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+# 2b. soname: the shared library is versioned. Darwin: install name at the major version and
+#     current version = <version>; Linux: SONAME at the major version.
+MAJOR=${VERSION%%.*}
+case "$(uname -s)" in
+    Darwin)
+        DYLIB="$R/lib/libknishio-client.dylib"
+        ID=$(otool -D "$DYLIB" 2>/dev/null | sed -n 2p)
+        OWN=$(otool -L "$DYLIB" 2>/dev/null | sed -n 2p | sed 's/^[[:space:]]*//')
+        case "$ID" in
+            */libknishio-client."$MAJOR".dylib)
+                case "$OWN" in
+                    *"current version $VERSION)"*) pass "soname ($ID, current version $VERSION)" ;;
+                    *) fail soname "otool -L: '${OWN:-no output}' does not carry current version $VERSION" ;;
+                esac
+                ;;
+            *) fail soname "install name '${ID:-none}' does not end with /libknishio-client.$MAJOR.dylib" ;;
+        esac
+        ;;
+    *)
+        SONAME=$(readelf -d "$R/lib/libknishio-client.so" 2>/dev/null | sed -n 's/.*Library soname: \[\(.*\)\].*/\1/p')
+        if [ "$SONAME" = "libknishio-client.so.$MAJOR" ]; then
+            pass "soname ($SONAME)"
+        else
+            fail soname "SONAME '${SONAME:-none}' is not libknishio-client.so.$MAJOR"
+        fi
+        ;;
+esac
 
 # 3. headers: each installed header compiles alone with the package's pkg-config cflags.
 EXCLUDED=""
