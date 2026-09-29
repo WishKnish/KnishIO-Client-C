@@ -14,6 +14,21 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
+## [1.2.4] — 2026-09-29
+
+### Fixed
+
+- createToken sends tokenUnits as [id, name, metas] triples (a bare id becomes [id, id, {}]), the
+  form every other unit operation already uses; pinned by the create_token_units vector.
+- The shared library is versioned: VERSION/SOVERSION give libknishio-client.1.2.4.dylib /
+  .so.1.2.4 with install name / SONAME at the major version (it reported 0.0.0 before);
+  packaging/check-release-package.sh gains a `soname` check.
+
+### Notes
+
+- `self-test.c` P1 consumes the `create_token_units` vectors, driving the public
+  `knishio_client_create_token()` against a loopback GraphQL stub.
+
 ## [1.2.3] — 2026-09-28
 
 ### Fixed
@@ -545,7 +560,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.2.3...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.2.4...HEAD
+[1.2.4]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.4
 [1.2.3]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.3
 [1.2.2]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.2
 [1.2.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.1
