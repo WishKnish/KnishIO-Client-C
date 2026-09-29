@@ -168,19 +168,31 @@ knishio_error_t knishio_client_create_token(
         bool is_stackable = (params->fungibility == KNISHIO_TOKEN_STACKABLE ||
                              params->fungibility == KNISHIO_TOKEN_NONFUNGIBLE);
         if (is_stackable && params->units && params->unit_count > 0) {
-            /* tokenUnits = JSON array of the unit ids ["u1","u2",...] (mirror JS JSON.stringify(units)) */
+            /* tokenUnits = [[id, id, {}], ...] in caller order: each bare unit id as an
+             * [id, name, metas] triple (name = id, empty metas), the form transfers, fusion and
+             * replenish send (build_token_units_json in molecule.c); mirror JS TokenUnit.toData(). */
             knishio_json_array_builder_t* ub = knishio_json_array_builder_create();
-            if (ub) {
-                for (size_t i = 0; i < params->unit_count; i++) {
-                    knishio_json_array_add_string(ub, params->units[i] ? params->units[i] : "");
-                }
+            knishio_json_object_builder_t* empty_metas = knishio_json_object_builder_create();
+            bool built = ub && empty_metas;
+            for (size_t i = 0; built && i < params->unit_count; i++) {
+                const char* id = params->units[i] ? params->units[i] : "";
+                knishio_json_array_builder_t* triple = knishio_json_array_builder_create();
+                built = triple &&
+                        knishio_json_array_add_string(triple, id) &&
+                        knishio_json_array_add_string(triple, id) &&
+                        knishio_json_array_add_object(triple, empty_metas) &&  /* duplicates */
+                        knishio_json_array_add_array(ub, triple);              /* duplicates */
+                knishio_json_array_builder_free(triple);
+            }
+            if (built) {
                 knishio_json_t* uarr = knishio_json_array_build(ub);
                 if (uarr) {
                     tu_json = knishio_json_serialize(uarr, false);
                     knishio_json_free(uarr);
                 }
-                knishio_json_array_builder_free(ub);
             }
+            knishio_json_object_builder_free(empty_metas);
+            knishio_json_array_builder_free(ub);
             if (tu_json && n + 3 <= 24) {
                 keys[n] = "splittable"; vals[n] = "1";      n++;
                 keys[n] = "decimals";   vals[n] = "0";      n++;

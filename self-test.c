@@ -20,15 +20,23 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include <math.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <cjson/cJSON.h>
 #include "knishio/knishio.h"
 #include "knishio/wallet.h"
 #include "knishio/molecule.h"
 #include "knishio/atom.h"
+#include "knishio/client.h"
+#include "knishio/operations/auth.h"
+#include "knishio/operations/token.h"
 #include "knishio/crypto/shake256.h"
 #include "knishio/utils/encoding.h"
 #include "knishio/crypto/mlkem.h"
@@ -2248,13 +2256,15 @@ static bool test_buffer_family(test_results_t *results) {
     return all_pass;
 }
 
-/* ---- P1. Phase B vectors: replenish, stackable fusion, fresh-remainder withdraw ---------
+/* ---- P1. Phase B vectors: replenish, stackable fusion, fresh-remainder withdraw, createToken units
  *
  * Contract 9.1 / 9.2 / 9.6 (validator 0.6.0/0.6.1). Each case builds the molecule with the
  * SDK's own builder, signs it, and asserts what the vector pins: isotopes and values in order,
  * metaType/metaId, the replenish `action` and meta order, every atom's tokenUnits ids, the
  * fused unit's fusedTokenUnits ids, the V+B/V+F sum — and that knishio_molecule_check accepts
- * the molecule. Molecular hashes are not frozen (positions are random). */
+ * the molecule. create_token_units instead drives the public createToken through a loopback
+ * stub and pins the byte-exact tokenUnits it sent. Molecular hashes are not frozen (positions
+ * are random). */
 
 static const char *atom_meta_value(const knishio_atom_t *atom, const char *key) {
     for (size_t i = 0; atom && i < atom->meta_count; i++) {
@@ -2533,8 +2543,269 @@ static bool phase_b_withdraw_case(const cJSON *tv, const char *secret, const cha
     return ok;
 }
 
+/* create_token_units: the PUBLIC knishio_client_create_token, driven against a scripted loopback
+ * GraphQL endpoint (an HTTP/1.1 server on an ephemeral 127.0.0.1 port, in a thread; no external
+ * service; the pattern of tests/phaseb_client_ops.c). The stub answers the login and the
+ * createToken proposal; the case parses the molecule the client actually sent and pins its C atom:
+ * value, metaType/metaId and the byte-exact tokenUnits wire value. */
+
+typedef struct {
+    int listen_fd;
+    unsigned short port;
+    pthread_t thread;
+    pthread_mutex_t lock;
+    bool stop;
+    char *last_proposal;   /* body of the last ProposeMolecule request */
+} loopback_stub_t;
+
+static bool stub_send_all(int fd, const char *buf, size_t len) {
+    while (len > 0) {
+        ssize_t n = send(fd, buf, len, 0);
+        if (n <= 0) return false;
+        buf += n;
+        len -= (size_t)n;
+    }
+    return true;
+}
+
+/* Reads one HTTP request (headers + Content-Length body). Returns the body, or NULL. */
+static char *stub_read_request(int fd) {
+    size_t cap = 65536, len = 0;
+    char *buf = malloc(cap);
+    if (!buf) return NULL;
+    char *header_end = NULL;
+    while (!header_end) {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char *grown = realloc(buf, cap);
+            if (!grown) { free(buf); return NULL; }
+            buf = grown;
+        }
+        ssize_t n = recv(fd, buf + len, cap - len - 1, 0);
+        if (n <= 0) { free(buf); return NULL; }
+        len += (size_t)n;
+        buf[len] = '\0';
+        header_end = strstr(buf, "\r\n\r\n");
+    }
+    size_t header_len = (size_t)(header_end - buf) + 4;
+    size_t content_length = 0;
+    bool expect_continue = false;
+    for (char *line = buf; line < header_end;) {
+        char *eol = strstr(line, "\r\n");
+        if (!eol) break;
+        if (strncasecmp(line, "Content-Length:", 15) == 0) {
+            content_length = (size_t)strtoul(line + 15, NULL, 10);
+        } else if (strncasecmp(line, "Expect:", 7) == 0 && strstr(line, "100-continue")) {
+            expect_continue = true;
+        }
+        line = eol + 2;
+    }
+    if (expect_continue && len == header_len) {
+        const char *cont = "HTTP/1.1 100 Continue\r\n\r\n";
+        if (!stub_send_all(fd, cont, strlen(cont))) { free(buf); return NULL; }
+    }
+    while (len < header_len + content_length) {
+        if (len + 1 >= cap) {
+            cap = header_len + content_length + 1;
+            char *grown = realloc(buf, cap);
+            if (!grown) { free(buf); return NULL; }
+            buf = grown;
+        }
+        ssize_t n = recv(fd, buf + len, cap - len - 1, 0);
+        if (n <= 0) { free(buf); return NULL; }
+        len += (size_t)n;
+        buf[len] = '\0';
+    }
+    char *body = malloc(content_length + 1);
+    if (body) {
+        memcpy(body, buf + header_len, content_length);
+        body[content_length] = '\0';
+    }
+    free(buf);
+    return body;
+}
+
+/* Genesis ContinuID for the login and createToken's source wallet; every proposal accepted. */
+static void *stub_serve(void *arg) {
+    loopback_stub_t *s = arg;
+    for (;;) {
+        int fd = accept(s->listen_fd, NULL, NULL);
+        pthread_mutex_lock(&s->lock);
+        bool stop = s->stop;
+        pthread_mutex_unlock(&s->lock);
+        if (fd < 0 || stop) {
+            if (fd >= 0) close(fd);
+            break;
+        }
+        char *body = stub_read_request(fd);
+        const char *reply = "{\"errors\":[{\"message\":\"unscripted operation\"}]}";
+        if (body && strstr(body, "QueryContinuId")) {
+            reply = "{\"data\":{\"ContinuId\":null}}";
+        } else if (body && strstr(body, "ProposeMolecule")) {
+            reply = "{\"data\":{\"ProposeMolecule\":{\"molecularHash\":\"h\",\"status\":\"accepted\","
+                    "\"reason\":null,\"payload\":\"{\\\"token\\\":\\\"jwt-accepted\\\"}\",\"createdAt\":\"0\"}}}";
+            pthread_mutex_lock(&s->lock);
+            free(s->last_proposal);
+            s->last_proposal = body;
+            body = NULL;
+            pthread_mutex_unlock(&s->lock);
+        }
+        free(body);
+        char head[160];
+        int head_len = snprintf(head, sizeof(head),
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                "Content-Length: %zu\r\nConnection: close\r\n\r\n", strlen(reply));
+        if (stub_send_all(fd, head, (size_t)head_len)) {
+            stub_send_all(fd, reply, strlen(reply));
+        }
+        close(fd);
+    }
+    return NULL;
+}
+
+static bool stub_start(loopback_stub_t *s) {
+    memset(s, 0, sizeof(*s));
+    pthread_mutex_init(&s->lock, NULL);
+    s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (s->listen_fd < 0) return false;
+    int one = 1;
+    setsockopt(s->listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t addr_len = sizeof(addr);
+    if (bind(s->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0
+        || listen(s->listen_fd, 8) != 0
+        || getsockname(s->listen_fd, (struct sockaddr *)&addr, &addr_len) != 0
+        || pthread_create(&s->thread, NULL, stub_serve, s) != 0) {
+        close(s->listen_fd);
+        pthread_mutex_destroy(&s->lock);
+        return false;
+    }
+    s->port = ntohs(addr.sin_port);
+    return true;
+}
+
+static void stub_stop(loopback_stub_t *s) {
+    pthread_mutex_lock(&s->lock);
+    s->stop = true;
+    pthread_mutex_unlock(&s->lock);
+    /* Wake the accept loop with one connection; failing that, shut the listener down. */
+    bool woke = false;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(s->port);
+        woke = connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0;
+        close(fd);
+    }
+    if (!woke) shutdown(s->listen_fd, SHUT_RDWR);
+    pthread_join(s->thread, NULL);
+    close(s->listen_fd);
+    free(s->last_proposal);
+    pthread_mutex_destroy(&s->lock);
+}
+
+/* The molecule of the last ProposeMolecule request the client sent. */
+static knishio_molecule_t *stub_last_proposal(loopback_stub_t *s) {
+    knishio_molecule_t *m = NULL;
+    pthread_mutex_lock(&s->lock);
+    cJSON *root = s->last_proposal ? cJSON_Parse(s->last_proposal) : NULL;
+    pthread_mutex_unlock(&s->lock);
+    const cJSON *vars = root ? cJSON_GetObjectItemCaseSensitive(root, "variables") : NULL;
+    const cJSON *mol = vars ? cJSON_GetObjectItemCaseSensitive(vars, "molecule") : NULL;
+    char *text = mol ? cJSON_PrintUnformatted(mol) : NULL;
+    if (text) {
+        if (knishio_molecule_from_json(text, &m) != KNISHIO_SUCCESS) m = NULL;
+        cJSON_free(text);
+    }
+    if (root) cJSON_Delete(root);
+    return m;
+}
+
+/* A fresh client logged in through the stub (first login: AUTH wallet, genesis ContinuID). */
+static knishio_client_t *stub_login(const loopback_stub_t *s, const char *secret) {
+    char uri[64];
+    snprintf(uri, sizeof(uri), "http://127.0.0.1:%u/graphql", (unsigned)s->port);
+    knishio_client_config_t config = {0};
+    config.uri = uri;
+    config.cell_slug = "public";
+    knishio_client_t *client = NULL;
+    if (knishio_client_create(&client, &config) != KNISHIO_SUCCESS) return NULL;
+    knishio_request_profile_auth_token_params_t params = { .secret = secret, .encrypt = false };
+    knishio_request_profile_auth_token_result_t *result = NULL;
+    knishio_error_t err = knishio_client_request_profile_auth_token(client, &params, &result);
+    bool ok = err == KNISHIO_SUCCESS && result && result->success;
+    knishio_request_profile_auth_token_result_free(result);
+    if (!ok) {
+        knishio_client_destroy(client);
+        return NULL;
+    }
+    return client;
+}
+
+/* create_token_units: stackable createToken with the vector's unit ids (amount 0). */
+static bool phase_b_create_token_case(const cJSON *tv, const char *secret, int *atoms) {
+    const char *token = vec_str(tv, "token");
+    const cJSON *units = cJSON_GetObjectItem(tv, "units");
+    const char *unit_ids[16] = {0};
+    size_t unit_count = units ? (size_t)cJSON_GetArraySize(units) : 0;
+    for (size_t i = 0; i < unit_count && i < 16; i++) {
+        unit_ids[i] = cJSON_GetStringValue(cJSON_GetArrayItem(units, (int)i));
+    }
+    char label[160];
+    snprintf(label, sizeof(label), "createToken %s: C atom value, meta and tokenUnits triples as the vector",
+             vec_str(tv, "name"));
+    loopback_stub_t s;
+    if (unit_count == 0 || unit_count > 16 || !stub_start(&s)) {
+        log_test(label, false, "vector units unusable or loopback stub did not start");
+        return false;
+    }
+
+    knishio_client_t *client = stub_login(&s, secret);
+    knishio_create_token_params_t params = {
+        .token = token,
+        .name = token,
+        .amount = 0,
+        .fungibility = KNISHIO_TOKEN_STACKABLE,
+        .units = unit_ids,
+        .unit_count = unit_count,
+    };
+    knishio_create_token_result_t *res = NULL;
+    bool ok = client && knishio_client_create_token(client, &params, &res) == KNISHIO_SUCCESS &&
+              res && res->success;
+    knishio_molecule_t *m = ok ? stub_last_proposal(&s) : NULL;
+    const knishio_atom_t *c = (m && m->atom_count > 0) ? m->atoms[0] : NULL;
+    const char *sent_units = atom_meta_value(c, "tokenUnits");
+    printf("    tokenUnits sent: %s\n", sent_units ? sent_units : "(absent)");
+    ok = ok && c && c->isotope == KNISHIO_ISOTOPE_C &&
+         safe_strcmp(c->value, vec_str(tv, "expectedCValue")) &&
+         safe_strcmp(c->meta_type, vec_str(tv, "expectedMetaType")) &&
+         safe_strcmp(c->meta_id, vec_str(tv, "expectedMetaId"));
+    ok = ok && safe_strcmp(sent_units, vec_str(tv, "expectedTokenUnits")) &&
+         unit_ids_match(sent_units, cJSON_GetObjectItem(tv, "expectedTokenUnitIds"));
+    ok = ok && knishio_molecule_check(m, NULL) == KNISHIO_SUCCESS;
+
+    char detail[256];
+    snprintf(detail, sizeof(detail), "sent tokenUnits %s, vector %s",
+             sent_units ? sent_units : "(absent)", vec_str(tv, "expectedTokenUnits"));
+    log_test(label, ok, ok ? NULL : detail);
+    if (m) {
+        *atoms += (int)m->atom_count;
+        knishio_molecule_free_deep(m);
+    }
+    knishio_create_token_result_free(res);
+    if (client) knishio_client_destroy(client);
+    stub_stop(&s);
+    return ok;
+}
+
 static bool test_phase_b_vectors(test_results_t *results) {
-    log_message("\nP1. Phase B Vectors (replenish, stackable fusion, fresh-remainder withdraw)", COLOR_BLUE);
+    log_message("\nP1. Phase B Vectors (replenish, stackable fusion, fresh-remainder withdraw, createToken units)", COLOR_BLUE);
 
     cJSON *vectors_root = load_canonical_vectors();
     if (!vectors_root) {
@@ -2557,7 +2828,8 @@ static bool test_phase_b_vectors(test_results_t *results) {
     int atoms = 0;
     int cases = 0;
 
-    const char *families[] = { "token_replenish", "stackable_fusion_conservation", "buffer_withdraw_fresh_remainder" };
+    const char *families[] = { "token_replenish", "stackable_fusion_conservation", "buffer_withdraw_fresh_remainder",
+                               "create_token_units" };
     for (size_t fam = 0; all_pass && fam < sizeof(families) / sizeof(families[0]); fam++) {
         const cJSON *family = cJSON_GetObjectItem(vectors, families[fam]);
         const cJSON *tests = family ? cJSON_GetObjectItem(family, "tests") : NULL;
@@ -2578,8 +2850,10 @@ static bool test_phase_b_vectors(test_results_t *results) {
                                              "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
                                              &atoms) && ok;
                 }
-            } else {
+            } else if (fam == 2) {
                 ok = phase_b_withdraw_case(tv, secret, bundle, &atoms);
+            } else {
+                ok = phase_b_create_token_case(tv, secret, &atoms);
             }
             all_pass = all_pass && ok;
             cases++;
