@@ -36,6 +36,7 @@
 #include "knishio/crypto/shake256.h"
 #include "knishio/utils/encoding.h"
 #include "knishio/error.h"
+#include "../kcore_bridge.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -319,8 +320,21 @@ static bool check_ots(const knishio_molecule_t* molecule) {
         return false;
     }
     key_fragments[0] = '\0';
-    
-    for (int index = 0; index < 16; index++) {
+
+    /* With kcore linked, an eligible OTS (2048 lowercase hex, every count 0..64) runs all 16
+     * chains in one call. A peer's OTS that is not lowercase hex runs the loop below, so the
+     * verdict never depends on whether kcore is linked. */
+    bool chains_done = false;
+#ifdef KNISHIO_HAVE_KCORE
+    if (hash_length >= KNISHIO_KCORE_WOTS_CHUNKS) {
+        int counts[KNISHIO_KCORE_WOTS_CHUNKS];
+        for (size_t i = 0; i < KNISHIO_KCORE_WOTS_CHUNKS; i++) {
+            counts[i] = 8 + normalized_hash[i];
+        }
+        chains_done = knishio_kcore_wots_chains(ots, counts, key_fragments);
+    }
+#endif
+    for (int index = 0; !chains_done && index < 16; index++) {
         char* working_chunk = malloc(256);
         if (!working_chunk) continue;
         

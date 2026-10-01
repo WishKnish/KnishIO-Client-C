@@ -20,6 +20,26 @@
 #include "mlkem_multilevel.h"
 #endif
 
+/* With kcore linked (KNISHIO_USE_KCORE=ON) ML-KEM runs in kcore, which is the same FIPS 203
+ * code as the vendored mlkem-native; its -1 means invalid input, so it takes the existing
+ * error path rather than a fallback. The argument order of each macro is mlkem-native's. */
+#include "../kcore_bridge.h"
+#ifdef KNISHIO_HAVE_KCORE
+#define KNISHIO_MLKEM1024_KEYPAIR(pk, sk, seed) kcore_mlkem1024_keypair((seed), (pk), (sk))
+#define KNISHIO_MLKEM768_KEYPAIR(pk, sk, seed) kcore_mlkem768_keypair((seed), (pk), (sk))
+#define KNISHIO_MLKEM1024_ENC(ct, ss, pk, coins) kcore_mlkem1024_encaps((pk), (coins), (ct), (ss))
+#define KNISHIO_MLKEM768_ENC(ct, ss, pk, coins) kcore_mlkem768_encaps((pk), (coins), (ct), (ss))
+#define KNISHIO_MLKEM1024_DEC(ss, ct, sk) kcore_mlkem1024_decaps((ct), (sk), (ss))
+#define KNISHIO_MLKEM768_DEC(ss, ct, sk) kcore_mlkem768_decaps((ct), (sk), (ss))
+#else
+#define KNISHIO_MLKEM1024_KEYPAIR(pk, sk, seed) mlkem1024_keypair_derand((pk), (sk), (seed))
+#define KNISHIO_MLKEM768_KEYPAIR(pk, sk, seed) mlkem768_keypair_derand((pk), (sk), (seed))
+#define KNISHIO_MLKEM1024_ENC(ct, ss, pk, coins) mlkem1024_enc_derand((ct), (ss), (pk), (coins))
+#define KNISHIO_MLKEM768_ENC(ct, ss, pk, coins) mlkem768_enc_derand((ct), (ss), (pk), (coins))
+#define KNISHIO_MLKEM1024_DEC(ss, ct, sk) mlkem1024_dec((ss), (ct), (sk))
+#define KNISHIO_MLKEM768_DEC(ss, ct, sk) mlkem768_dec((ss), (ct), (sk))
+#endif
+
 /* Parameter constants */
 #define MLKEM1024_PUBLIC_KEY_BYTES   1568
 #define MLKEM1024_PRIVATE_KEY_BYTES  3168
@@ -117,12 +137,12 @@ knishio_error_t knishio_mlkem_keypair_from_seed(knishio_mlkem_keypair_t *keypair
 #ifdef HAVE_MLKEM_NATIVE
     int result = 0;
     if (param == KNISHIO_MLKEM_1024) {
-        result = mlkem1024_keypair_derand(keypair->public_key, keypair->private_key, seed);
+        result = KNISHIO_MLKEM1024_KEYPAIR(keypair->public_key, keypair->private_key, seed);
         keypair->public_key_len = MLKEM1024_PUBLIC_KEY_BYTES;
         keypair->private_key_len = MLKEM1024_PRIVATE_KEY_BYTES;
         keypair->param = KNISHIO_MLKEM_1024;
     } else if (param == KNISHIO_MLKEM_768) {
-        result = mlkem768_keypair_derand(keypair->public_key, keypair->private_key, seed);
+        result = KNISHIO_MLKEM768_KEYPAIR(keypair->public_key, keypair->private_key, seed);
         keypair->public_key_len = MLKEM768_PUBLIC_KEY_BYTES;
         keypair->private_key_len = MLKEM768_PRIVATE_KEY_BYTES;
         keypair->param = KNISHIO_MLKEM_768;
@@ -161,10 +181,10 @@ knishio_error_t knishio_mlkem_encapsulate(
 
     int result = 0;
     if (public_key_len == MLKEM1024_PUBLIC_KEY_BYTES) {
-        result = mlkem1024_enc_derand(ciphertext->ciphertext, shared_secret->shared_secret, public_key, coins);
+        result = KNISHIO_MLKEM1024_ENC(ciphertext->ciphertext, shared_secret->shared_secret, public_key, coins);
         ciphertext->ciphertext_len = MLKEM1024_CIPHERTEXT_BYTES;
     } else if (public_key_len == MLKEM768_PUBLIC_KEY_BYTES) {
-        result = mlkem768_enc_derand(ciphertext->ciphertext, shared_secret->shared_secret, public_key, coins);
+        result = KNISHIO_MLKEM768_ENC(ciphertext->ciphertext, shared_secret->shared_secret, public_key, coins);
         ciphertext->ciphertext_len = MLKEM768_CIPHERTEXT_BYTES;
     } else {
         secure_zero(coins, sizeof(coins));
@@ -196,9 +216,9 @@ knishio_error_t knishio_mlkem_decapsulate(
 #ifdef HAVE_MLKEM_NATIVE
     int result = 0;
     if (ciphertext->ciphertext_len == MLKEM1024_CIPHERTEXT_BYTES && private_key_len == MLKEM1024_PRIVATE_KEY_BYTES) {
-        result = mlkem1024_dec(shared_secret->shared_secret, ciphertext->ciphertext, private_key);
+        result = KNISHIO_MLKEM1024_DEC(shared_secret->shared_secret, ciphertext->ciphertext, private_key);
     } else if (ciphertext->ciphertext_len == MLKEM768_CIPHERTEXT_BYTES && private_key_len == MLKEM768_PRIVATE_KEY_BYTES) {
-        result = mlkem768_dec(shared_secret->shared_secret, ciphertext->ciphertext, private_key);
+        result = KNISHIO_MLKEM768_DEC(shared_secret->shared_secret, ciphertext->ciphertext, private_key);
     } else {
         return KNISHIO_ERROR_INVALID_ARGS;
     }

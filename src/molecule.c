@@ -18,6 +18,7 @@
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
 #include "atom_internal.h"
+#include "kcore_bridge.h"
 
 #include <cjson/cJSON.h>
 
@@ -412,8 +413,22 @@ knishio_error_t knishio_molecule_sign(
     }
     signature_fragments[0] = '\0';
 
-    /* Generate OTS for each chunk */
-    for (size_t i = 0; i < 16 && i < enum_len; i++) {
+    /* Generate OTS for each chunk. With kcore linked, an eligible key (lowercase hex, every
+     * count 0..64) runs all 16 chains in one call; otherwise the loop below does. */
+    bool chains_done = false;
+#ifdef KNISHIO_HAVE_KCORE
+    if (enum_len >= KNISHIO_KCORE_WOTS_CHUNKS) {
+        int counts[KNISHIO_KCORE_WOTS_CHUNKS];
+        for (size_t i = 0; i < KNISHIO_KCORE_WOTS_CHUNKS; i++) {
+            counts[i] = 8 - normalized[i];
+        }
+        if (knishio_kcore_wots_chains(private_key, counts, signature_fragments)) {
+            total_fragment_len = KNISHIO_KCORE_WOTS_HEX_LEN;
+            chains_done = true;
+        }
+    }
+#endif
+    for (size_t i = 0; !chains_done && i < 16 && i < enum_len; i++) {
         char* working_chunk = knishio_strdup(key_chunks[i]);
         if (!working_chunk) {
             knishio_free(signature_fragments);

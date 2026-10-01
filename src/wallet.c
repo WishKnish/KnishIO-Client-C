@@ -6,6 +6,7 @@
 #include "knishio/utils/string.h"
 #include "knishio/utils/security.h"
 #include "knishio/utils/encoding.h"
+#include "kcore_bridge.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -201,6 +202,18 @@ bool knishio_generate_address(const char* private_key, char** address) {
     if (strlen(private_key) != KNISHIO_PRIVKEY_LENGTH) {
         return false;
     }
+
+#ifdef KNISHIO_HAVE_KCORE
+    /* kcore computes the same 16x16 chains, digest and address in one call. Ineligible input
+     * (non-lowercase-hex) or a kcore failure runs the loop below. */
+    if (knishio_kcore_is_lower_hex(private_key, KNISHIO_KCORE_WOTS_HEX_LEN)) {
+        char kcore_address[64];
+        if (kcore_wots_address(private_key, kcore_address) == 0) {
+            *address = knishio_strndup(kcore_address, sizeof(kcore_address));
+            return *address != NULL;
+        }
+    }
+#endif
     
     bool success = false;
     char** fragments = NULL;

@@ -14,6 +14,20 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
+## [Unreleased]
+
+### Added
+
+- Optional kcore backend: CMake option `KNISHIO_USE_KCORE` (default OFF) finds
+  `KnishIOCryptoCore` 0.1.0 (`find_package(... CONFIG REQUIRED)`, via `CMAKE_PREFIX_PATH`)
+  and links `KnishIO::kcore-static` privately into both libraries. With it,
+  `knishio_generate_address`, the signing chains in `knishio_molecule_sign`, the OTS
+  verification chains in `knishio_molecule_check` and ML-KEM-1024/768 keypair / encaps /
+  decaps run in kcore. Only 2048-character lowercase-hex keys/signatures with chain counts
+  0..64 go to kcore; other input runs the existing loop, so the output and verifier verdicts
+  are the same with the option on or off. Encapsulation still draws its coins from
+  `knishio_secure_random` and zeroes them.
+
 ## [1.2.4] — 2026-09-29
 
 ### Fixed

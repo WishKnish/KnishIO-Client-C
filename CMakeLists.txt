@@ -31,6 +31,7 @@ option(KNISHIO_BUILD_EXAMPLES "Build examples" OFF)  # examples reference disabl
 option(KNISHIO_BUILD_DOCS "Build documentation" OFF)
 option(KNISHIO_ENABLE_COVERAGE "Enable code coverage" OFF)
 option(KNISHIO_ENABLE_SANITIZERS "Enable sanitizers" OFF)
+option(KNISHIO_USE_KCORE "Use the KnishIO Crypto Core (kcore) for WOTS+ chains/address and ML-KEM" OFF)
 
 # Set default build type
 if(NOT CMAKE_BUILD_TYPE)
@@ -309,6 +310,29 @@ target_compile_definitions(knishio-client-static PUBLIC
 if(HAVE_LIBOQS)
     target_compile_definitions(knishio-client PUBLIC HAVE_LIBOQS=1)
     target_compile_definitions(knishio-client-static PUBLIC HAVE_LIBOQS=1)
+endif()
+
+# kcore (optional, KNISHIO_USE_KCORE=ON): the KnishIO Crypto Core computes the WOTS+ chains and
+# address and ML-KEM. Point CMAKE_PREFIX_PATH at an extracted knishio-crypto-core-<ver>-<target>
+# package. kcore is linked statically and privately; the vendored mlkem-native and SHAKE256 stay
+# compiled for input kcore is not given (see src/kcore_bridge.h). The static library's export
+# still names KnishIO::kcore-static, so the installed package config finds kcore again.
+if(KNISHIO_USE_KCORE)
+    find_package(KnishIOCryptoCore 0.1.0 CONFIG REQUIRED)
+    message(STATUS "kcore: KnishIOCryptoCore ${KnishIOCryptoCore_VERSION}")
+    foreach(knishio_lib knishio-client knishio-client-static)
+        target_link_libraries(${knishio_lib} PRIVATE KnishIO::kcore-static)
+        target_compile_definitions(${knishio_lib} PRIVATE KNISHIO_HAVE_KCORE=1)
+    endforeach()
+    # kcore.h gives kcore_* default visibility, so without this the shared library would
+    # re-export the whole kcore API next to the SDK's own.
+    if(APPLE)
+        target_link_options(knishio-client PRIVATE "LINKER:-load_hidden,$<TARGET_FILE:KnishIO::kcore-static>")
+    elseif(NOT WIN32)
+        target_link_options(knishio-client PRIVATE "LINKER:--exclude-libs,libkcore.a")
+    endif()
+    string(APPEND KNISHIO_CONFIG_DEPS "find_dependency(KnishIOCryptoCore ${KnishIOCryptoCore_VERSION} CONFIG)\n")
+    list(APPEND KNISHIO_PC_LIBS_PRIVATE -lkcore)
 endif()
 
 # Link libraries
@@ -786,6 +810,7 @@ message(STATUS "  libwebsockets: ${HAVE_LIBWEBSOCKETS}")
 message(STATUS "  GMP: ${GMP_FOUND}")
 message(STATUS "  CURL: ${CURL_FOUND}")
 message(STATUS "  cJSON: ${CJSON_FOUND}")
+message(STATUS "  kcore: ${KNISHIO_USE_KCORE}")
 message(STATUS "  Build tests: ${KNISHIO_BUILD_TESTS}")
 message(STATUS "  Build examples: ${KNISHIO_BUILD_EXAMPLES}")
 message(STATUS "  Build docs: ${KNISHIO_BUILD_DOCS}")
