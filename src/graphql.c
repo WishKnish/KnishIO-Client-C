@@ -20,6 +20,16 @@
 #include <string.h>
 #include <stdio.h>
 
+#ifdef __has_include
+  #if __has_include(<cjson/cJSON.h>)
+    #include <cjson/cJSON.h>
+  #elif __has_include(<cJSON.h>)
+    #include <cJSON.h>
+  #endif
+#else
+  #include <cjson/cJSON.h>
+#endif
+
 /* GraphQL client structure is defined in knishio/graphql.h */
 
 /* Internal helper function declarations */
@@ -229,6 +239,33 @@ knishio_error_t knishio_graphql_execute(
     return KNISHIO_SUCCESS;
 }
 
+/* Sets resp->errors to [{"message":"ProposeMolecule <status>: <reason>"}]. Called before the
+ * parsed data is freed, so both strings are still valid. */
+static void set_propose_status_error(knishio_graphql_response_t* resp, const char* status,
+                                     const char* reason) {
+    const char* why = reason ? reason : "no reason given";
+    const size_t len = strlen("ProposeMolecule : ") + strlen(status) + strlen(why) + 1;
+    char* message = knishio_malloc(len);
+    if (!message) {
+        return;
+    }
+    (void)snprintf(message, len, "ProposeMolecule %s: %s", status, why);
+    cJSON* array = cJSON_CreateArray();
+    cJSON* entry = cJSON_CreateObject();
+    if (array && entry && cJSON_AddStringToObject(entry, "message", message)) {
+        cJSON_AddItemToArray(array, entry);
+        entry = NULL;
+        char* printed = cJSON_PrintUnformatted(array);
+        if (printed) {
+            copy_graphql_string(&resp->errors, printed);
+            cJSON_free(printed);
+        }
+    }
+    cJSON_Delete(entry);
+    cJSON_Delete(array);
+    knishio_free(message);
+}
+
 void knishio_graphql_response_apply_body(knishio_graphql_response_t* resp, const char* body,
                                          bool is_mutation) {
     if (!resp) {
@@ -263,6 +300,16 @@ void knishio_graphql_response_apply_body(knishio_graphql_response_t* resp, const
                 const char* hash = knishio_json_get_string_path(data, "ProposeMolecule.molecularHash");
                 if (hash) {
                     copy_graphql_string(&resp->molecular_hash, hash);
+                }
+                /* The validator answers a rejected molecule with HTTP 200 and
+                 * ProposeMolecule.status "rejected"; that is a failure, not a success. */
+                const char* status = knishio_json_get_string_path(data, "ProposeMolecule.status");
+                if (status && strcmp(status, "accepted") != 0) {
+                    resp->success = false;
+                    if (!resp->errors) {
+                        set_propose_status_error(resp, status,
+                            knishio_json_get_string_path(data, "ProposeMolecule.reason"));
+                    }
                 }
                 knishio_json_free(data);
             }

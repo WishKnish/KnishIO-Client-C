@@ -485,6 +485,7 @@ if(KNISHIO_BUILD_TESTS)
         tests/test_wallet.c
         tests/test_molecule.c
         tests/test_encrypted_transport.c
+        tests/test_propose_status.c
     )
     
     add_executable(knishio_tests ${TEST_SOURCES})
@@ -496,6 +497,7 @@ if(KNISHIO_BUILD_TESTS)
     target_include_directories(knishio_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
     
     # Policy engine test executable removed (not in JavaScript SDK)
@@ -511,6 +513,7 @@ if(KNISHIO_BUILD_TESTS)
     # The cross-SDK block ran under every positional-argument entry before; filtered, it needs
     # its own.
     add_test(NAME cross_sdk_tests COMMAND knishio_tests --filter=cross_sdk)
+    add_test(NAME propose_status_tests COMMAND knishio_tests --filter=propose_status)
     # A filter that matches no suite must fail rather than report "0 Tests 0 Failures" as a pass.
     # The wrapper requires the non-zero exit AND the runner's no-match line, so a crash cannot
     # stand in for the guard. See tests/expect_filter_no_match_fails.cmake.

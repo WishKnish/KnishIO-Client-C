@@ -28,6 +28,15 @@ substantiate a detail, the entry says so instead of guessing.
   are the same with the option on or off. Encapsulation still draws its coins from
   `knishio_secure_random` and zeroes them.
 
+### Fixed
+
+- A ProposeMolecule the validator answers with `status` other than `"accepted"` is now a
+  failure: `knishio_graphql_response_apply_body()` sets `success = false` and, unless GraphQL
+  `errors` are already present, sets `errors` to
+  `[{"message":"ProposeMolecule <status>: <reason>"}]`. The validator returns HTTP 200 for a
+  rejected molecule and no C caller read `status`, so rejected transfers, burns, tokens,
+  wallets and metas all reported success. Pinned by the `propose_status_tests` ctest.
+
 ## [1.2.4] — 2026-09-29
 
 ### Fixed
