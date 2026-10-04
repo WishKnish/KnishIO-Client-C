@@ -68,6 +68,8 @@ These libraries are resolved from the **host system** (via `pkg-config` / `find_
 
    > **Optional kcore backend:** `-DKNISHIO_USE_KCORE=ON` links the [KnishIO Crypto Core](https://github.com/WishKnish/KnishIO-Crypto-Core) (kcore ≥ 0.1.0) statically and runs the WOTS+ chains (signing and verification), the WOTS+ address and ML-KEM-1024/768 through it. Extract a `knishio-crypto-core-<version>-<target>` release package and pass its root: `cmake .. -DKNISHIO_USE_KCORE=ON -DCMAKE_PREFIX_PATH=/path/to/knishio-crypto-core-0.1.0-linux-arm64-gnu`; the configure log prints `kcore: KnishIOCryptoCore <version>`. Output is byte-identical with the default (OFF) build. Only lowercase-hex keys and signatures of the exact length go to kcore; anything else (for example a peer's malformed OTS) takes the SDK's own SHAKE256 loop, so verification verdicts do not depend on the option. The vendored mlkem-native stays compiled for the OFF build.
 
+   > **Prebuilt release packages:** the `knishio-client-c-<version>-<platform>.tar.gz` tarballs on the GitHub Releases page are built with kcore (`KNISHIO_USE_KCORE=ON`) and bundle it: `include/kcore.h`, `lib/libkcore.*`, `lib/cmake/KnishIOCryptoCore/` and `lib/pkgconfig/knishio-crypto-core.pc` sit in the same prefix, with kcore's license under `share/licenses/knishio-crypto-core/`, so `find_package(KnishIOClient)` and `pkg-config` resolve kcore without a separate download. Source builds take `-DKNISHIO_USE_KCORE=ON -DCMAKE_PREFIX_PATH=<kcore package>`; OFF is still the default.
+
 2. Install system-wide (optional):
    ```bash
    sudo make install
@@ -678,6 +680,12 @@ Master secrets are stored at rest in the cross-SDK AES-256-GCM envelope (PBKDF2-
 `hardwareBacked` is derived by the provider from the platform, never accepted from the caller; software providers always report `false`. A hardware provider refuses to store without a recovery passphrase unless `allow_unrecoverable` is set — the recovery envelope (`knishio:recovery:<bundleHash>`, `providerType: "aes-gcm"`) is *software* custody whose strength is bounded by that passphrase: enforce passphrase entropy or keep it on a second device.
 
 Client integration: `knishio_client_set_secret_storage(client, provider, bundle_hash, options)` stores the secret and unregisters cleartext memory, unwrapping just-in-time on signing; the client does not own the provider or backend (free them with `knishio_secret_storage_provider_free` and `knishio_storage_backend_free` after `knishio_client_destroy`).
+
+## Thread safety
+
+- Signing and verification on separate objects (wallets, molecules) are thread-safe. Everything runs on the calling thread (kcore starts no threads of its own), so for multi-core throughput process independent objects on separate threads.
+- A `knishio_client_t` must not be shared between threads without external locking; use one client per thread or guard a shared one with a mutex.
+- `knishio_wallet_set_default_mlkem_param` and `knishio_set_error_handler` — process-wide setter: call during single-threaded initialization, before any thread uses the SDK.
 
 ## Getting Help
 

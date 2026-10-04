@@ -1,7 +1,7 @@
 # KnishIO C Client SDK
 cmake_minimum_required(VERSION 3.16)
 project(KnishIO-Client-C
-    VERSION 1.2.4
+    VERSION 1.3.0
     DESCRIPTION "KnishIO C Client SDK for post-blockchain DLT"
     LANGUAGES C
 )

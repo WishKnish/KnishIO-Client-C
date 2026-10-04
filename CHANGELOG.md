@@ -14,7 +14,7 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
-## [Unreleased]
+## [1.3.0] — 2026-10-04
 
 ### Added
 
@@ -27,6 +27,24 @@ substantiate a detail, the entry says so instead of guessing.
   0..64 go to kcore; other input runs the existing loop, so the output and verifier verdicts
   are the same with the option on or off. Encapsulation still draws its coins from
   `knishio_secure_random` and zeroes them.
+- CI job `gate-kcore`: the build, `c_self_test` and ctest with `KNISHIO_USE_KCORE=ON` against
+  the sha256-pinned kcore 0.1.0 linux-x64-gnu release package, on every push. The job also
+  asserts that configure reports `kcore: KnishIOCryptoCore 0.1.0`.
+- Thread-safety contract (README "Thread safety"; comments on
+  `knishio_wallet_set_default_mlkem_param` and `knishio_set_error_handler`): those two are
+  process-wide setters to call during single-threaded initialization; a `knishio_client_t` must
+  not be shared between threads without external locking; signing and verification on separate
+  objects are thread-safe. Documentation only, no behaviour change.
+
+### Changed
+
+- The prebuilt release packages (`linux-x86_64`, `macos-arm64`) are built with
+  `KNISHIO_USE_KCORE=ON` against the sha256-pinned kcore 0.1.0 package for their platform
+  (linux-x64-gnu, darwin-universal) and bundle it in the same prefix: `include/kcore.h`,
+  `lib/libkcore.*`, `lib/cmake/KnishIOCryptoCore/`, `lib/pkgconfig/knishio-crypto-core.pc`, and
+  kcore's `LICENSE` under `share/licenses/knishio-crypto-core/`. The installed
+  `KnishIOClientConfig.cmake` finds kcore from that prefix. The source tarball and source builds
+  keep `KNISHIO_USE_KCORE` OFF by default.
 
 ### Fixed
 
@@ -36,6 +54,19 @@ substantiate a detail, the entry says so instead of guessing.
   `[{"message":"ProposeMolecule <status>: <reason>"}]`. The validator returns HTTP 200 for a
   rejected molecule and no C caller read `status`, so rejected transfers, burns, tokens,
   wallets and metas all reported success. Pinned by the `propose_status_tests` ctest.
+
+### Notes
+
+- The bundled kcore includes its shared library (`libkcore.so*` / `libkcore*.dylib`) next to
+  `libkcore.a`, although the SDK links kcore statically: kcore's exported CMake targets import
+  both `KnishIO::kcore` and `KnishIO::kcore-static` and check that every referenced file exists,
+  so `find_package(KnishIOCryptoCore)` fails without it.
+- `libknishio-client.so` carries kcore inside it (no `libkcore` runtime dependency), but
+  `knishio-client.pc` lists `-lkcore` in `Libs.private`. A consumer that links with
+  `pkg-config --static` flags against the shared library, on a linker without `--as-needed`,
+  therefore records `libkcore.so.1` as an extra, unused runtime dependency; it resolves from the
+  same `lib/` as `libknishio-client.so.1`. Linking `libknishio-client-static.a` with `libkcore.a`
+  gives a binary with no kcore runtime dependency.
 
 ## [1.2.4] — 2026-09-29
 
@@ -583,7 +614,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.2.4...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.3.0...HEAD
+[1.3.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.3.0
 [1.2.4]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.4
 [1.2.3]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.3
 [1.2.2]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.2

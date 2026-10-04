@@ -271,6 +271,7 @@ bool knishio_wallet_is_shadow(knishio_wallet_t *wallet);
 bool knishio_wallet_initialize_mlkem(knishio_wallet_t *wallet);
 bool knishio_wallet_set_mlkem_param(knishio_wallet_t *wallet, knishio_mlkem_param_t param);
 knishio_mlkem_param_t knishio_wallet_get_mlkem_param(const knishio_wallet_t *wallet);
+/* Process-wide setter: call during single-threaded initialization, before any thread uses the SDK. */
 bool knishio_wallet_set_default_mlkem_param(knishio_mlkem_param_t param);
 knishio_mlkem_param_t knishio_wallet_get_default_mlkem_param(void);
 

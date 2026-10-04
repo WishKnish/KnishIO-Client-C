@@ -264,6 +264,8 @@ void knishio_error_context_print_chain(const knishio_error_context_t *ctx);
 
 /**
  * @brief Set global error handler
+ *
+ * Process-wide setter: call during single-threaded initialization, before any thread uses the SDK.
  * @param handler Error handler function
  * @param user_data User data passed to handler
  */
