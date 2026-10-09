@@ -14,6 +14,21 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
+## [1.3.1] — 2026-10-09
+
+### Fixed
+
+- Self-test: the cross-validation-only run (round 2) now carries `phaseBVectors` over from
+  round 1. The test was missing from the preserved-results map, so after every round 2 the
+  rewritten `c-results.json` reported `phaseBVectors` as `passed: false`, although all Phase B
+  checks had passed.
+
+### Removed
+
+- Self-test: the unused `ENABLE_DEBUG_OUTPUT` switch and its `DEBUG_PRINTF`/`DEBUG_FPRINTF`
+  macros. Nothing called them, and the monorepo's anti-cheating scan flagged the
+  `#define ENABLE_DEBUG_OUTPUT 0` as possible failure masking.
+
 ## [1.3.0] — 2026-10-04
 
 ### Added
@@ -614,7 +629,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.3.0...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.3.1...HEAD
+[1.3.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.3.1
 [1.3.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.3.0
 [1.2.4]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.4
 [1.2.3]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.3

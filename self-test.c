@@ -53,17 +53,6 @@ _Static_assert(sizeof(time_t) >= 4, "time_t must be at least 32-bit");
 #define COLOR_BLUE    "\033[34m"
 #define COLOR_CYAN    "\033[36m"
 
-/* Debug output control - set to 0 for JavaScript canonical clean output */
-#define ENABLE_DEBUG_OUTPUT 0
-
-#if ENABLE_DEBUG_OUTPUT
-#define DEBUG_PRINTF(...) printf(__VA_ARGS__)
-#define DEBUG_FPRINTF(stream, ...) fprintf(stream, __VA_ARGS__)
-#else
-#define DEBUG_PRINTF(...) 
-#define DEBUG_FPRINTF(stream, ...)
-#endif
-
 /* Constants */
 #define MAX_PATH_LENGTH 1024
 #define ISO8601_LENGTH 32
@@ -3977,13 +3966,14 @@ int main(void) {
                                 { "bufferFamily",      &g_results.buffer_family },
                                 { "wotsRoundtrip",     &g_results.wots_roundtrip },
                                 { "mlkem768Vector",    &g_results.mlkem768_vector },
+                                { "phaseBVectors",     &g_results.phase_b },
                             };
                             for (size_t tm = 0; tm < sizeof(test_map) / sizeof(test_map[0]); tm++) {
                                 cJSON* t = cJSON_GetObjectItem(existing_tests, test_map[tm].key);
                                 if (!t) continue;
                                 cJSON* tp = cJSON_GetObjectItem(t, "passed");
                                 if (tp && cJSON_IsBool(tp)) test_map[tm].dst->passed = cJSON_IsTrue(tp);
-                                /* Only bufferFamily, wotsRoundtrip and mlkem768Vector emit "skipped"; absent elsewhere, so this
+                                /* Only bufferFamily, wotsRoundtrip, mlkem768Vector and phaseBVectors emit "skipped"; absent elsewhere, so this
                                  * is a no-op for the others. Losing it would turn a Round 1
                                  * skip into what reads as a Round 2 failure. */
                                 cJSON* ts = cJSON_GetObjectItem(t, "skipped");
