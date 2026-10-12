@@ -190,8 +190,8 @@ static void test_rejections_and_shapes(const cJSON *vec) {
 
     o = run(molecule, strip_ots);
     snprintf(detail, sizeof(detail), "parsed=%d verdict=%d", (int)o.parsed, (int)o.verdict);
-    check(o.parsed == KNISHIO_SUCCESS && o.verdict == KNISHIO_ERROR_SIGNATURE_MISMATCH,
-          "an unsigned peer molecule (no otsFragment) is rejected as KNISHIO_ERROR_SIGNATURE_MISMATCH", detail);
+    check(o.parsed == KNISHIO_SUCCESS && o.verdict == KNISHIO_ERROR_SIGNATURE_MALFORMED,
+          "an unsigned peer molecule (no otsFragment) is rejected as KNISHIO_ERROR_SIGNATURE_MALFORMED", detail);
 
     o = run(molecule, append_null_meta);
     snprintf(detail, sizeof(detail), "parsed=%d verdict=%d meta_count=%zu", (int)o.parsed, (int)o.verdict, o.meta0_count);

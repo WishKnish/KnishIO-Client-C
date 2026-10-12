@@ -263,6 +263,28 @@ size_t knishio_molecule_generate_next_index(const knishio_molecule_t* molecule) 
 
 /* Molecule operations */
 
+bool knishio_molecule_hash_is_signable(const char* molecular_hash) {
+    if (molecular_hash == NULL) {
+        return false;
+    }
+    size_t length = 0;
+    for (const unsigned char* p = (const unsigned char*)molecular_hash; *p; p++, length++) {
+        if (length == KNISHIO_MOLECULAR_HASH_LENGTH || !((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'g'))) {
+            return false;
+        }
+    }
+    return length == KNISHIO_MOLECULAR_HASH_LENGTH;
+}
+
+/* The OTS version of the signing key: the source wallet's, or v1 without one. A wallet that
+ * no constructor set (ots_version 0, e.g. a zero-initialized one) is v1. */
+static int signing_ots_version(const knishio_molecule_t* molecule) {
+    if (molecule->source_wallet == NULL || molecule->source_wallet->ots_version == 0) {
+        return KNISHIO_OTS_V1;
+    }
+    return molecule->source_wallet->ots_version;
+}
+
 knishio_error_t knishio_molecule_sign(
     knishio_molecule_t* molecule,
     const char* bundle,
@@ -322,6 +344,11 @@ knishio_error_t knishio_molecule_sign(
     fprintf(stderr, "DEBUG knishio_molecule_sign: Generated hash: %s\n", molecule->molecular_hash);
 #endif
 
+    /* The declared hash must be exactly 64 base-17 characters before any chain work */
+    if (!knishio_molecule_hash_is_signable(molecule->molecular_hash)) {
+        return KNISHIO_ERROR_SIGNATURE_MALFORMED;
+    }
+
     /* Get signing position from first atom */
     knishio_atom_t* signing_atom = molecule->atoms[0];
     const char* signing_position = signing_atom->position;
@@ -337,12 +364,14 @@ knishio_error_t knishio_molecule_sign(
             signing_position, signing_atom->token ? signing_atom->token : "NULL");
 #endif
 
-    /* Generate private key for signing (matching JS Wallet.generateKey) */
+    /* Generate private key for signing (matching JS Wallet.generateKey) at the signing
+     * wallet's OTS version */
     char* private_key = NULL;
-    bool key_generated = knishio_generate_wallet_key(
+    bool key_generated = knishio_generate_wallet_key_with_ots_version(
         molecule->secret, 
         signing_atom->token, 
         signing_position, 
+        signing_ots_version(molecule),
         &private_key
     );
     if (!key_generated) {
@@ -356,7 +385,7 @@ knishio_error_t knishio_molecule_sign(
             private_key ? strlen(private_key) : 0);
 #endif
 
-    /* Chunk private key into 16 segments of 128 characters each */
+    /* Chunk private key into segments of 128 characters: 16 (OTS v1) or 64 (OTS v2) */
     char** key_chunks = NULL;
     size_t chunk_count = 0;
     if (!knishio_chunk_string(private_key, 128, &key_chunks, &chunk_count)) {
@@ -364,8 +393,8 @@ knishio_error_t knishio_molecule_sign(
         return KNISHIO_ERROR_MEMORY;
     }
     
-    if (chunk_count != 16) {
-        /* Key should be 2048 chars = 16 chunks of 128 */
+    if (chunk_count != KNISHIO_PRIVKEY_LENGTH / 128 && chunk_count != KNISHIO_PRIVKEY_LENGTH_V2 / 128) {
+        /* Key should be 2048 chars = 16 chunks or 8192 chars = 64 chunks */
         for (size_t i = 0; i < chunk_count; i++) {
             knishio_free(key_chunks[i]);
         }
@@ -401,7 +430,7 @@ knishio_error_t knishio_molecule_sign(
 
     /* Build OTS fragments */
     size_t total_fragment_len = 0;
-    char* signature_fragments = knishio_malloc(16 * 128 + 1);  /* Max size */
+    char* signature_fragments = knishio_malloc(chunk_count * 128 + 1);
     if (!signature_fragments) {
         knishio_free(normalized);
         for (size_t i = 0; i < chunk_count; i++) {
@@ -414,21 +443,21 @@ knishio_error_t knishio_molecule_sign(
     signature_fragments[0] = '\0';
 
     /* Generate OTS for each chunk. With kcore linked, an eligible key (lowercase hex, every
-     * count 0..64) runs all 16 chains in one call; otherwise the loop below does. */
+     * count 0..64) runs all chains in one call; otherwise the loop below does. */
     bool chains_done = false;
 #ifdef KNISHIO_HAVE_KCORE
-    if (enum_len >= KNISHIO_KCORE_WOTS_CHUNKS) {
-        int counts[KNISHIO_KCORE_WOTS_CHUNKS];
-        for (size_t i = 0; i < KNISHIO_KCORE_WOTS_CHUNKS; i++) {
+    if (enum_len >= chunk_count) {
+        int counts[KNISHIO_KCORE_WOTS_MAX_CHUNKS];
+        for (size_t i = 0; i < chunk_count; i++) {
             counts[i] = 8 - normalized[i];
         }
-        if (knishio_kcore_wots_chains(private_key, counts, signature_fragments)) {
-            total_fragment_len = KNISHIO_KCORE_WOTS_HEX_LEN;
+        if (knishio_kcore_wots_chains(private_key, chunk_count, counts, signature_fragments)) {
+            total_fragment_len = chunk_count * KNISHIO_KCORE_WOTS_CHUNK_HEX;
             chains_done = true;
         }
     }
 #endif
-    for (size_t i = 0; !chains_done && i < 16 && i < enum_len; i++) {
+    for (size_t i = 0; !chains_done && i < chunk_count && i < enum_len; i++) {
         char* working_chunk = knishio_strdup(key_chunks[i]);
         if (!working_chunk) {
             knishio_free(signature_fragments);

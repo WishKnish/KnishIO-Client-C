@@ -128,9 +128,9 @@ knishio_error_t knishio_client_create_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_simple(
-        &remainder, source->secret, "USER", remainder_position
-    );
+    error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", remainder_position,
+                                                   source->ots_version)
+        ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -431,7 +431,9 @@ knishio_error_t knishio_client_replenish_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_simple(&remainder, source->secret, "USER", position);
+    error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", position,
+                                                   source->ots_version)
+        ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -525,7 +527,9 @@ knishio_error_t knishio_client_fuse_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_simple(&remainder, user->secret, token_slug, position);
+    error = knishio_wallet_create_with_ots_version(&remainder, user->secret, token_slug, position,
+                                                   source->ots_version)
+        ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }

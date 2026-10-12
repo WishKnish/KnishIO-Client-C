@@ -220,9 +220,9 @@ knishio_error_t knishio_client_claim_shadow_wallet(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_simple(
-        &remainder, source->secret, "USER", remainder_position
-    );
+    error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", remainder_position,
+                                                   source->ots_version)
+        ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }

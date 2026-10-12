@@ -14,6 +14,45 @@ This file was backfilled on 2026-07-27 from the repository's own tag and commit
 history rather than written at release time; where the history does not
 substantiate a detail, the entry says so instead of guessing.
 
+## [Unreleased]
+
+### Added
+
+- Opt-in OTS v2 one-time signatures: 8192-hex private keys with 64 WOTS+ chains, next to the
+  default v1 (2048 hex, 16 chains). New `knishio_ots_version_t` (`KNISHIO_OTS_V1`,
+  `KNISHIO_OTS_V2`), the wallet field `ots_version`, and
+  `knishio_generate_wallet_key_with_ots_version`, `knishio_wallet_create_with_ots_version` and
+  `knishio_wallet_create_from_params_with_ots_version`. The existing key and wallet functions
+  are unchanged and produce v1. Any version other than 1 or 2 is refused.
+- `knishio_molecule_check_ots`: verifies a molecule's one-time signature on its own, returning
+  `KNISHIO_ERROR_SIGNATURE_MALFORMED` or `KNISHIO_ERROR_SIGNATURE_MISMATCH`.
+- `knishio_molecule_hash_is_signable`: whether a molecular hash is exactly 64 characters of
+  `[0-9a-g]`.
+- ctest entries `OtsV2RoundTrip` (a v2 wallet signs and verifies a molecule) and `OtsV2Vectors`
+  (the shared OTS v2 vectors; skipped with exit code 77 when they are absent, as in a
+  standalone checkout).
+
+### Changed
+
+- `knishio_molecule_sign` derives the key at the source wallet's OTS version (v1 without a
+  source wallet), and refuses a molecular hash that is not exactly 64 characters of `[0-9a-g]`
+  with `KNISHIO_ERROR_SIGNATURE_MALFORMED`.
+- `knishio_molecule_check` verifies v1 and v2 signatures (2048 or 8192 hex characters, as hex
+  or base64). A malformed molecular hash, or a signature that is neither size (including an
+  unsigned molecule), is now `KNISHIO_ERROR_SIGNATURE_MALFORMED` instead of
+  `KNISHIO_ERROR_SIGNATURE_MISMATCH`.
+- Key derivation accepts any non-empty secret and position: a hex value is used as-is and any
+  other value is hashed first (SHAKE256, 1024 bits for the secret, 256 bits for the position),
+  as in the JavaScript and Rust SDKs. Non-hex secrets and positions other than 64 characters
+  used to be refused. Hex input derives the same keys as before.
+- `knishio_generate_address` accepts 2048- and 8192-hex keys.
+- `knishio_wallet_create_from_params` (and the constructors built on it) fails when the wallet
+  address cannot be derived, instead of returning a wallet without an address.
+- Remainder and buffer wallets the client creates for a signing wallet use that wallet's OTS
+  version.
+- kcore backend: the chains of v2 signing, verification and addresses also run in kcore
+  (64 chains per call); kcore's address entry point is still used for v1 keys only.
+
 ## [1.3.1] — 2026-10-09
 
 ### Fixed

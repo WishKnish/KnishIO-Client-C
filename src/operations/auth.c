@@ -256,7 +256,9 @@ static knishio_error_t knishio_propose_profile_auth(
     if (!knishio_generate_position(&remainder_position)) {
         return KNISHIO_ERROR_CRYPTO;
     }
-    error = knishio_wallet_create_simple(&remainder, source->secret, "USER", remainder_position);
+    error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", remainder_position,
+                                                   source->ots_version)
+        ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }

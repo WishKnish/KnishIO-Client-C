@@ -18,8 +18,10 @@
 #include <stddef.h>
 #include <string.h>
 
-/* WOTS+ key / signature: 16 chunks of 128 hex characters. */
-#define KNISHIO_KCORE_WOTS_CHUNKS ((size_t)16)
+/* WOTS+ key / signature: chunks of 128 hex characters, 16 (OTS v1) or 64 (OTS v2). kcore's
+ * address entry point takes a 2048-hex (v1) key only. */
+#define KNISHIO_KCORE_WOTS_CHUNK_HEX ((size_t)128)
+#define KNISHIO_KCORE_WOTS_MAX_CHUNKS ((size_t)64)
 #define KNISHIO_KCORE_WOTS_HEX_LEN ((size_t)2048)
 
 static inline bool knishio_kcore_is_lower_hex(const char *s, size_t n) {
@@ -33,28 +35,32 @@ static inline bool knishio_kcore_is_lower_hex(const char *s, size_t n) {
 }
 
 /**
- * Advances the 16 WOTS+ chains of a 2048-hex key or signature: chunk i is hashed counts[i]
- * times. Returns false unless src is exactly 2048 lowercase hex characters, every count is
- * 0..64 and kcore succeeds; out is then zeroed when it was written (it may hold a copy of a
- * private key). On true, out holds the 2048 result characters plus a NUL.
+ * Advances the n WOTS+ chains (1..64) of a key or signature of n*128 hex characters: chunk i
+ * is hashed counts[i] times. Returns false unless src is exactly n*128 lowercase hex
+ * characters, every count is 0..64 and kcore succeeds; out is then zeroed when it was written
+ * (it may hold a copy of a private key). out must hold n*128+1 characters; on true it holds
+ * the n*128 result characters plus a NUL.
  */
-static inline bool knishio_kcore_wots_chains(const char *src,
-                                             const int counts[KNISHIO_KCORE_WOTS_CHUNKS],
-                                             char out[KNISHIO_KCORE_WOTS_HEX_LEN + 1]) {
-    if (src == NULL || strlen(src) != KNISHIO_KCORE_WOTS_HEX_LEN ||
-        !knishio_kcore_is_lower_hex(src, KNISHIO_KCORE_WOTS_HEX_LEN)) {
+static inline bool knishio_kcore_wots_chains(const char *src, size_t n, const int *counts,
+                                             char *out) {
+    if (src == NULL || counts == NULL || out == NULL || n == 0 ||
+        n > KNISHIO_KCORE_WOTS_MAX_CHUNKS) {
         return false;
     }
-    for (size_t i = 0; i < KNISHIO_KCORE_WOTS_CHUNKS; i++) {
+    const size_t hex_len = n * KNISHIO_KCORE_WOTS_CHUNK_HEX;
+    if (strlen(src) != hex_len || !knishio_kcore_is_lower_hex(src, hex_len)) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
         if (counts[i] < 0 || counts[i] > 64) {
             return false;
         }
     }
-    memcpy(out, src, KNISHIO_KCORE_WOTS_HEX_LEN);
-    out[KNISHIO_KCORE_WOTS_HEX_LEN] = '\0';
-    if (kcore_chains_hex(out, counts, KNISHIO_KCORE_WOTS_CHUNKS, 4) != 0) {
+    memcpy(out, src, hex_len);
+    out[hex_len] = '\0';
+    if (kcore_chains_hex(out, counts, n, 4) != 0) {
         volatile char *p = out;
-        for (size_t i = 0; i <= KNISHIO_KCORE_WOTS_HEX_LEN; i++) {
+        for (size_t i = 0; i <= hex_len; i++) {
             p[i] = 0;
         }
         return false;

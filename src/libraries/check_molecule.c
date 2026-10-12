@@ -45,7 +45,7 @@
 
 /* Forward declarations for internal functions */
 static bool check_molecular_hash(const knishio_molecule_t* molecule);
-static bool check_ots(const knishio_molecule_t* molecule);
+static knishio_error_t check_ots(const knishio_molecule_t* molecule);
 static bool check_batch_id(const knishio_molecule_t* molecule);
 static bool check_continuid(const knishio_molecule_t* molecule);
 static bool check_isotope_m(const knishio_molecule_t* molecule);
@@ -91,7 +91,8 @@ knishio_error_t knishio_molecule_check(
 
     /* Order matches JavaScript CheckMolecule.verify. */
     if (!check_molecular_hash(molecule))   return KNISHIO_ERROR_MOLECULAR_HASH_MISMATCH;
-    if (!check_ots(molecule))              return KNISHIO_ERROR_SIGNATURE_MISMATCH;
+    const knishio_error_t ots_error = check_ots(molecule);
+    if (ots_error != KNISHIO_SUCCESS)      return ots_error;
     if (!check_batch_id(molecule))         return KNISHIO_ERROR_BATCH_ID;
     /* A USER-signed molecule without an I atom: JS CheckMolecule.continuId() throws
      * AtomsMissingException, and validator 0.6.1 answers "AtomsMissing" — same code here. */
@@ -195,49 +196,37 @@ static bool check_molecular_hash(const knishio_molecule_t* molecule) {
 
 /**
  * @brief Verify one-time signature
- * Matches JavaScript CheckMolecule.ots() exactly
+ * Matches JavaScript CheckMolecule.ots(): OTS v1 (2048 hex, 16 chains) or v2 (8192 hex,
+ * 64 chains), as hex or base64.
  */
-static bool check_ots(const knishio_molecule_t* molecule) {
+static knishio_error_t check_ots(const knishio_molecule_t* molecule) {
 #if KNISHIO_DEBUG_MODE
     printf("DEBUG check_ots: Starting OTS verification\n");
 #endif
-    
+
+    /* The declared hash must be exactly 64 base-17 characters before any chain work */
+    if (!knishio_molecule_hash_is_signable(molecule->molecular_hash)) {
+        return KNISHIO_ERROR_SIGNATURE_MALFORMED;
+    }
+
     /* Get normalized hash (matches JavaScript molecule.normalizedHash()) */
-    int* normalized_hash = NULL;
+    int* enumerated = NULL;
     size_t hash_length = 0;
-    
-    if (knishio_molecule_enumerate_hash(molecule->molecular_hash, &normalized_hash, &hash_length) != KNISHIO_SUCCESS) {
-#if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_ots: Failed to enumerate molecular hash\n");
-#endif
-        return false;
+    knishio_error_t error = knishio_molecule_enumerate_hash(molecule->molecular_hash, &enumerated, &hash_length);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
     }
-    
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_ots: Enumerated hash length: %zu\n", hash_length);
-#endif
-    
-    /* Normalize the enumerated hash (matches JavaScript Molecule.normalize()).
-     * normalize_hash allocates a fresh array, so the enumerated one must be freed
-     * separately — aliasing input and output here leaked it. */
-    int* enumerated = normalized_hash;
-    normalized_hash = NULL;
-    if (knishio_molecule_normalize_hash(enumerated, hash_length, &normalized_hash) != KNISHIO_SUCCESS) {
-#if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_ots: Failed to normalize molecular hash\n");
-#endif
-        free(enumerated);
-        return false;
-    }
+
+    /* normalize_hash allocates a fresh array, so the enumerated one is freed separately */
+    int* normalized_hash = NULL;
+    error = knishio_molecule_normalize_hash(enumerated, hash_length, &normalized_hash);
     free(enumerated);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
 
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_ots: Hash enumeration and normalization completed\n");
-#endif
-
-    /* Rebuild OTS from all atoms (matches JavaScript). Size the buffer from the actual
-     * fragments rather than assuming they fit a fixed 8192 — an unbounded strcat into a
-     * fixed allocation is a heap overflow waiting on a molecule with enough atoms. */
+    /* Rebuild OTS from all atoms; a missing otsFragment contributes nothing. The buffer is
+     * sized from the actual fragments. */
     size_t ots_len = 0;
     for (size_t i = 0; i < molecule->atom_count; i++) {
         const knishio_atom_t* atom = knishio_molecule_get_atom(molecule, i);
@@ -249,7 +238,7 @@ static bool check_ots(const knishio_molecule_t* molecule) {
     char* ots = malloc(ots_len + 1);
     if (!ots) {
         free(normalized_hash);
-        return false;
+        return KNISHIO_ERROR_MEMORY;
     }
 
     ots[0] = '\0';
@@ -263,151 +252,119 @@ static bool check_ots(const knishio_molecule_t* molecule) {
             ots[ots_used] = '\0';
         }
     }
-    
-    #if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_ots: Rebuilt OTS length: %zu\n", strlen(ots));
-    #endif
-    
-    /* Check if OTS needs decompression (JavaScript logic) */
-    if (strlen(ots) != 2048) {
-        #if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_ots: OTS length %zu, attempting base64 decompression\n", strlen(ots));
-        #endif
-        
-        /* Decompress base64 to hex (JavaScript base64ToHex logic) */
+
+#if KNISHIO_DEBUG_MODE
+    printf("DEBUG check_ots: Rebuilt OTS length: %zu\n", ots_used);
+#endif
+
+    /* 2048 or 8192 characters are hex; anything else is the compressed (base64) form, and the
+     * decoded length decides the version */
+    size_t sig_len = ots_used;
+    if (sig_len != KNISHIO_PRIVKEY_LENGTH && sig_len != KNISHIO_PRIVKEY_LENGTH_V2) {
         char* hex_ots = NULL;
         if (!knishio_base64_to_hex(ots, &hex_ots)) {
-            #if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_ots: Failed to decompress base64 OTS\n");
-            #endif
             free(ots);
             free(normalized_hash);
-            return false;
+            return KNISHIO_ERROR_SIGNATURE_MALFORMED;
         }
-        
-        /* Replace compressed OTS with decompressed hex version */
         free(ots);
         ots = hex_ots;
-        
-        #if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_ots: Decompressed OTS length: %zu\n", strlen(ots));
-        #endif
-        
-        /* Verify decompressed length is correct */
-        if (strlen(ots) != 2048) {
-            #if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_ots: Decompressed OTS still wrong length\n");
-            #endif
+        sig_len = strlen(ots);
+
+#if KNISHIO_DEBUG_MODE
+        printf("DEBUG check_ots: Decompressed OTS length: %zu\n", sig_len);
+#endif
+
+        if (sig_len != KNISHIO_PRIVKEY_LENGTH && sig_len != KNISHIO_PRIVKEY_LENGTH_V2) {
             free(ots);
             free(normalized_hash);
-            return false;
+            return KNISHIO_ERROR_SIGNATURE_MALFORMED;
         }
     }
-    
-    /* Subdivide OTS into 16 chunks of 128 characters (JavaScript logic) */
-    char chunks[16][129]; /* 16 chunks of 128 chars + null terminator */
-    
-    for (int i = 0; i < 16; i++) {
-        strncpy(chunks[i], ots + (i * 128), 128);
-        chunks[i][128] = '\0';
-    }
-    
-    /* Process each chunk with SHAKE256 iterations (matches JavaScript) */
-    char* key_fragments = malloc(2048 + 1);
+
+    /* Segments of 128 characters: 16 (v1) or 64 (v2), chain i advanced 8 + normalized[i] steps */
+    const size_t chunk_count = sig_len / 128;
+    char* key_fragments = malloc(sig_len + 1);
     if (!key_fragments) {
         free(ots);
         free(normalized_hash);
-        return false;
+        return KNISHIO_ERROR_MEMORY;
     }
     key_fragments[0] = '\0';
 
-    /* With kcore linked, an eligible OTS (2048 lowercase hex, every count 0..64) runs all 16
-     * chains in one call. A peer's OTS that is not lowercase hex runs the loop below, so the
-     * verdict never depends on whether kcore is linked. */
+    /* With kcore linked, an eligible OTS (lowercase hex, every count 0..64) runs all chains in
+     * one call. A peer's OTS that is not lowercase hex runs the loop below, so the verdict
+     * never depends on whether kcore is linked. */
     bool chains_done = false;
 #ifdef KNISHIO_HAVE_KCORE
-    if (hash_length >= KNISHIO_KCORE_WOTS_CHUNKS) {
-        int counts[KNISHIO_KCORE_WOTS_CHUNKS];
-        for (size_t i = 0; i < KNISHIO_KCORE_WOTS_CHUNKS; i++) {
+    if (hash_length >= chunk_count) {
+        int counts[KNISHIO_KCORE_WOTS_MAX_CHUNKS];
+        for (size_t i = 0; i < chunk_count; i++) {
             counts[i] = 8 + normalized_hash[i];
         }
-        chains_done = knishio_kcore_wots_chains(ots, counts, key_fragments);
+        chains_done = knishio_kcore_wots_chains(ots, chunk_count, counts, key_fragments);
     }
 #endif
-    for (int index = 0; !chains_done && index < 16; index++) {
-        char* working_chunk = malloc(256);
-        if (!working_chunk) continue;
-        
-        strcpy(working_chunk, chunks[index]);
-        
-        /* Hash (8 + normalized_hash[index]) times (JavaScript logic) */
-        int iterations = 8 + normalized_hash[index];
-        
+    error = KNISHIO_SUCCESS;
+    for (size_t index = 0; !chains_done && error == KNISHIO_SUCCESS && index < chunk_count; index++) {
+        char* working_chunk = knishio_strndup(ots + (index * 128), 128);
+        if (!working_chunk) {
+            error = KNISHIO_ERROR_MEMORY;
+            break;
+        }
+
+        const int iterations = 8 + normalized_hash[index];
         for (int iter = 0; iter < iterations; iter++) {
             char* new_hash = NULL;
-            if (knishio_shake256_hash(working_chunk, 512, &new_hash)) {
-                free(working_chunk);
-                working_chunk = new_hash;
-            } else {
+            if (!knishio_shake256_hash(working_chunk, 512, &new_hash)) {
+                error = KNISHIO_ERROR_CRYPTO;
                 break;
             }
+            free(working_chunk);
+            working_chunk = new_hash;
         }
-        
+
         strcat(key_fragments, working_chunk);
         free(working_chunk);
     }
-    
-    /* Generate digest from key fragments (JavaScript logic) */
-    char* digest = NULL;
-    if (!knishio_shake256_hash(key_fragments, 8192, &digest)) {
-        free(ots);
-        free(normalized_hash);
-        free(key_fragments);
-        return false;
-    }
-    
-    /* Generate final address from digest (JavaScript logic) */
-    char* final_address = NULL;
-    if (!knishio_shake256_hash(digest, 256, &final_address)) {
-        free(ots);
-        free(normalized_hash);
-        free(key_fragments);
-        free(digest);
-        return false;
-    }
-    
-    /* Compare with signing atom's wallet address (JavaScript logic) */
-    bool verified = false;
-    if (molecule->atom_count > 0) {
-        knishio_atom_t* signing_atom = knishio_molecule_get_atom(molecule, 0);
-        if (signing_atom && signing_atom->wallet_address) {
-            verified = (strcmp(final_address, signing_atom->wallet_address) == 0);
-        }
-    }
-    
-    #if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_ots: Expected address: %s\n", final_address);
-    #endif
-    if (molecule->atom_count > 0) {
-        knishio_atom_t* signing_atom = knishio_molecule_get_atom(molecule, 0);
-        if (signing_atom && signing_atom->wallet_address) {
-            #if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_ots: Signing address: %s\n", signing_atom->wallet_address);
-            #endif
-        }
-    }
-    #if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_ots: Verification result: %s\n", verified ? "PASS" : "FAIL");
-    #endif
-    
-    /* Cleanup */
     free(ots);
     free(normalized_hash);
+
+    /* Digest, then the address it resolves to (matches JavaScript) */
+    char* digest = NULL;
+    char* final_address = NULL;
+    if (error == KNISHIO_SUCCESS &&
+        (!knishio_shake256_hash(key_fragments, 8192, &digest) ||
+         !knishio_shake256_hash(digest, 256, &final_address))) {
+        error = KNISHIO_ERROR_CRYPTO;
+    }
     free(key_fragments);
     free(digest);
+
+    /* The recovered address must be the address the first atom claims */
+    if (error == KNISHIO_SUCCESS) {
+        const knishio_atom_t* signing_atom = knishio_molecule_get_atom(molecule, 0);
+        if (!signing_atom || !signing_atom->wallet_address ||
+            strcmp(final_address, signing_atom->wallet_address) != 0) {
+            error = KNISHIO_ERROR_SIGNATURE_MISMATCH;
+        }
+#if KNISHIO_DEBUG_MODE
+        printf("DEBUG check_ots: Recovered address: %s, result %d\n", final_address, (int)error);
+#endif
+    }
     free(final_address);
-    
-    return verified;
+
+    return error;
+}
+
+knishio_error_t knishio_molecule_check_ots(const knishio_molecule_t* molecule) {
+    if (!molecule) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (molecule->atom_count == 0 || !molecule->atoms) {
+        return KNISHIO_ERROR_ATOMS_MISSING;
+    }
+    return check_ots(molecule);
 }
 
 /**

@@ -170,6 +170,11 @@ size_t knishio_molecule_generate_next_index(const knishio_molecule_t* molecule);
 
 /**
  * @brief Sign the molecule
+ *
+ * The key is derived at the source wallet's OTS version (v1 without a source wallet). A
+ * molecular hash that is not exactly 64 characters of [0-9a-g] is refused with
+ * KNISHIO_ERROR_SIGNATURE_MALFORMED before any signing work.
+ *
  * @param molecule Molecule to sign
  * @param bundle Bundle hash (NULL to derive from secret)
  * @param anonymous Whether to sign anonymously
@@ -187,12 +192,34 @@ knishio_error_t knishio_molecule_sign(
  * @brief Verify molecule integrity
  * @param molecule Molecule to verify
  * @param sender_wallet Sender wallet for verification (can be NULL)
- * @return KNISHIO_SUCCESS if valid, error code if invalid
+ * @return KNISHIO_SUCCESS if valid, error code if invalid (the one-time signature check
+ *         returns knishio_molecule_check_ots()'s code)
  */
 knishio_error_t knishio_molecule_check(
     const knishio_molecule_t* molecule,
     const knishio_wallet_t* sender_wallet
 );
+
+/**
+ * @brief Verify the molecule's one-time signature on its own
+ *
+ * Accepts OTS v1 (2048 hex, 16 chains) and v2 (8192 hex, 64 chains) signatures, as hex or
+ * base64, concatenated across the atoms' otsFragment values.
+ *
+ * @param molecule Molecule to verify
+ * @return KNISHIO_SUCCESS when the signature resolves to atoms[0]'s wallet address;
+ *         KNISHIO_ERROR_SIGNATURE_MALFORMED for a molecular hash that is not exactly 64
+ *         characters of [0-9a-g], or a signature that is not 2048 or 8192 hex characters
+ *         (directly or base64-decoded); KNISHIO_ERROR_SIGNATURE_MISMATCH when it resolves to
+ *         another address
+ */
+knishio_error_t knishio_molecule_check_ots(const knishio_molecule_t* molecule);
+
+/**
+ * @brief Whether a molecular hash can be signed or verified: exactly 64 characters of [0-9a-g]
+ * @param molecular_hash Hash to test (NULL is not signable)
+ */
+bool knishio_molecule_hash_is_signable(const char* molecular_hash);
 
 /**
  * @brief Generate molecular hash from atom composition

@@ -30,7 +30,8 @@ extern "C" {
 #define KNISHIO_BUNDLE_LENGTH       64      /**< Bundle hash length */
 #define KNISHIO_POSITION_LENGTH     64      /**< Position string length */
 #define KNISHIO_ADDRESS_LENGTH      64      /**< Address string length */
-#define KNISHIO_PRIVKEY_LENGTH      2048    /**< Private key length */
+#define KNISHIO_PRIVKEY_LENGTH      2048    /**< OTS v1 private key length (16 chains) */
+#define KNISHIO_PRIVKEY_LENGTH_V2   8192    /**< OTS v2 private key length (64 chains) */
 #define KNISHIO_PUBKEY_LENGTH_1024  1568    /**< Public key length (ML-KEM-1024) */
 #define KNISHIO_PUBKEY_LENGTH_768   1184    /**< Public key length (ML-KEM-768) */
 #define KNISHIO_PUBKEY_LENGTH       1568    /**< Default public key length (ML-KEM-1024) */
@@ -43,6 +44,12 @@ typedef struct knishio_wallet knishio_wallet_t;
 typedef struct knishio_wallet_bundle knishio_wallet_bundle_t;
 typedef struct knishio_position_sequence knishio_position_sequence_t;
 typedef struct knishio_continu_id knishio_continu_id_t;
+
+/** One-time signature (WOTS+) key version: v1 keys have 16 chains, v2 keys 64. */
+typedef enum {
+    KNISHIO_OTS_V1 = 1,
+    KNISHIO_OTS_V2 = 2
+} knishio_ots_version_t;
 
 /* Token unit structure. Canonical cross-SDK fields are (id, name, metas); the wire format
  * emitted on V-atoms is JSON `[[id, name, metas], ...]` (matches JS/Rust/Python to_data()).
@@ -70,12 +77,13 @@ struct knishio_wallet {
     char *position;                 /**< Position in wallet chain */
     
     /* Cryptographic keys */
-    char *private_key;              /**< Private key (2048 chars) */
+    char *private_key;              /**< Private key (2048 hex for OTS v1, 8192 for OTS v2) */
     char *address;                  /**< Wallet address (64 chars) */
     char *pubkey;                   /**< ML-KEM public key (base64, configured parameter set) */
     uint8_t *privkey_bytes;         /**< ML-KEM private key bytes (configured parameter set) */
     size_t privkey_bytes_len;       /**< Private key bytes length */
     knishio_mlkem_param_t mlkem_param; /**< ML-KEM parameter set (1024 default, 768 step-back) */
+    int ots_version;                /**< OTS key version (1 or 2), set at construction */
     
     /* Wallet state */
     double balance;                 /**< Current balance */
@@ -245,6 +253,32 @@ bool knishio_wallet_create_from_params(knishio_wallet_t **wallet,
                                        const char *position,
                                        const char *batch_id,
                                        const char *characters);
+
+/**
+ * @brief knishio_wallet_create_with_continuid with an explicit OTS key version
+ * @param ots_version KNISHIO_OTS_V1 or KNISHIO_OTS_V2; anything else fails
+ * @return True on success, false on failure (including an unsupported version)
+ */
+bool knishio_wallet_create_with_ots_version(knishio_wallet_t **wallet,
+                                            const char *secret,
+                                            const char *token,
+                                            const char *position,
+                                            int ots_version);
+
+/**
+ * @brief knishio_wallet_create_from_params with an explicit OTS key version
+ * @param ots_version KNISHIO_OTS_V1 or KNISHIO_OTS_V2; anything else fails
+ * @return True on success, false on failure (including an unsupported version)
+ */
+bool knishio_wallet_create_from_params_with_ots_version(knishio_wallet_t **wallet,
+                                                        const char *secret,
+                                                        const char *bundle,
+                                                        const char *token,
+                                                        const char *address,
+                                                        const char *position,
+                                                        const char *batch_id,
+                                                        const char *characters,
+                                                        int ots_version);
 
 /**
  * @brief Create remainder wallet for transfers
@@ -569,6 +603,20 @@ bool knishio_generate_position(char **position);
 bool knishio_use_fixed_position(char **position);
 bool knishio_generate_wallet_key(const char *secret, const char *token,
                                  const char *position, char **private_key);
+/**
+ * @brief Derive a wallet's one-time signature private key
+ *
+ * A hex secret or position is used as-is; any other non-empty value is first hashed
+ * (SHAKE256: 1024 bits for the secret, 256 bits for the position). Version 1 yields 2048
+ * hex characters (16 chains), version 2 yields 8192 (64 chains).
+ * knishio_generate_wallet_key() is this function with KNISHIO_OTS_V1.
+ *
+ * @return True on success; false for empty or NULL input or an unsupported version
+ */
+bool knishio_generate_wallet_key_with_ots_version(const char *secret, const char *token,
+                                                  const char *position, int ots_version,
+                                                  char **private_key);
+/** @brief Wallet address of a 2048-hex (OTS v1) or 8192-hex (OTS v2) private key */
 bool knishio_generate_address(const char *private_key, char **address);
 bool knishio_wallet_create(knishio_wallet_t **wallet, const char *seed,
                           const char *token, const char *position);

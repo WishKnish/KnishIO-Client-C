@@ -207,9 +207,9 @@ void test_molecule_check_basic_validation(void) {
     result = knishio_molecule_generate_hash(molecule);
     TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, result);
     
-    /* An unsigned molecule is rejected: no OTS fragments means there is no signature to verify. */
+    /* An unsigned molecule is rejected: no OTS fragments is not a signature of either size. */
     result = knishio_molecule_check(molecule, NULL);
-    TEST_ASSERT_EQUAL(KNISHIO_ERROR_SIGNATURE_MISMATCH, result);
+    TEST_ASSERT_EQUAL(KNISHIO_ERROR_SIGNATURE_MALFORMED, result);
     
     knishio_molecule_free(molecule);
 }

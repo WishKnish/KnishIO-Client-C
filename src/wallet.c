@@ -86,108 +86,112 @@ bool knishio_use_fixed_position(char** position) {
 
 /* Wallet Key Derivation */
 
-/* knishio/utils/string.h declares knishio_is_hex_string() but nothing defines it (as with
- * knishio_string_split, _is_base and _chunk) — so it cannot be used here. */
-static bool secret_is_hex(const char* s) {
-    for (const char* p = s; *p; p++) {
-        if (!isxdigit((unsigned char)*p)) {
+/* Stage-0 hex test: ^[0-9A-Fa-f]+$, with no "0x" prefix. Not isxdigit(), whose answer
+ * depends on the locale. */
+static bool is_strict_hex(const char* s) {
+    if (*s == '\0') {
+        return false;
+    }
+    for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
+        const unsigned char c = *p;
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
             return false;
         }
     }
     return true;
 }
 
+/* Frees a heap string that may hold key material. */
+static void free_secret_string(char* s) {
+    if (s != NULL) {
+        knishio_secure_zero(s, strlen(s));
+        knishio_free(s);
+    }
+}
+
+#define KNISHIO_OTS_V2_DOMAIN_TAG "KnishIO-OTS-v2"
+
 bool knishio_generate_wallet_key(const char* secret, const char* token,
                                 const char* position, char** private_key) {
+    return knishio_generate_wallet_key_with_ots_version(secret, token, position,
+                                                        KNISHIO_OTS_V1, private_key);
+}
+
+bool knishio_generate_wallet_key_with_ots_version(const char* secret, const char* token,
+                                                  const char* position, int ots_version,
+                                                  char** private_key) {
     if (secret == NULL || position == NULL || private_key == NULL) {
         return false;
     }
-    
-    /* The secret may be ANY non-empty hex string. It is consumed as a BigInt below, which
-     * has no width requirement, and JS Wallet.generateKey imposes none either — it takes
-     * `isHex(secret) ? secret : shake256(secret, 1024)`.
-     *
-     * This previously demanded exactly KNISHIO_SECRET_LENGTH (2048), which made C unable to
-     * derive a wallet from a secret any of JS, TypeScript or Rust produces: those emit 1024
-     * hex chars, so every such secret was rejected outright. C-only use never noticed,
-     * because C's own knishio_generate_secret emits 2048.
-     *
-     * The canonical wots_roundtrip vector pins the result — a 64-char secret must derive
-     * OTS address fbf42152398e00c86534e719af1fc8914297d1979a763314b1f83e887c6ac808, the
-     * same address five other SDKs derive from it. */
-    if (strlen(secret) == 0 || !secret_is_hex(secret) ||
-        strlen(position) != KNISHIO_POSITION_LENGTH) {
+    if (ots_version != KNISHIO_OTS_V1 && ots_version != KNISHIO_OTS_V2) {
         return false;
     }
-    
+    if (secret[0] == '\0' || position[0] == '\0') {
+        return false;
+    }
+
     bool success = false;
+    char* secret_digest = NULL;
+    char* position_digest = NULL;
     char* indexed_key_hex = NULL;
+    char* stage1 = NULL;
     char* intermediate_hash = NULL;
-    knishio_shake256_ctx_t intermediate_ctx;
-    knishio_shake256_ctx_t final_ctx;
-    
-    /* Step 1: indexed_key = BigInt(secret) + BigInt(position) */
-    if (!knishio_wallet_key_from_hex(secret, position, &indexed_key_hex)) {
-        goto cleanup;
-    }
-    
-    /* Step 2: intermediate = SHAKE256(indexed_key + token) → 8192 bits */
-    if (!knishio_shake256_init(&intermediate_ctx)) {
-        goto cleanup;
-    }
-    
-    /* Update with indexed key (as hex string) */
-    if (!knishio_shake256_update_string(&intermediate_ctx, indexed_key_hex)) {
-        goto cleanup;
-    }
-    
-    /* Update with token if provided */
-    if (token != NULL && strlen(token) > 0) {
-        if (!knishio_shake256_update_string(&intermediate_ctx, token)) {
+    const char* token_text = token != NULL ? token : "";
+
+    /* Stage 0: a hex secret or position is used as-is; anything else is hashed first
+     * (SHAKE256, 1024 bits for the secret, 256 bits for the position). The secret has no
+     * width requirement: the canonical wots_roundtrip vector derives OTS address
+     * fbf42152398e00c86534e719af1fc8914297d1979a763314b1f83e887c6ac808 from a 64-char secret. */
+    const char* secret_hex = secret;
+    if (!is_strict_hex(secret)) {
+        if (!knishio_shake256_hash(secret, 1024, &secret_digest)) {
             goto cleanup;
         }
+        secret_hex = secret_digest;
     }
-    
-    /* Finalize and get intermediate hash */
-    if (!knishio_shake256_final(&intermediate_ctx)) {
+    const char* position_hex = position;
+    if (!is_strict_hex(position)) {
+        if (!knishio_shake256_hash(position, 256, &position_digest)) {
+            goto cleanup;
+        }
+        position_hex = position_digest;
+    }
+
+    /* Step 1: indexed_key = BigInt(secret) + BigInt(position) */
+    if (!knishio_wallet_key_from_hex(secret_hex, position_hex, &indexed_key_hex)) {
         goto cleanup;
     }
-    
-    if (!knishio_shake256_squeeze_hex(&intermediate_ctx, 8192, &intermediate_hash)) {
+
+    /* Step 2: intermediate = SHAKE256(stage1) -> 8192 bits.
+     *   v1: stage1 = indexed_key + token
+     *   v2: stage1 = "KnishIO-OTS-v2|" + indexed_key + "|" + token (both delimiters always) */
+    const size_t stage1_len = sizeof(KNISHIO_OTS_V2_DOMAIN_TAG) + strlen(indexed_key_hex) + 1 +
+                              strlen(token_text) + 1;
+    stage1 = knishio_malloc(stage1_len);
+    if (stage1 == NULL) {
         goto cleanup;
     }
-    
-    /* Step 3: private_key = SHAKE256(intermediate) → 8192 bits → 2048 hex chars */
-    if (!knishio_shake256_init(&final_ctx)) {
+    if (ots_version == KNISHIO_OTS_V2) {
+        snprintf(stage1, stage1_len, "%s|%s|%s", KNISHIO_OTS_V2_DOMAIN_TAG, indexed_key_hex, token_text);
+    } else {
+        snprintf(stage1, stage1_len, "%s%s", indexed_key_hex, token_text);
+    }
+    if (!knishio_shake256_hash(stage1, 8192, &intermediate_hash)) {
         goto cleanup;
     }
-    
-    if (!knishio_shake256_update_string(&final_ctx, intermediate_hash)) {
-        goto cleanup;
-    }
-    
-    if (!knishio_shake256_final(&final_ctx)) {
-        goto cleanup;
-    }
-    
-    if (!knishio_shake256_squeeze_hex(&final_ctx, 8192, private_key)) {
-        goto cleanup;
-    }
-    
-    success = true;
-    
+
+    /* Step 3: private_key = SHAKE256(intermediate) -> 8192 bits (2048 hex, 16 chains) for v1,
+     * 32768 bits (8192 hex, 64 chains) for v2 */
+    success = knishio_shake256_hash(intermediate_hash,
+                                    ots_version == KNISHIO_OTS_V2 ? 32768 : 8192,
+                                    private_key);
+
 cleanup:
-    knishio_shake256_cleanup(&intermediate_ctx);
-    knishio_shake256_cleanup(&final_ctx);
-    
-    if (indexed_key_hex != NULL) {
-        knishio_free(indexed_key_hex);
-    }
-    
-    if (intermediate_hash != NULL) {
-        knishio_free(intermediate_hash);
-    }
-    
+    free_secret_string(secret_digest);
+    free_secret_string(position_digest);
+    free_secret_string(indexed_key_hex);
+    free_secret_string(stage1);
+    free_secret_string(intermediate_hash);
     return success;
 }
 
@@ -198,15 +202,18 @@ bool knishio_generate_address(const char* private_key, char** address) {
         return false;
     }
     
-    /* Validate private key length */
-    if (strlen(private_key) != KNISHIO_PRIVKEY_LENGTH) {
+    /* 2048 hex characters (OTS v1, 16 chains) or 8192 (OTS v2, 64 chains) */
+    const size_t key_len = strlen(private_key);
+    if (key_len != KNISHIO_PRIVKEY_LENGTH && key_len != KNISHIO_PRIVKEY_LENGTH_V2) {
         return false;
     }
 
 #ifdef KNISHIO_HAVE_KCORE
-    /* kcore computes the same 16x16 chains, digest and address in one call. Ineligible input
-     * (non-lowercase-hex) or a kcore failure runs the loop below. */
-    if (knishio_kcore_is_lower_hex(private_key, KNISHIO_KCORE_WOTS_HEX_LEN)) {
+    /* kcore computes the same chains, digest and address in one call for a v1 key; its address
+     * entry point takes 2048-hex keys only. Ineligible input (non-lowercase-hex) or a kcore
+     * failure runs the loop below. */
+    if (key_len == KNISHIO_KCORE_WOTS_HEX_LEN &&
+        knishio_kcore_is_lower_hex(private_key, KNISHIO_KCORE_WOTS_HEX_LEN)) {
         char kcore_address[64];
         if (kcore_wots_address(private_key, kcore_address) == 0) {
             *address = knishio_strndup(kcore_address, sizeof(kcore_address));
@@ -221,13 +228,39 @@ bool knishio_generate_address(const char* private_key, char** address) {
     knishio_shake256_ctx_t digest_ctx;
     knishio_shake256_ctx_t output_ctx;
     char* final_digest = NULL;
+    memset(&digest_ctx, 0, sizeof(digest_ctx));
+    memset(&output_ctx, 0, sizeof(output_ctx));
+
+#ifdef KNISHIO_HAVE_KCORE
+    /* A v2 key's 64 chain endpoints in one kcore call (16 steps each) */
+    if (key_len == KNISHIO_PRIVKEY_LENGTH_V2) {
+        int counts[KNISHIO_KCORE_WOTS_MAX_CHUNKS];
+        char* endpoints = knishio_malloc(KNISHIO_PRIVKEY_LENGTH_V2 + 1);
+        if (endpoints == NULL) {
+            return false;
+        }
+        for (size_t i = 0; i < KNISHIO_KCORE_WOTS_MAX_CHUNKS; i++) {
+            counts[i] = 16;
+        }
+        const bool chained = knishio_kcore_wots_chains(private_key, KNISHIO_KCORE_WOTS_MAX_CHUNKS,
+                                                       counts, endpoints) &&
+                             knishio_shake256_hash(endpoints, 8192, &final_digest);
+        knishio_secure_zero(endpoints, KNISHIO_PRIVKEY_LENGTH_V2 + 1);
+        knishio_free(endpoints);
+        if (chained) {
+            success = knishio_shake256_hash(final_digest, 256, address);
+            knishio_free(final_digest);
+            return success;
+        }
+    }
+#endif
     
-    /* Step 1: Split key into 16 fragments of 128 chars each */
+    /* Step 1: Split key into fragments of 128 chars each (16 for v1, 64 for v2) */
     if (!knishio_chunk_string(private_key, 128, &fragments, &fragment_count)) {
         goto cleanup;
     }
     
-    if (fragment_count != 16) {
+    if (fragment_count != key_len / 128) {
         goto cleanup;
     }
     
@@ -975,7 +1008,24 @@ bool knishio_wallet_create_from_params(knishio_wallet_t **wallet,
                                        const char *position,
                                        const char *batch_id,
                                        const char *characters) {
+    return knishio_wallet_create_from_params_with_ots_version(wallet, secret, bundle, token, address,
+                                                              position, batch_id, characters,
+                                                              KNISHIO_OTS_V1);
+}
+
+bool knishio_wallet_create_from_params_with_ots_version(knishio_wallet_t **wallet,
+                                                        const char *secret,
+                                                        const char *bundle,
+                                                        const char *token,
+                                                        const char *address,
+                                                        const char *position,
+                                                        const char *batch_id,
+                                                        const char *characters,
+                                                        int ots_version) {
     if (!wallet || !secret || !token || !position) {
+        return false;
+    }
+    if (ots_version != KNISHIO_OTS_V1 && ots_version != KNISHIO_OTS_V2) {
         return false;
     }
     
@@ -988,6 +1038,7 @@ bool knishio_wallet_create_from_params(knishio_wallet_t **wallet,
     knishio_wallet_t *w = *wallet;
     memset(w, 0, sizeof(knishio_wallet_t));
     w->mlkem_param = knishio_wallet_get_default_mlkem_param();
+    w->ots_version = ots_version;
     
     /* Set basic properties */
     w->secret = knishio_strdup(secret);
@@ -1011,15 +1062,18 @@ bool knishio_wallet_create_from_params(knishio_wallet_t **wallet,
     
     /* Generate and store private key (required for ML-KEM768) */
     char *private_key = NULL;
-    if (knishio_generate_wallet_key(secret, token, position, &private_key)) {
+    if (knishio_generate_wallet_key_with_ots_version(secret, token, position, ots_version, &private_key)) {
         w->private_key = private_key; // Store in wallet structure
         
         if (!address) {
             /* Generate address if not provided */
             char *generated_address = NULL;
-            if (knishio_generate_address(private_key, &generated_address)) {
-                w->address = generated_address;
+            if (!knishio_generate_address(private_key, &generated_address)) {
+                knishio_wallet_free(w);
+                *wallet = NULL;
+                return false;
             }
+            w->address = generated_address;
         }
 
         /* Initialize ML-KEM768 keypair (JS Wallet calls initializeMLKEM after key/address)
@@ -1045,10 +1099,19 @@ bool knishio_wallet_create_with_continuid(knishio_wallet_t **wallet,
                                           const char *secret,
                                           const char *token,
                                           const char *position) {
+    return knishio_wallet_create_with_ots_version(wallet, secret, token, position, KNISHIO_OTS_V1);
+}
+
+bool knishio_wallet_create_with_ots_version(knishio_wallet_t **wallet,
+                                            const char *secret,
+                                            const char *token,
+                                            const char *position,
+                                            int ots_version) {
     if (!wallet || !secret || !token || !position) {
         return false;
     }
     
     /* Use the comprehensive create_from_params function */
-    return knishio_wallet_create_from_params(wallet, secret, NULL, token, NULL, position, NULL, "BASE64");
+    return knishio_wallet_create_from_params_with_ots_version(wallet, secret, NULL, token, NULL, position,
+                                                              NULL, "BASE64", ots_version);
 }
