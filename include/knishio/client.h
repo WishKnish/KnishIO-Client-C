@@ -102,6 +102,20 @@ int knishio_client_get_mlkem_parameter_set(const knishio_client_t* client);
  */
 void knishio_client_set_mlkem_parameter_set(knishio_client_t* client, int param_set);
 
+/**
+ * @brief OTS version of the keys this client creates from its secret (1 default, or 2)
+ */
+int knishio_client_get_ots_version(const knishio_client_t* client);
+
+/**
+ * @brief Set the OTS version of the keys this client creates from its secret
+ *
+ * Wallets the ledger returns keep the version their address was derived at.
+ * @return KNISHIO_SUCCESS, or KNISHIO_ERROR_INVALID_ARGS for a NULL client or a version other
+ *         than 1 or 2 (the message goes to the global error handler)
+ */
+knishio_error_t knishio_client_set_ots_version(knishio_client_t* client, int ots_version);
+
 #ifdef __cplusplus
 }
 #endif

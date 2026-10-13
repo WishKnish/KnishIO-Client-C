@@ -205,7 +205,9 @@ knishio_error_t knishio_client_claim_shadow_wallet(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_simple(&claim_wallet, source->secret, params->token, remainder_position);
+    error = knishio_wallet_create_with_ots_version(&claim_wallet, source->secret, params->token, remainder_position,
+                                                   knishio_client_get_ots_version(client))
+        ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     knishio_free(remainder_position);
     remainder_position = NULL;
     if (error != KNISHIO_SUCCESS) {

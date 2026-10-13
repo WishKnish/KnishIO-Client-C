@@ -9,6 +9,7 @@
 #include "knishio/graphql.h"
 #include "knishio/json/parser.h"
 #include "knishio/response/response_wallet_list.h"  /* knishio_response_wallet_list_to_client_wallet */
+#include "operations_internal.h"
 
 #include <cjson/cJSON.h>
 
@@ -108,11 +109,15 @@ knishio_error_t knishio_client_create_wallet(
     /* The new wallet being defined: the caller's token + position, else a FRESH position (JS
      * Wallet.create; a fixed fallback collided with every other wallet created the same way). */
     if (params->position && strlen(params->position) == 64) {
-        error = knishio_wallet_create_simple(&new_wallet, source->secret, params->token, params->position);
+        error = knishio_wallet_create_with_ots_version(&new_wallet, source->secret, params->token, params->position,
+                                                       knishio_client_get_ots_version(client))
+            ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     } else if (!knishio_generate_position(&remainder_position)) {
         error = KNISHIO_ERROR_CRYPTO;
     } else {
-        error = knishio_wallet_create_simple(&new_wallet, source->secret, params->token, remainder_position);
+        error = knishio_wallet_create_with_ots_version(&new_wallet, source->secret, params->token, remainder_position,
+                                                       knishio_client_get_ots_version(client))
+            ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
         knishio_free(remainder_position);
         remainder_position = NULL;
     }
@@ -207,13 +212,11 @@ knishio_error_t knishio_client_query_wallets(
     char* own_bundle = NULL;
     const char* bundle = params ? params->bundle : NULL;
     if (!bundle) {
-        knishio_wallet_t* id = NULL;
-        knishio_error_t id_error = knishio_client_get_source_wallet_continuid(client, "USER", &id);
+        /* The client's own bundle from its secret alone: a bundle lookup reads no ledger wallet. */
+        knishio_error_t id_error = knishio_client_own_bundle(client, &own_bundle);
         if (id_error != KNISHIO_SUCCESS) {
             return id_error;
         }
-        own_bundle = (id && id->bundle_hash) ? knishio_strdup(id->bundle_hash) : NULL;
-        if (id) knishio_wallet_free(id);
         if (!own_bundle) {
             return KNISHIO_ERROR_INVALID_STATE;
         }

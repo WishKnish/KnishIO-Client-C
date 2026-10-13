@@ -126,9 +126,11 @@ knishio_error_t knishio_client_transfer_tokens(
         }
     }
 
-    /* 3. Source = the funded token wallet (re-derives address from secret+token+position;
-     * carries the balance + the stackable tokenUnits parsed from the Balance response). */
-    error = knishio_wallet_create_simple(&source, user->secret, params->token, tok_position);
+    /* 3. Source = the funded token wallet (re-derives the key from secret+token+position at the
+     * OTS version its ledger address was derived at; carries the balance + the stackable
+     * tokenUnits parsed from the Balance response). */
+    error = knishio_client_own_wallet_at(client, user->secret, params->token, tok_position,
+                                         bw ? bw->address : NULL, &source);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -342,9 +344,11 @@ knishio_error_t knishio_client_transfer_tokens_multi(
         }
     }
 
-    /* 3. Source = the funded token wallet (re-derives the signing key at the registered position;
-     * carries the balance + the stackable tokenUnits parsed from the Balance response). */
-    error = knishio_wallet_create_simple(&source, user->secret, params->token, tok_position);
+    /* 3. Source = the funded token wallet (re-derives the signing key at the registered position
+     * and the OTS version its ledger address was derived at; carries the balance + the stackable
+     * tokenUnits parsed from the Balance response). */
+    error = knishio_client_own_wallet_at(client, user->secret, params->token, tok_position,
+                                         bw ? bw->address : NULL, &source);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -576,27 +580,24 @@ knishio_error_t knishio_client_query_balance_wallet_of_type(
     }
     *wallet = NULL;
 
-    /* Resolve the CANONICAL bundle (shake256(secret,256), 64-char) the way create/transfer/burn
-     * do — NOT knishio_client_get_bundle (which is shake256(secret,512), a different 128-char hash). */
-    knishio_wallet_t* id = NULL;
-    knishio_error_t error = knishio_client_get_source_wallet_continuid(client, "USER", &id);
+    /* Resolve the CANONICAL bundle (shake256(secret,256), 64-char) from the client secret alone —
+     * NOT knishio_client_get_bundle (which is shake256(secret,512), a different 128-char hash). A
+     * bundle lookup reads no ledger wallet, so no OTS version is bound here. */
+    char* bundle = NULL;
+    knishio_error_t error = knishio_client_own_bundle(client, &bundle);
     if (error != KNISHIO_SUCCESS) {
         return error;
-    }
-    if (!id || !id->bundle_hash) {
-        if (id) knishio_wallet_free(id);
-        return KNISHIO_ERROR_INVALID_STATE;
     }
 
     char variables[320];
     if (type) {
         snprintf(variables, sizeof(variables),
-                 "{\"bundleHash\":\"%s\",\"token\":\"%s\",\"type\":\"%s\"}", id->bundle_hash, token, type);
+                 "{\"bundleHash\":\"%s\",\"token\":\"%s\",\"type\":\"%s\"}", bundle, token, type);
     } else {
         snprintf(variables, sizeof(variables),
-                 "{\"bundleHash\":\"%s\",\"token\":\"%s\"}", id->bundle_hash, token);
+                 "{\"bundleHash\":\"%s\",\"token\":\"%s\"}", bundle, token);
     }
-    knishio_wallet_free(id);
+    knishio_free(bundle);
 
     /* Balance reads are auth-gated by the validator -> requires_auth=true fails fast (KNISHIO_ERROR_AUTH)
      * if the client isn't authenticated; execute_graphql propagates client->auth_token as X-Auth-Token. */
@@ -709,6 +710,7 @@ knishio_error_t knishio_client_burn_tokens(
     char* remainder_position = NULL;
     char* tok_position = NULL;
     char* tok_amount = NULL;
+    char* tok_address = NULL;
     knishio_molecule_t* molecule = NULL;
     knishio_graphql_response_t* response = NULL;
 
@@ -736,8 +738,10 @@ knishio_error_t knishio_client_burn_tokens(
             if (root) {
                 const char* p = knishio_json_get_string_path(root, "data.Balance.position");
                 const char* a = knishio_json_get_string_path(root, "data.Balance.amount");
+                const char* w = knishio_json_get_string_path(root, "data.Balance.address");
                 if (p) tok_position = knishio_strdup(p);
                 if (a) tok_amount = knishio_strdup(a);
+                if (w) tok_address = knishio_strdup(w);
                 knishio_json_free(root);
             }
         }
@@ -749,8 +753,9 @@ knishio_error_t knishio_client_burn_tokens(
         }
     }
 
-    /* 3. Burn source = the funded token wallet (re-derives address from secret+token+position). */
-    error = knishio_wallet_create_simple(&source, user->secret, token, tok_position);
+    /* 3. Burn source = the funded token wallet (re-derives the key from secret+token+position at
+     * the OTS version its ledger address was derived at). */
+    error = knishio_client_own_wallet_at(client, user->secret, token, tok_position, tok_address, &source);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -832,6 +837,7 @@ cleanup:
     if (remainder_position) knishio_free(remainder_position);
     if (tok_position) knishio_free(tok_position);
     if (tok_amount) knishio_free(tok_amount);
+    if (tok_address) knishio_free(tok_address);
     if (source) knishio_wallet_free(source);
     if (remainder) knishio_wallet_free(remainder);
     if (user) knishio_wallet_free(user);
@@ -868,7 +874,8 @@ knishio_error_t knishio_resolve_funded_source(
         goto cleanup;
     }
 
-    error = knishio_wallet_create_simple(&source, user->secret, token, found->position);
+    error = knishio_client_own_wallet_at(client, user->secret, token, found->position, found->address,
+                                         &source);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }

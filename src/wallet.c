@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include "knishio/error/context.h"
 
 /* Legacy function definitions updated to support ContinuID structures */
 
@@ -365,6 +366,75 @@ cleanup:
     }
     
     return success;
+}
+
+/* Hands an error message to the global error handler (knishio_set_error_handler). */
+static void report_wallet_error(knishio_error_t code, const char* message) {
+    knishio_error_context_t* ctx = KNISHIO_ERROR_CREATE(code, message);
+    knishio_trigger_error_handler(ctx);
+    knishio_error_context_destroy(ctx);
+}
+
+bool knishio_check_ots_version(int ots_version) {
+    if (ots_version == KNISHIO_OTS_V1 || ots_version == KNISHIO_OTS_V2) {
+        return true;
+    }
+    char message[96];
+    snprintf(message, sizeof(message), "KnishIO: unsupported OTS version %d; expected 1 or 2.", ots_version);
+    report_wallet_error(KNISHIO_ERROR_INVALID_ARGS, message);
+    return false;
+}
+
+bool knishio_wallet_set_ots_version(knishio_wallet_t* wallet, int ots_version) {
+    if (wallet == NULL || !knishio_check_ots_version(ots_version)) {
+        return false;
+    }
+    const int current = wallet->ots_version == 0 ? KNISHIO_OTS_V1 : wallet->ots_version;
+    if (wallet->private_key != NULL && ots_version != current) {
+        report_wallet_error(KNISHIO_ERROR_INVALID_STATE,
+                            "KnishIO: cannot change the OTS version of a keyed wallet.");
+        return false;
+    }
+    wallet->ots_version = ots_version;
+    return true;
+}
+
+/* True when the key derived from secret, token and position at ots_version has `address`. */
+static bool derives_address(const char* secret, const char* token, const char* position,
+                            const char* address, int ots_version) {
+    char* key = NULL;
+    char* derived = NULL;
+    bool matches = false;
+    if (knishio_generate_wallet_key_with_ots_version(secret, token, position, ots_version, &key)
+        && knishio_generate_address(key, &derived)) {
+        matches = strlen(derived) == strlen(address);
+        for (size_t i = 0; matches && address[i] != '\0'; i++) {
+            matches = derived[i] == (char)tolower((unsigned char)address[i]);
+        }
+    }
+    if (key != NULL) {
+        knishio_secure_zero(key, strlen(key));
+        knishio_free(key);
+    }
+    knishio_free(derived);
+    return matches;
+}
+
+int knishio_detect_ots_version(const char* secret, const char* token, const char* position,
+                               const char* address, int preferred) {
+    if (secret == NULL || position == NULL || address == NULL
+        || secret[0] == '\0' || position[0] == '\0' || address[0] == '\0'
+        || !knishio_check_ots_version(preferred)) {
+        return 0;
+    }
+    const char* token_text = token != NULL ? token : "";
+    const int order[2] = { preferred, preferred == KNISHIO_OTS_V1 ? KNISHIO_OTS_V2 : KNISHIO_OTS_V1 };
+    for (size_t i = 0; i < 2; i++) {
+        if (derives_address(secret, token_text, position, address, order[i])) {
+            return order[i];
+        }
+    }
+    return 0;
 }
 
 /* Updated Wallet Management with ContinuID structures */

@@ -31,6 +31,17 @@ substantiate a detail, the entry says so instead of guessing.
 - ctest entries `OtsV2RoundTrip` (a v2 wallet signs and verifies a molecule) and `OtsV2Vectors`
   (the shared OTS v2 vectors; skipped with exit code 77 when they are absent, as in a
   standalone checkout).
+- **Client-level OTS version.** `knishio_client_config_t.ots_version` (1 default, 0 counts as
+  1, or 2), `knishio_client_get_ots_version()` and `knishio_client_set_ots_version()`. Keys the
+  client creates from its secret (the first source wallet, the AUTH login wallet,
+  `knishio_client_create_wallet`, token and claim wallets) use it.
+- `knishio_detect_ots_version(secret, token, position, address, preferred)`: the OTS version
+  whose derived address equals `address`, or 0. `knishio_check_ots_version()`, and
+  `knishio_wallet_set_ots_version()` for a wallet that holds no key.
+- `AuthToken` snapshots carry `wallet.otsVersion` (also `knishio_auth_token_snapshot_t`
+  `wallet.ots_version`); a snapshot without it restores at 1.
+- ctest entry `OtsV2Client` (the client OTS version option, own-wallet version detection and
+  AuthToken snapshots, against a loopback GraphQL stub).
 
 ### Changed
 
@@ -52,6 +63,13 @@ substantiate a detail, the entry says so instead of guessing.
   version.
 - kcore backend: the chains of v2 signing, verification and addresses also run in kcore
   (64 chains per call); kcore's address entry point is still used for v1 keys only.
+- Wallets the ledger returns for this client (the ContinuID head in
+  `knishio_client_get_source_wallet_continuid()` and the login pointer, and the balance wallets
+  that transfers, burns, buffer deposits and withdrawals, fusion and replenishment sign from or
+  credit) are used at the OTS version their address was derived at. They fail with
+  `KNISHIO_ERROR_WALLET_MISMATCH` when neither version derives the address; the login pointer
+  falls back to an AUTH wallet as before. Messages go to the global error handler.
+- The CipherHash transport wallet uses the OTS version of the wallet that signed in.
 
 ## [1.3.1] — 2026-10-09
 

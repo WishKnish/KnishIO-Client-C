@@ -618,6 +618,30 @@ bool knishio_generate_wallet_key_with_ots_version(const char *secret, const char
                                                   char **private_key);
 /** @brief Wallet address of a 2048-hex (OTS v1) or 8192-hex (OTS v2) private key */
 bool knishio_generate_address(const char *private_key, char **address);
+/**
+ * @brief Whether ots_version is a supported OTS version (1 or 2)
+ *
+ * When it is not, "KnishIO: unsupported OTS version <n>; expected 1 or 2." goes to the global
+ * error handler (knishio_set_error_handler).
+ */
+bool knishio_check_ots_version(int ots_version);
+/**
+ * @brief The OTS version whose key, derived from secret, token and position, has `address`
+ *
+ * Tries `preferred` first, then the other version; the address compare ignores case.
+ * @return 1 or 2; 0 when neither version derives the address, or for missing input or an
+ *         unsupported `preferred`
+ */
+int knishio_detect_ots_version(const char *secret, const char *token, const char *position,
+                               const char *address, int preferred);
+/**
+ * @brief Set the OTS version of a wallet that holds no key (e.g. one rebuilt from ledger data)
+ *
+ * A keyed wallet keeps the version its key was derived at: changing it fails with
+ * "KnishIO: cannot change the OTS version of a keyed wallet." sent to the global error handler.
+ * @return True on success; false for a NULL wallet, an unsupported version or a keyed wallet
+ */
+bool knishio_wallet_set_ots_version(knishio_wallet_t *wallet, int ots_version);
 bool knishio_wallet_create(knishio_wallet_t **wallet, const char *seed,
                           const char *token, const char *position);
 bool knishio_wallet_from_secret(knishio_wallet_t **wallet, const char *secret,

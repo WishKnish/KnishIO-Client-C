@@ -72,6 +72,9 @@ knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_c
         config->mlkem_parameter_set != 768) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
+    if (config->ots_version != 0 && !knishio_check_ots_version(config->ots_version)) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
     
     knishio_client_t *new_client = knishio_malloc(sizeof(knishio_client_t));
     if (new_client == NULL) {
@@ -88,6 +91,7 @@ knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_c
     new_client->cipher_server_pubkey = NULL;
     new_client->cipher_wallet = NULL;
     new_client->mlkem_parameter_set = (config->mlkem_parameter_set == 768) ? 768 : 1024;
+    new_client->ots_version = config->ots_version == 0 ? KNISHIO_OTS_V1 : config->ots_version;
     knishio_wallet_set_default_mlkem_param(new_client->mlkem_parameter_set == 768 ? KNISHIO_MLKEM_768 : KNISHIO_MLKEM_1024);
     // Initialize authentication state
     memset(&new_client->auth_state, 0, sizeof(knishio_client_auth_state_t));
@@ -424,17 +428,17 @@ knishio_error_t knishio_client_set_cipher_context(knishio_client_t* client,
     }
 
     /* Own a copy of the auth signing wallet's identity (AUTH, or USER for a login signed from the
-     * ContinuID pointer). Re-deriving from (secret, token, position) is
+     * ContinuID pointer). Re-deriving from (secret, token, position) at the source's OTS version is
      * deterministic, so the copy's ML-KEM keypair is byte-identical to the source wallet's — and
      * unlike a bare pubkey/privkey pair it also carries the KnishIO key the transport needs to
      * derive this wallet's OTHER ML-KEM identity for a legacy inbound envelope. */
     if (!source_wallet->secret || !source_wallet->token || !source_wallet->position) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    knishio_error_t error = knishio_wallet_create_simple(&client->cipher_wallet,
-                                                         source_wallet->secret,
-                                                         source_wallet->token,
-                                                         source_wallet->position);
+    knishio_error_t error = knishio_wallet_create_with_ots_version(
+        &client->cipher_wallet, source_wallet->secret, source_wallet->token, source_wallet->position,
+        source_wallet->ots_version == 0 ? KNISHIO_OTS_V1 : source_wallet->ots_version)
+        ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
@@ -471,4 +475,16 @@ void knishio_client_set_mlkem_parameter_set(knishio_client_t* client, int param_
     if (client) {
         client->mlkem_parameter_set = (param_set == 768) ? 768 : 1024;
     }
+}
+
+int knishio_client_get_ots_version(const knishio_client_t* client) {
+    return (client && client->ots_version == KNISHIO_OTS_V2) ? KNISHIO_OTS_V2 : KNISHIO_OTS_V1;
+}
+
+knishio_error_t knishio_client_set_ots_version(knishio_client_t* client, int ots_version) {
+    if (!client || !knishio_check_ots_version(ots_version)) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    client->ots_version = ots_version;
+    return KNISHIO_SUCCESS;
 }

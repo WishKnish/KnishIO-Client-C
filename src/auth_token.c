@@ -91,6 +91,22 @@ knishio_error_t knishio_auth_token_create_with_wallet(knishio_auth_token_t** aut
     return KNISHIO_SUCCESS;
 }
 
+/* OTS version a restored session's wallet must use: the snapshot's explicit `wallet.otsVersion`,
+ * or 1 for a snapshot written before the field existed (every such session was v1). 0 for an
+ * unsupported value, whose message goes to the global error handler. */
+static int resolve_ots_version(knishio_json_t* json) {
+    double explicit_version = 0.0;
+    if (!knishio_json_get_number_path(json, "wallet.otsVersion", &explicit_version)
+        || explicit_version == 0.0) {
+        return KNISHIO_OTS_V1;
+    }
+    const int version = (explicit_version >= -1000.0 && explicit_version <= 1000.0) ? (int)explicit_version : -1;
+    if (!knishio_check_ots_version(version) || (double)version != explicit_version) {
+        return 0;
+    }
+    return version;
+}
+
 knishio_error_t knishio_auth_token_restore(knishio_auth_token_t** auth_token,
                                            const char* snapshot_json,
                                            const char* secret) {
@@ -154,9 +170,16 @@ knishio_error_t knishio_auth_token_restore(knishio_auth_token_t** auth_token,
         }
     }
 
+    const int resolved_ots_version = resolve_ots_version(json);
+    if (resolved_ots_version == 0) {
+        knishio_json_free(json);
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+
     /* Create wallet from snapshot data */
     knishio_wallet_t* wallet = NULL;
-    bool wallet_success = knishio_wallet_from_secret(&wallet, secret, wallet_token_str, position_str);
+    bool wallet_success = knishio_wallet_create_with_ots_version(&wallet, secret, wallet_token_str, position_str,
+                                                                 resolved_ots_version);
     knishio_error_t error = wallet_success ? KNISHIO_SUCCESS : KNISHIO_ERROR_INVALID_ARGS;
     if (error != KNISHIO_SUCCESS) {
         knishio_json_free(json);
@@ -322,7 +345,9 @@ knishio_error_t knishio_auth_token_get_snapshot(const knishio_auth_token_t* auth
             /* Persist the parameter set beside position/characters so a restored session keeps the
              * set it authenticated with instead of taking the (now 1024) constructor default. */
             || !cJSON_AddNumberToObject(wallet, "mlKemParameterSet",
-                                        (double)knishio_wallet_get_mlkem_param(auth_token->wallet))) {
+                                        (double)knishio_wallet_get_mlkem_param(auth_token->wallet))
+            || !cJSON_AddNumberToObject(wallet, "otsVersion",
+                                        auth_token->wallet->ots_version == KNISHIO_OTS_V2 ? 2.0 : 1.0)) {
             error = KNISHIO_ERROR_MEMORY;
             goto done;
         }
@@ -442,10 +467,12 @@ knishio_error_t knishio_auth_token_create_snapshot(const knishio_auth_token_t* a
         snap->wallet.position = knishio_auth_token_strdup_safe(position);
         snap->wallet.characters = knishio_auth_token_strdup_safe(characters);
         snap->wallet.mlkem_parameter_set = (int)knishio_wallet_get_mlkem_param(auth_token->wallet);
+        snap->wallet.ots_version = auth_token->wallet->ots_version == KNISHIO_OTS_V2 ? KNISHIO_OTS_V2 : KNISHIO_OTS_V1;
     } else {
         snap->wallet.position = NULL;
         snap->wallet.characters = NULL;
         snap->wallet.mlkem_parameter_set = 0;
+        snap->wallet.ots_version = 0;
     }
     
     *snapshot = snap;

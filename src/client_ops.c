@@ -17,6 +17,8 @@
 #include "client_internal.h"
 #include "knishio/utils/memory.h"
 #include "knishio/storage/provider.h"
+#include "knishio/error/context.h"
+#include "operations/operations_internal.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -398,12 +400,14 @@ knishio_error_t knishio_client_get_source_wallet(
         return err;
     }
 
-    knishio_error_t result = knishio_wallet_create_simple(
+    /* No ledger wallet to inherit from: a new key at the client's OTS version. */
+    knishio_error_t result = knishio_wallet_create_with_ots_version(
         wallet,
         secret,
         token ? token : "USER",
-        KNISHIO_FIXED_POSITION
-    );
+        KNISHIO_FIXED_POSITION,
+        knishio_client_get_ots_version(client)
+    ) ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
 
     client_release_secret(secret, secret_len, owned);
     return result;
@@ -411,9 +415,10 @@ knishio_error_t knishio_client_get_source_wallet(
 
 /* Resolve the SIGNING source wallet at the bundle's live on-ledger ContinuID position (slice 2c,
  * mirrors JS getSourceWallet). Queries ContinuId(bundle, "USER"); if a 64-char position is
- * returned, the wallet is built there so it binds to the bundle's current chain head and passes
- * the validator's ContinuID chain validation; otherwise (genesis / no ContinuID yet) it falls
- * back to KNISHIO_FIXED_POSITION. */
+ * returned, the wallet is built there, at the OTS version its ledger address was derived at, so it
+ * binds to the bundle's current chain head and passes the validator's ContinuID chain validation;
+ * otherwise (genesis / no ContinuID yet) it falls back to KNISHIO_FIXED_POSITION at the client's
+ * OTS version. */
 knishio_error_t knishio_client_get_source_wallet_continuid(
     knishio_client_t* client,
     const char* token,
@@ -443,20 +448,95 @@ knishio_error_t knishio_client_get_source_wallet_continuid(
     }
 
     /* Query live ContinuID position for bundle */
-    const char* position = KNISHIO_FIXED_POSITION;
     knishio_continuId_result_t* cid = NULL;
     if (knishio_client_query_continuId(client, tmp->bundle_hash, &cid) == KNISHIO_SUCCESS
         && cid && cid->wallet && cid->wallet->position
         && strlen(cid->wallet->position) == 64) {
-        position = cid->wallet->position;
+        error = knishio_client_own_wallet_at(client, secret, tok, cid->wallet->position,
+                                             cid->wallet->address, wallet);
+    } else {
+        error = knishio_wallet_create_with_ots_version(wallet, secret, tok, KNISHIO_FIXED_POSITION,
+                                                       knishio_client_get_ots_version(client))
+            ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     }
-
-    error = knishio_wallet_create_simple(wallet, secret, tok, position);
 
     if (cid) knishio_continuId_result_free(cid);
     knishio_wallet_free(tmp);
     client_release_secret(secret, secret_len, owned);
     return error;
+}
+
+knishio_error_t knishio_client_own_bundle(knishio_client_t* client, char** bundle) {
+    if (!client || !bundle) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    *bundle = NULL;
+    char* secret = NULL;
+    size_t secret_len = 0;
+    bool owned = false;
+    knishio_error_t err = client_resolve_secret(client, &secret, &secret_len, &owned);
+    if (err != KNISHIO_SUCCESS) {
+        return err;
+    }
+    err = knishio_generate_bundle_hash(secret, NULL, NULL, bundle) ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
+    client_release_secret(secret, secret_len, owned);
+    return err;
+}
+
+knishio_error_t knishio_client_bind_own_wallet_ots_version(
+    const knishio_client_t* client,
+    const char* secret,
+    const char* token,
+    const char* position,
+    const char* address,
+    int* ots_version
+) {
+    if (!client || !secret || !ots_version) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    const int preferred = knishio_client_get_ots_version(client);
+    if (!position || !position[0] || !address || !address[0]) {
+        *ots_version = preferred;
+        return KNISHIO_SUCCESS;
+    }
+    const int detected = knishio_detect_ots_version(secret, token, position, address, preferred);
+    if (detected == 0) {
+        const char* format =
+            "KnishIO: wallet %s is not derived from this secret at position %s under OTS version 1 or 2.";
+        const size_t length = strlen(format) + strlen(address) + strlen(position) + 1;
+        char* message = knishio_malloc(length);
+        if (message) {
+            snprintf(message, length, format, address, position);
+        }
+        knishio_error_context_t* ctx = KNISHIO_ERROR_CREATE(KNISHIO_ERROR_WALLET_MISMATCH, message);
+        knishio_trigger_error_handler(ctx);
+        knishio_error_context_destroy(ctx);
+        knishio_free(message);
+        return KNISHIO_ERROR_WALLET_MISMATCH;
+    }
+    *ots_version = detected;
+    return KNISHIO_SUCCESS;
+}
+
+knishio_error_t knishio_client_own_wallet_at(
+    const knishio_client_t* client,
+    const char* secret,
+    const char* token,
+    const char* position,
+    const char* address,
+    knishio_wallet_t** wallet
+) {
+    if (!wallet || !token || !position) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    int ots_version = KNISHIO_OTS_V1;
+    knishio_error_t error = knishio_client_bind_own_wallet_ots_version(
+        client, secret, token, position, address, &ots_version);
+    if (error != KNISHIO_SUCCESS) {
+        return error;
+    }
+    return knishio_wallet_create_with_ots_version(wallet, secret, token, position, ots_version)
+        ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
 }
 /* Create and sign a molecule */
 knishio_error_t knishio_client_create_molecule(

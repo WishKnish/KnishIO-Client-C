@@ -24,9 +24,32 @@
 #include "knishio/operations/auth.h"
 #include "knishio/operations/transfer.h"
 #include "knishio/wallet.h"
+#include "knishio/crypto/shake256.h"
+#include "knishio/utils/memory.h"
 
 static int streq(const char* a, const char* b) {
     return a && b && strcmp(a, b) == 0;
+}
+
+/* At OTS version 2 the test uses its own fixed identity: SHAKE256(secret + "|ots-v2"), 2048 hex
+ * characters, so v1 and v2 runs never share a ContinuID chain. Version 1 keeps `*secret`. */
+static int secret_for_ots_version(char** secret, int ots_version) {
+    if (ots_version != 2) return 1;
+    const char* suffix = "|ots-v2";
+    size_t len = strlen(*secret) + strlen(suffix) + 1;
+    char* input = knishio_malloc(len);
+    char* derived = NULL;
+    if (!input) return 0;
+    snprintf(input, len, "%s%s", *secret, suffix);
+    int ok = knishio_shake256_hash(input, 8192, &derived) && derived && strlen(derived) == 2048;
+    knishio_free(input);
+    if (!ok) {
+        if (derived) knishio_free(derived);
+        return 0;
+    }
+    knishio_free(*secret);
+    *secret = derived;
+    return 1;
 }
 
 int main(void) {
@@ -55,6 +78,13 @@ int main(void) {
 
     const char* param_env = getenv("CIPHERHASH_MLKEM_PARAMETER_SET");
     int param = (param_env && strcmp(param_env, "768") == 0) ? 768 : 1024;
+    /* OTS version of the keys the client creates from its secret: 2 for "2", else 1. */
+    const char* ots_env = getenv("CIPHERHASH_OTS_VERSION");
+    int ots_version = (ots_env && strcmp(ots_env, "2") == 0) ? 2 : 1;
+    if (!secret_for_ots_version(&secret, ots_version)) {
+        fprintf(stderr, "FAIL: could not derive the OTS v2 secret\n");
+        goto cleanup;
+    }
 
     knishio_client_config_t config = {
         .uri = url,
@@ -64,7 +94,8 @@ int main(void) {
         .server_sdk_version = 3,
         .logging = false,
         .insecure_tls = false,
-        .mlkem_parameter_set = param
+        .mlkem_parameter_set = param,
+        .ots_version = ots_version
     };
     if (knishio_client_create(&client, &config) != KNISHIO_SUCCESS || !client) {
         fprintf(stderr, "FAIL: could not create client\n");
@@ -129,7 +160,8 @@ int main(void) {
      * The refusal is read from the RAW GraphQL response: knishio_client_query_balance_wallet
      * reports any GraphQL error as *wallet == NULL (transfer.c), which cannot tell a refusal from
      * an absent balance. */
-    if (!knishio_generate_secret("phase-e-live-c-enforcement-secret-0123456789", 2048, &secret2)) {
+    if (!knishio_generate_secret("phase-e-live-c-enforcement-secret-0123456789", 2048, &secret2)
+        || !secret_for_ots_version(&secret2, ots_version)) {
         fprintf(stderr, "FAIL: could not generate the enforcement-scenario secret\n");
         rc = 1;
         goto cleanup;

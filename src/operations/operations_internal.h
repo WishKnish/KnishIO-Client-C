@@ -27,4 +27,41 @@ knishio_error_t knishio_resolve_funded_source(
     knishio_wallet_t** out_source
 );
 
+/**
+ * @brief OTS version of one of this client's own wallets returned by the ledger
+ *
+ * Without a position or an address: the client's version. Otherwise the version at which
+ * `secret` derives `address` at (token, position), trying the client's version first. When
+ * neither version derives it, "KnishIO: wallet <address> is not derived from this secret at
+ * position <position> under OTS version 1 or 2." goes to the global error handler and the
+ * result is KNISHIO_ERROR_WALLET_MISMATCH.
+ */
+knishio_error_t knishio_client_bind_own_wallet_ots_version(
+    const knishio_client_t* client,
+    const char* secret,
+    const char* token,
+    const char* position,
+    const char* address,
+    int* ots_version
+);
+
+/**
+ * @brief Re-derive one of this client's own ledger wallets (a signing key at `position`) at the
+ *        OTS version knishio_client_bind_own_wallet_ots_version() binds; errors as there
+ */
+knishio_error_t knishio_client_own_wallet_at(
+    const knishio_client_t* client,
+    const char* secret,
+    const char* token,
+    const char* position,
+    const char* address,
+    knishio_wallet_t** wallet
+);
+
+/**
+ * @brief The client's canonical (64-hex) bundle hash, from its secret alone (no ledger query);
+ *        the caller frees *bundle
+ */
+knishio_error_t knishio_client_own_bundle(knishio_client_t* client, char** bundle);
+
 #endif /* KNISHIO_OPERATIONS_INTERNAL_H */

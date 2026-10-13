@@ -648,7 +648,9 @@ if(KNISHIO_BUILD_TESTS)
     set_tests_properties(MoleculeFromJson PROPERTIES LABELS "vectors;parity;signature")
 
     # OTS v2 (64-chain keys): OtsV2RoundTrip always runs (a v2 wallet signs, verifies, and a
-    # changed signature character is rejected); OtsV2Vectors checks the shared OTS v2 vectors and
+    # changed signature character is rejected); OtsV2Client always runs (the client OTS version
+    # option, own-wallet version detection against a loopback stub, AuthToken snapshots);
+    # OtsV2Vectors checks the shared OTS v2 vectors and
     # exits 77 (skipped) when they are absent, as in a standalone checkout of this SDK.
     add_executable(ots_v2_vectors tests/ots_v2_vectors.c)
     target_link_libraries(ots_v2_vectors PRIVATE
@@ -656,13 +658,15 @@ if(KNISHIO_BUILD_TESTS)
         m
         ${CMAKE_THREAD_LIBS_INIT}
     )
-    target_include_directories(ots_v2_vectors PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_include_directories(ots_v2_vectors PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(ots_v2_vectors PRIVATE
         _GNU_SOURCE
         KNISHIO_OTS_V2_VECTORS_PATH="${CMAKE_SOURCE_DIR}/../shared-test-results/ots-v2-vectors.json"
     )
     add_test(NAME OtsV2RoundTrip COMMAND ots_v2_vectors roundtrip)
     set_tests_properties(OtsV2RoundTrip PROPERTIES LABELS "ots;signature")
+    add_test(NAME OtsV2Client COMMAND ots_v2_vectors client)
+    set_tests_properties(OtsV2Client PROPERTIES LABELS "ots;client" TIMEOUT 120)
     add_test(NAME OtsV2Vectors COMMAND ots_v2_vectors vectors)
     set_tests_properties(OtsV2Vectors PROPERTIES
         LABELS "ots;vectors;parity;signature"

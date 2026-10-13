@@ -59,6 +59,7 @@ struct knishio_client {
     char *cipher_server_pubkey;         /**< Validator's ML-KEM pubkey (base64), for encrypt */
     knishio_wallet_t *cipher_wallet;    /**< Owned copy of the auth signing wallet's identity */
     int mlkem_parameter_set;            /**< ML-KEM parameter set: 1024 or 768 */
+    int ots_version;                    /**< OTS version of keys created from the secret: 1 or 2 */
 };
 
 #ifdef __cplusplus

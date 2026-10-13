@@ -116,7 +116,9 @@ knishio_error_t knishio_client_create_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_simple(&recipient, source->secret, params->token, remainder_position);
+    error = knishio_wallet_create_with_ots_version(&recipient, source->secret, params->token, remainder_position,
+                                                   knishio_client_get_ots_version(client))
+        ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     knishio_free(remainder_position);
     remainder_position = NULL;
     if (error != KNISHIO_SUCCESS) {
@@ -411,14 +413,17 @@ knishio_error_t knishio_client_replenish_token(
             error = KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT;  /* a stackable token needs its new units */
             goto cleanup;
         }
-        error = knishio_wallet_create_simple(&credited, source->secret, token, existing->position);
+        error = knishio_client_own_wallet_at(client, source->secret, token, existing->position,
+                                             existing->address, &credited);
         if (error == KNISHIO_SUCCESS && existing->batch_id) {
             credited->batch_id = knishio_strdup(existing->batch_id);
         }
     } else if (!knishio_generate_position(&position)) {
         error = KNISHIO_ERROR_CRYPTO;
     } else {
-        error = knishio_wallet_create_simple(&credited, source->secret, token, position);
+        error = knishio_wallet_create_with_ots_version(&credited, source->secret, token, position,
+                                                       knishio_client_get_ots_version(client))
+            ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     }
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -504,7 +509,9 @@ knishio_error_t knishio_client_fuse_token(
             error = KNISHIO_ERROR_CRYPTO;
             goto cleanup;
         }
-        error = knishio_wallet_create_simple(&recipient, user->secret, token_slug, position);
+        error = knishio_wallet_create_with_ots_version(&recipient, user->secret, token_slug, position,
+                                                       knishio_client_get_ots_version(client))
+            ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
         knishio_free(position);
         position = NULL;
         if (error != KNISHIO_SUCCESS) {

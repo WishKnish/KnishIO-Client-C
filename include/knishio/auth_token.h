@@ -61,6 +61,8 @@ typedef struct {
         int mlkem_parameter_set;    /**< Wallet ML-KEM parameter set (1024 / 768); serialized as
                                      *   `wallet.mlKemParameterSet`. A snapshot without it can only
                                      *   have come from a pre-bump (ML-KEM-768-only) build. */
+        int ots_version;            /**< Wallet OTS version (1 / 2); serialized as `wallet.otsVersion`.
+                                     *   A snapshot without it restores at 1. */
     } wallet;
 } knishio_auth_token_snapshot_t;
 

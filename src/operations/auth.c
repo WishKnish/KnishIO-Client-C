@@ -323,9 +323,10 @@ cleanup:
 }
 
 /* The identity's ContinuID pointer as a signing wallet: the USER wallet derived from `secret` at
- * the position ContinuId(bundle, USER) returns. *pointer is NULL (no error) when there is no
- * pointer — genesis, an empty position, a non-USER wallet — or the validator's address differs
- * from the derived one. Query and transport errors propagate. */
+ * the position ContinuId(bundle, USER) returns, at the OTS version its ledger address was derived
+ * at (the client's version when the address is absent). *pointer is NULL (no error) when there is
+ * no pointer — genesis, an empty position, a non-USER wallet — or neither OTS version derives the
+ * validator's address. Query and transport errors propagate. */
 static knishio_error_t knishio_resolve_continuid_signer(
     knishio_client_t* client,
     const char* secret,
@@ -355,8 +356,22 @@ static knishio_error_t knishio_resolve_continuid_signer(
     const knishio_wallet_t* head = cid->wallet;
     if (head && head->token && strcmp(head->token, "USER") == 0
         && head->position && head->position[0]) {
+        /* The pointer wallet's OTS version is the one its ledger address was derived at. */
+        const int client_ots_version = knishio_client_get_ots_version(client);
+        const int pointer_ots_version = (head->address && head->address[0])
+            ? knishio_detect_ots_version(secret, "USER", head->position, head->address, client_ots_version)
+            : client_ots_version;
+        if (pointer_ots_version == 0) {
+            knishio_log(KNISHIO_LOG_INFO,
+                        "Profile auth: ContinuID address differs from the secret's USER wallet; "
+                        "signing from a fresh AUTH wallet");
+            knishio_continuId_result_free(cid);
+            return KNISHIO_SUCCESS;
+        }
         knishio_wallet_t* signer = NULL;
-        error = knishio_wallet_create_simple(&signer, secret, "USER", head->position);
+        error = knishio_wallet_create_with_ots_version(&signer, secret, "USER", head->position,
+                                                       pointer_ots_version)
+            ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
         if (error == KNISHIO_SUCCESS) {
             const knishio_mlkem_param_t param =
                 (knishio_client_get_mlkem_parameter_set(client) == 768) ? KNISHIO_MLKEM_768 : KNISHIO_MLKEM_1024;
@@ -370,14 +385,7 @@ static knishio_error_t knishio_resolve_continuid_signer(
             knishio_continuId_result_free(cid);
             return error;
         }
-        if (head->address && head->address[0] && strcmp(head->address, signer->address) != 0) {
-            knishio_log(KNISHIO_LOG_INFO,
-                        "Profile auth: ContinuID address differs from the secret's USER wallet; "
-                        "signing from a fresh AUTH wallet");
-            knishio_wallet_free(signer);
-        } else {
-            *pointer = signer;
-        }
+        *pointer = signer;
     }
 
     knishio_continuId_result_free(cid);
@@ -515,7 +523,9 @@ knishio_error_t knishio_client_request_profile_auth_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_simple(&source, params->secret, "AUTH", source_position);
+    error = knishio_wallet_create_with_ots_version(&source, params->secret, "AUTH", source_position,
+                                                   knishio_client_get_ots_version(client))
+        ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
