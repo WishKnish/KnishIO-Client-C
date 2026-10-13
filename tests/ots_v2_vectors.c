@@ -31,6 +31,7 @@
 #include "knishio/client.h"
 #include "knishio/client_ops.h"
 #include "knishio/error/context.h"
+#include "knishio/crypto/shake256.h"
 #include "knishio/meta.h"
 #include "knishio/molecule.h"
 #include "knishio/operations/auth.h"
@@ -120,6 +121,45 @@ static knishio_error_t build_signed_transfer(const char *secret, const char *bun
     return KNISHIO_SUCCESS;
 }
 
+/* The WOTS+ address computed step by step with the public SHAKE256 API: each 128-hex chunk of
+ * the key hashed 16 times (512 bits), the endpoints joined, digest = SHAKE256(joined, 8192),
+ * address = SHAKE256(digest, 256). knishio_generate_address must equal it whether or not kcore
+ * is linked. */
+static char *reference_address(const char *key) {
+    const size_t len = strlen(key);
+    char *joined = calloc(len + 1, 1);
+    char *digest = NULL;
+    char *address = NULL;
+    bool ok = joined != NULL;
+    for (size_t c = 0; ok && c < len / 128; c++) {
+        char *chunk = calloc(129, 1);
+        ok = chunk != NULL;
+        if (ok) memcpy(chunk, key + c * 128, 128);
+        for (int i = 0; ok && i < 16; i++) {
+            char *next = NULL;
+            ok = knishio_shake256_hash(chunk, 512, &next);
+            knishio_free(chunk);
+            chunk = next;
+        }
+        if (ok) memcpy(joined + c * 128, chunk, 128);
+        if (chunk) knishio_free(chunk);
+    }
+    ok = ok && knishio_shake256_hash(joined, 8192, &digest) && knishio_shake256_hash(digest, 256, &address);
+    free(joined);
+    if (digest) knishio_free(digest);
+    return ok ? address : NULL;
+}
+
+static void check_address_equivalence(const knishio_wallet_t *w, const char *name) {
+    char *generated = NULL;
+    char *reference = reference_address(w->private_key);
+    const bool ok = knishio_generate_address(w->private_key, &generated) && same(generated, reference)
+        && same(generated, w->address);
+    check(ok, name, generated);
+    if (generated) knishio_free(generated);
+    if (reference) knishio_free(reference);
+}
+
 static int run_roundtrip(void) {
     printf("OTS v2 round trip (SDK %s)\n", KNISHIO_VERSION_STRING);
     const char *position = "0123456789abcdeffedcba9876543210fedcba9876543210fedcba9876543210";
@@ -146,6 +186,9 @@ static int run_roundtrip(void) {
               && v1->private_key && strlen(v1->private_key) == 2048
               && source->address && v1->address && !same(source->address, v1->address),
           "a v2 wallet holds an 8192-hex key and its own address; the v1 wallet keeps 2048", detail);
+
+    check_address_equivalence(source, "the v2 address equals the step-by-step SHAKE256 derivation");
+    check_address_equivalence(v1, "the v1 address equals the step-by-step SHAKE256 derivation");
 
     check(!knishio_wallet_create_with_ots_version(&refused, secret, "TEST", position, 3) && refused == NULL,
           "an unsupported OTS version is refused", NULL);

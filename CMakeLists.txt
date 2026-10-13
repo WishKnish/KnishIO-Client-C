@@ -318,7 +318,7 @@ endif()
 # compiled for input kcore is not given (see src/kcore_bridge.h). The static library's export
 # still names KnishIO::kcore-static, so the installed package config finds kcore again.
 if(KNISHIO_USE_KCORE)
-    find_package(KnishIOCryptoCore 0.1.0 CONFIG REQUIRED)
+    find_package(KnishIOCryptoCore 0.2.0 CONFIG REQUIRED)
     message(STATUS "kcore: KnishIOCryptoCore ${KnishIOCryptoCore_VERSION}")
     foreach(knishio_lib knishio-client knishio-client-static)
         target_link_libraries(${knishio_lib} PRIVATE KnishIO::kcore-static)

@@ -66,8 +66,10 @@ substantiate a detail, the entry says so instead of guessing.
 - A client set to `ots_version` 2 creates the ContinuID head, token remainders and deposit buffer
   of every molecule it signs at version 2, so an identity created at version 1 moves to version 2
   on its next sign-in or molecule. A client at version 1 keeps a version 2 identity at version 2.
-- kcore backend: the chains of v2 signing, verification and addresses also run in kcore
-  (64 chains per call); kcore's address entry point is still used for v1 keys only.
+- kcore backend: the chains of v2 signing and verification also run in kcore (64 chains per
+  call).
+- With `KNISHIO_USE_KCORE=ON`, OTS v2 addresses are computed by kcore 0.2.0
+  (`kcore_wots_address_v2`); the kcore backend requires `KnishIOCryptoCore` 0.2.0.
 - Wallets the ledger returns for this client (the ContinuID head in
   `knishio_client_get_source_wallet_continuid()` and the login pointer, and the balance wallets
   that transfers, burns, buffer deposits and withdrawals, fusion and replenishment sign from or

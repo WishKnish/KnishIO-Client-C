@@ -210,13 +210,15 @@ bool knishio_generate_address(const char* private_key, char** address) {
     }
 
 #ifdef KNISHIO_HAVE_KCORE
-    /* kcore computes the same chains, digest and address in one call for a v1 key; its address
-     * entry point takes 2048-hex keys only. Ineligible input (non-lowercase-hex) or a kcore
-     * failure runs the loop below. */
-    if (key_len == KNISHIO_KCORE_WOTS_HEX_LEN &&
-        knishio_kcore_is_lower_hex(private_key, KNISHIO_KCORE_WOTS_HEX_LEN)) {
+    /* kcore computes the same chains, digest and address in one call: kcore_wots_address for a
+     * v1 key, kcore_wots_address_v2 for a v2 key. Ineligible input (non-lowercase-hex) or a
+     * kcore failure runs the loop below. */
+    if (knishio_kcore_is_lower_hex(private_key, key_len)) {
         char kcore_address[64];
-        if (kcore_wots_address(private_key, kcore_address) == 0) {
+        const int rc = key_len == KNISHIO_PRIVKEY_LENGTH_V2
+                           ? kcore_wots_address_v2(private_key, kcore_address)
+                           : kcore_wots_address(private_key, kcore_address);
+        if (rc == 0) {
             *address = knishio_strndup(kcore_address, sizeof(kcore_address));
             return *address != NULL;
         }
@@ -231,30 +233,6 @@ bool knishio_generate_address(const char* private_key, char** address) {
     char* final_digest = NULL;
     memset(&digest_ctx, 0, sizeof(digest_ctx));
     memset(&output_ctx, 0, sizeof(output_ctx));
-
-#ifdef KNISHIO_HAVE_KCORE
-    /* A v2 key's 64 chain endpoints in one kcore call (16 steps each) */
-    if (key_len == KNISHIO_PRIVKEY_LENGTH_V2) {
-        int counts[KNISHIO_KCORE_WOTS_MAX_CHUNKS];
-        char* endpoints = knishio_malloc(KNISHIO_PRIVKEY_LENGTH_V2 + 1);
-        if (endpoints == NULL) {
-            return false;
-        }
-        for (size_t i = 0; i < KNISHIO_KCORE_WOTS_MAX_CHUNKS; i++) {
-            counts[i] = 16;
-        }
-        const bool chained = knishio_kcore_wots_chains(private_key, KNISHIO_KCORE_WOTS_MAX_CHUNKS,
-                                                       counts, endpoints) &&
-                             knishio_shake256_hash(endpoints, 8192, &final_digest);
-        knishio_secure_zero(endpoints, KNISHIO_PRIVKEY_LENGTH_V2 + 1);
-        knishio_free(endpoints);
-        if (chained) {
-            success = knishio_shake256_hash(final_digest, 256, address);
-            knishio_free(final_digest);
-            return success;
-        }
-    }
-#endif
     
     /* Step 1: Split key into fragments of 128 chars each (16 for v1, 64 for v2) */
     if (!knishio_chunk_string(private_key, 128, &fragments, &fragment_count)) {

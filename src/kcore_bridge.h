@@ -19,10 +19,9 @@
 #include <string.h>
 
 /* WOTS+ key / signature: chunks of 128 hex characters, 16 (OTS v1) or 64 (OTS v2). kcore's
- * address entry point takes a 2048-hex (v1) key only. */
+ * address entry points take a 2048-hex (v1) or an 8192-hex (v2) key. */
 #define KNISHIO_KCORE_WOTS_CHUNK_HEX ((size_t)128)
 #define KNISHIO_KCORE_WOTS_MAX_CHUNKS ((size_t)64)
-#define KNISHIO_KCORE_WOTS_HEX_LEN ((size_t)2048)
 
 static inline bool knishio_kcore_is_lower_hex(const char *s, size_t n) {
     for (size_t i = 0; i < n; i++) {
