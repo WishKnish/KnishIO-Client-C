@@ -42,6 +42,8 @@ substantiate a detail, the entry says so instead of guessing.
   `wallet.ots_version`); a snapshot without it restores at 1.
 - ctest entry `OtsV2Client` (the client OTS version option, own-wallet version detection and
   AuthToken snapshots, against a loopback GraphQL stub).
+- ctest entry `OtsMigrationLive` (one identity signed in at OTS version 1, then 2, then 1
+  against a live validator; skipped with exit code 77 unless `OTS_MIGRATION_TEST_URL` is set).
 
 ### Changed
 
@@ -59,8 +61,11 @@ substantiate a detail, the entry says so instead of guessing.
 - `knishio_generate_address` accepts 2048- and 8192-hex keys.
 - `knishio_wallet_create_from_params` (and the constructors built on it) fails when the wallet
   address cannot be derived, instead of returning a wallet without an address.
-- Remainder and buffer wallets the client creates for a signing wallet use that wallet's OTS
-  version.
+- Remainder and buffer wallets the client creates for a signing wallet use the higher of that
+  wallet's and the client's OTS version.
+- A client set to `ots_version` 2 creates the ContinuID head, token remainders and deposit buffer
+  of every molecule it signs at version 2, so an identity created at version 1 moves to version 2
+  on its next sign-in or molecule. A client at version 1 keeps a version 2 identity at version 2.
 - kcore backend: the chains of v2 signing, verification and addresses also run in kcore
   (64 chains per call); kcore's address entry point is still used for v1 keys only.
 - Wallets the ledger returns for this client (the ContinuID head in

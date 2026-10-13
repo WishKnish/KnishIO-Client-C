@@ -31,8 +31,10 @@
 #include "knishio/client.h"
 #include "knishio/client_ops.h"
 #include "knishio/error/context.h"
+#include "knishio/meta.h"
 #include "knishio/molecule.h"
 #include "knishio/operations/auth.h"
+#include "knishio/operations/transfer.h"
 #include "knishio/operations/wallet.h"
 #include "knishio/wallet.h"
 #include "knishio/utils/memory.h"
@@ -196,6 +198,7 @@ typedef struct {
     pthread_mutex_t lock;
     bool stop;
     const char *continuid_reply;      /* reply to QueryContinuId */
+    const char *balance_reply;        /* reply to QueryBalance (unscripted when NULL) */
     char *proposals[STUB_MAX_REQUESTS]; /* recorded ProposeMolecule bodies */
     size_t proposal_count;
 } stub_t;
@@ -288,6 +291,8 @@ static void *stub_serve(void *arg) {
         pthread_mutex_lock(&s->lock);
         if (body && strstr(body, "QueryContinuId")) {
             reply = s->continuid_reply;
+        } else if (body && strstr(body, "QueryBalance") && s->balance_reply) {
+            reply = s->balance_reply;
         } else if (body && strstr(body, "QueryWalletList")) {
             reply = "{\"data\":{\"Wallet\":[]}}";
         } else if (body && strstr(body, "ProposeMolecule")) {
@@ -311,9 +316,10 @@ static void *stub_serve(void *arg) {
     return NULL;
 }
 
-static bool stub_start(stub_t *s, const char *continuid_reply) {
+static bool stub_start_with_balance(stub_t *s, const char *continuid_reply, const char *balance_reply) {
     memset(s, 0, sizeof(*s));
     s->continuid_reply = continuid_reply;
+    s->balance_reply = balance_reply;
     pthread_mutex_init(&s->lock, NULL);
     s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (s->listen_fd < 0) return false;
@@ -332,6 +338,10 @@ static bool stub_start(stub_t *s, const char *continuid_reply) {
     }
     s->port = ntohs(addr.sin_port);
     return pthread_create(&s->thread, NULL, stub_serve, s) == 0;
+}
+
+static bool stub_start(stub_t *s, const char *continuid_reply) {
+    return stub_start_with_balance(s, continuid_reply, NULL);
 }
 
 static void stub_stop(stub_t *s) {
@@ -368,7 +378,23 @@ static char *continuid_reply(const char *position, const char *address) {
     return text;
 }
 
-/* atoms[0] of the i-th recorded proposal. */
+/* {"data":{"Balance":{...}}} for one of the bundle's token wallets. */
+static char *balance_reply(const char *bundle, const char *token, const char *position, const char *address,
+                           const char *amount) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON *bal = cJSON_AddObjectToObject(cJSON_AddObjectToObject(root, "data"), "Balance");
+    cJSON_AddStringToObject(bal, "address", address);
+    cJSON_AddStringToObject(bal, "bundleHash", bundle);
+    cJSON_AddStringToObject(bal, "tokenSlug", token);
+    cJSON_AddStringToObject(bal, "position", position);
+    cJSON_AddStringToObject(bal, "amount", amount);
+    cJSON_AddNullToObject(bal, "batchId");
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return text;
+}
+
+/* The i-th recorded proposal, parsed. */
 static knishio_molecule_t *proposed_molecule(const stub_t *s, size_t i) {
     if (i >= s->proposal_count) return NULL;
     cJSON *root = cJSON_Parse(s->proposals[i]);
@@ -380,6 +406,14 @@ static knishio_molecule_t *proposed_molecule(const stub_t *s, size_t i) {
     cJSON_free(text);
     if (root) cJSON_Delete(root);
     return m;
+}
+
+/* The first atom of `isotope` in `m`, or NULL. */
+static const knishio_atom_t *isotope_atom(const knishio_molecule_t *m, knishio_isotope_t isotope) {
+    for (size_t i = 0; m && i < m->atom_count; i++) {
+        if (m->atoms[i]->isotope == isotope) return m->atoms[i];
+    }
+    return NULL;
 }
 
 /* The last message the SDK sent to the global error handler. */
@@ -563,6 +597,10 @@ static int run_client(void) {
         check(err == KNISHIO_SUCCESS && a0 && same(a0->token, "USER") && same(a0->position, position)
                   && same(a0->wallet_address, w2->address),
               "a v1 client signs in from the v2 login pointer", NULL);
+        const knishio_atom_t *head = isotope_atom(m, KNISHIO_ISOTOPE_I);
+        check(err == KNISHIO_SUCCESS && head && same(head->token, "USER") && !same(head->position, position)
+                  && address_at(secret, "USER", head->position, KNISHIO_OTS_V2, head->wallet_address),
+              "(m3) a v1 client keeps a v2 identity's new ContinuID head at v2", NULL);
         knishio_molecule_free_deep(m);
         knishio_request_profile_auth_token_result_free(result);
         if (client) knishio_client_destroy(client);
@@ -571,6 +609,89 @@ static int run_client(void) {
         check(false, "stub server starts", NULL);
     }
     cJSON_free(head_v2);
+
+    /* A v1 ContinuID head: a v2 client signs from the v1 key and creates every wallet the
+     * molecule needs for its signer (ContinuID head, token remainder) at v2; a v1 client stays
+     * at v1. */
+    char token_position[65];
+    memset(token_position, 'd', 64); token_position[64] = '\0';
+    knishio_wallet_t *t1 = NULL;
+    char *head_v1 = continuid_reply(position, w1->address);
+    char *balance_v1 = knishio_wallet_create_with_ots_version(&t1, secret, "OTSV2", token_position, KNISHIO_OTS_V1)
+        ? balance_reply(t1->bundle_hash, "OTSV2", token_position, t1->address, "10") : NULL;
+    if (balance_v1 && stub_start_with_balance(&s, head_v1, balance_v1)) {
+        client = client_at(&s, 2, secret);
+        knishio_request_profile_auth_token_params_t auth = { .secret = secret, .encrypt = false };
+        knishio_request_profile_auth_token_result_t *result = NULL;
+        err = client ? knishio_client_request_profile_auth_token(client, &auth, &result) : KNISHIO_ERROR_INVALID_STATE;
+        knishio_molecule_t *m = proposed_molecule(&s, 0);
+        const knishio_atom_t *a0 = (m && m->atom_count > 0) ? m->atoms[0] : NULL;
+        const knishio_atom_t *head = isotope_atom(m, KNISHIO_ISOTOPE_I);
+        check(err == KNISHIO_SUCCESS && a0 && same(a0->token, "USER") && same(a0->position, position)
+                  && same(a0->wallet_address, w1->address)
+                  && head && same(head->token, "USER") && !same(head->position, position)
+                  && address_at(secret, "USER", head->position, KNISHIO_OTS_V2, head->wallet_address),
+              "(m1) a v2 client signs in from a v1 ContinuID head and registers a v2 head", NULL);
+        knishio_molecule_free_deep(m);
+        knishio_request_profile_auth_token_result_free(result);
+
+        char meta_key[] = "k", meta_value[] = "v";
+        knishio_meta_t pair = { .key = meta_key, .value = meta_value };
+        knishio_meta_t *pairs[] = { &pair };
+        char *hash = NULL;
+        err = client ? knishio_client_create_meta(client, "ots-v2", "successor", pairs, 1, &hash)
+                     : KNISHIO_ERROR_INVALID_STATE;
+        snprintf(detail, sizeof(detail), "err=%d (%s)", (int)err, knishio_error_to_string(err));
+        m = proposed_molecule(&s, 1);
+        a0 = (m && m->atom_count > 0) ? m->atoms[0] : NULL;
+        head = isotope_atom(m, KNISHIO_ISOTOPE_I);
+        check(err == KNISHIO_SUCCESS && a0 && same(a0->position, position) && same(a0->wallet_address, w1->address)
+                  && head && !same(head->position, position)
+                  && address_at(secret, "USER", head->position, KNISHIO_OTS_V2, head->wallet_address),
+              "(m2) create_meta at a v2 client signs from the v1 head and registers a v2 head", detail);
+        knishio_molecule_free_deep(m);
+        knishio_free(hash);
+
+        knishio_transfer_params_t transfer = { .recipient = unrelated, .token = "OTSV2", .amount = 4 };
+        knishio_transfer_result_t *sent = NULL;
+        err = client ? knishio_client_transfer_tokens(client, &transfer, &sent) : KNISHIO_ERROR_INVALID_STATE;
+        snprintf(detail, sizeof(detail), "err=%d (%s)", (int)err, knishio_error_to_string(err));
+        m = proposed_molecule(&s, 2);
+        a0 = (m && m->atom_count > 0) ? m->atoms[0] : NULL;
+        const knishio_atom_t *change = NULL;
+        for (size_t i = 0; m && i < m->atom_count; i++) {
+            const knishio_atom_t *atom = m->atoms[i];
+            if (atom->isotope == KNISHIO_ISOTOPE_V && atom->position && atom->position[0]
+                && !same(atom->position, token_position)) {
+                change = atom;
+            }
+        }
+        check(err == KNISHIO_SUCCESS && a0 && same(a0->position, token_position)
+                  && same(a0->wallet_address, t1->address)
+                  && change && address_at(secret, "OTSV2", change->position, KNISHIO_OTS_V2, change->wallet_address),
+              "(m6) transfer at a v2 client spends a v1 balance wallet into a v2 remainder", detail);
+        knishio_molecule_free_deep(m);
+        knishio_transfer_result_free(sent);
+        if (client) knishio_client_destroy(client);
+
+        client = client_at(&s, 1, secret);
+        result = NULL;
+        err = client ? knishio_client_request_profile_auth_token(client, &auth, &result) : KNISHIO_ERROR_INVALID_STATE;
+        m = proposed_molecule(&s, 3);
+        head = isotope_atom(m, KNISHIO_ISOTOPE_I);
+        check(err == KNISHIO_SUCCESS && head && !same(head->position, position)
+                  && address_at(secret, "USER", head->position, KNISHIO_OTS_V1, head->wallet_address),
+              "a v1 client keeps a v1 identity's new ContinuID head at v1", NULL);
+        knishio_molecule_free_deep(m);
+        knishio_request_profile_auth_token_result_free(result);
+        if (client) knishio_client_destroy(client);
+        stub_stop(&s);
+    } else {
+        check(false, "stub server starts", NULL);
+    }
+    cJSON_free(head_v1);
+    cJSON_free(balance_v1);
+    if (t1) knishio_wallet_free(t1);
 
     /* ContinuID head this secret does not derive */
     char *head_unrelated = continuid_reply(position, unrelated);

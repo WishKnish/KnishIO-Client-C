@@ -12,6 +12,7 @@
 #include "knishio/json.h"
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
+#include "operations_internal.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -223,7 +224,7 @@ knishio_error_t knishio_client_claim_shadow_wallet(
         goto cleanup;
     }
     error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", remainder_position,
-                                                   source->ots_version)
+                                                   knishio_client_successor_ots_version(client, source->ots_version))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;

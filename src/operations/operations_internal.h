@@ -59,6 +59,13 @@ knishio_error_t knishio_client_own_wallet_at(
 );
 
 /**
+ * @brief OTS version of the wallets a molecule creates for its signer (the USER ContinuID
+ *        remainder, token remainders, the deposit buffer): the higher of the source wallet's
+ *        version (0 counts as 1) and the client's configured version
+ */
+int knishio_client_successor_ots_version(const knishio_client_t* client, int source_ots_version);
+
+/**
  * @brief The client's canonical (64-hex) bundle hash, from its secret alone (no ledger query);
  *        the caller frees *bundle
  */

@@ -538,6 +538,13 @@ knishio_error_t knishio_client_own_wallet_at(
     return knishio_wallet_create_with_ots_version(wallet, secret, token, position, ots_version)
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
 }
+
+int knishio_client_successor_ots_version(const knishio_client_t* client, int source_ots_version) {
+    const int source = source_ots_version == KNISHIO_OTS_V2 ? KNISHIO_OTS_V2 : KNISHIO_OTS_V1;
+    const int configured = knishio_client_get_ots_version(client);
+    return source > configured ? source : configured;
+}
+
 /* Create and sign a molecule */
 knishio_error_t knishio_client_create_molecule(
     knishio_client_t* client,
@@ -774,7 +781,7 @@ knishio_error_t knishio_client_create_meta(
         goto cleanup;
     }
     error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", remainder_position,
-                                                   source->ots_version)
+                                                   knishio_client_successor_ots_version(client, source->ots_version))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;

@@ -594,6 +594,19 @@ if(KNISHIO_BUILD_TESTS)
     add_test(NAME CipherHashLive COMMAND cipherhash_live_test)
     set_tests_properties(CipherHashLive PROPERTIES LABELS "integration;network;pq-transport" TIMEOUT 60 SKIP_RETURN_CODE 77)
 
+    # Live OTS version migration of one identity (v1 sign-in, v2 sign-in, v2 createMeta, v1
+    # sign-in), gated on OTS_MIGRATION_TEST_URL: unset, it exits 77 and ctest reports it Skipped.
+    add_executable(ots_migration_live_test tests/ots_migration_live_test.c)
+    target_link_libraries(ots_migration_live_test PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(ots_migration_live_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(ots_migration_live_test PRIVATE _GNU_SOURCE)
+    add_test(NAME OtsMigrationLive COMMAND ots_migration_live_test)
+    set_tests_properties(OtsMigrationLive PROPERTIES LABELS "integration;network;ots" TIMEOUT 120 SKIP_RETURN_CODE 77)
+
     # Prove-the-gate: ML-KEM encapsulation must draw its message m from a fresh CSPRNG,
     # not the mlkem-native test RNG stub. Cross-process determinism = the bug.
     # See tests/run_encaps_entropy_twice.cmake.
