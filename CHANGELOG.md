@@ -16,6 +16,8 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-10-13
+
 ### Added
 
 - Opt-in OTS v2 one-time signatures: 8192-hex private keys with 64 WOTS+ chains, next to the
@@ -693,7 +695,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.3.1...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.4.0...HEAD
+[1.4.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.4.0
 [1.3.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.3.1
 [1.3.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.3.0
 [1.2.4]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.2.4

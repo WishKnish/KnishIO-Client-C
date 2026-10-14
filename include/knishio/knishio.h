@@ -23,9 +23,9 @@ extern "C" {
 /* Keep in step with project(VERSION) in CMakeLists.txt. self-test.c reports
  * KNISHIO_VERSION_STRING into its results file, and the gauntlet's snapshot coherence
  * gate fails an SDK whose reported version disagrees with its manifest. */
-#define KNISHIO_VERSION_MINOR 3
-#define KNISHIO_VERSION_PATCH 1
-#define KNISHIO_VERSION_STRING "1.3.1"
+#define KNISHIO_VERSION_MINOR 4
+#define KNISHIO_VERSION_PATCH 0
+#define KNISHIO_VERSION_STRING "1.4.0"
 
 /* Forward declarations for opaque types */
 typedef struct knishio_client knishio_client_t;
