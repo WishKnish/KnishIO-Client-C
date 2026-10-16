@@ -85,11 +85,15 @@ struct knishio_atom {
     
     /* System properties */
     int index;                   /**< Atom index within molecule */
-    char* version;               /**< Protocol version */
-    time_t created_at;           /**< Creation timestamp */
+    char* version;               /**< Atom version (NULL when absent) */
+    time_t created_at;           /**< Creation timestamp (seconds) */
     
     /* Internal state */
     bool is_validated;           /**< Whether atom has been validated */
+
+    /* Appended last so earlier field offsets are unchanged. */
+    int64_t created_at_ms;       /**< Creation timestamp in milliseconds; when > 0 it is the
+                                      hashed createdAt, otherwise created_at * 1000 is */
 };
 
 /* Static assertions for C17 safety */
@@ -373,6 +377,21 @@ knishio_error_t knishio_atom_sort_by_index(
     knishio_atom_t** atoms,
     size_t atom_count
 );
+
+/**
+ * @brief Serialize atoms as the Version4 view hashed when every atom carries a version
+ *
+ * Atoms are sorted by index. Each atom becomes a JSON array of 12 single-key objects in this
+ * order: batchId, createdAt, index, isotope, meta, metaId, metaType, position, token, value,
+ * version, walletAddress. meta is an array of [{"key":k},{"value":v}] pairs; createdAt is the
+ * millisecond decimal string the atom hashes; absent strings are null. The result is compact
+ * JSON with "/" and non-ASCII characters unescaped.
+ * @param atoms Atom pointers (none may be NULL)
+ * @param count Number of atoms
+ * @return The view JSON (caller frees with knishio_free()), or NULL on a NULL argument or
+ *         allocation failure
+ */
+char* knishio_atoms_version4_view_json(knishio_atom_t** atoms, size_t count);
 
 #ifdef __cplusplus
 }

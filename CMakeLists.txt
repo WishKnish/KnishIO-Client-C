@@ -243,6 +243,8 @@ set(KNISHIO_SOURCES
     # molecule.c defined a competing knishio_molecule_check and ld64 rejects duplicates;
     # molecule.c's subset has been removed, so this is now the sole definition.
     src/libraries/check_molecule.c
+    # Served-molecule verification (knishio_verify_from_server_data) on top of the verifier.
+    src/libraries/served_molecule.c
     src/libraries/base64.c
     
     # Version handling
@@ -685,6 +687,25 @@ if(KNISHIO_BUILD_TESTS)
         LABELS "ots;vectors;parity;signature"
         SKIP_RETURN_CODE 77
         ENVIRONMENT "KNISHIO_OTS_V2_VECTORS=${CMAKE_SOURCE_DIR}/../shared-test-results/ots-v2-vectors.json")
+
+    # Served molecules (knishio_verify_from_server_data) and the Version4 hash vectors, both
+    # vendored from the shared cross-SDK masters; exits 77 (skipped) when either is absent.
+    add_executable(served_molecules tests/served_molecules.c)
+    target_link_libraries(served_molecules PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(served_molecules PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(served_molecules PRIVATE
+        _GNU_SOURCE
+        KNISHIO_SERVED_MOLECULES_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/served-molecules.json"
+        KNISHIO_VERSION4_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/version4-hash-vectors.json"
+    )
+    add_test(NAME ServedMolecules COMMAND served_molecules)
+    set_tests_properties(ServedMolecules PROPERTIES
+        LABELS "vectors;parity;signature"
+        SKIP_RETURN_CODE 77)
 
     # The cross-SDK signingWallet forgery fixture (built with JS 1.2.1): knishio_molecule_check()
     # accepts B's normally signed molecule and rejects B's signature under victim A's address even

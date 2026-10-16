@@ -200,6 +200,55 @@ knishio_error_t knishio_molecule_check(
     const knishio_wallet_t* sender_wallet
 );
 
+/** Result of knishio_verify_from_server_data(). */
+typedef struct knishio_served_verification {
+    bool verified;             /**< true iff the molecule passed knishio_molecule_check() */
+    char molecular_hash[65];   /**< The served molecularHash; "" when absent */
+    char error[256];           /**< Why verification failed; "" when verified */
+} knishio_served_verification_t;
+
+/**
+ * @brief Build a molecule from its served (GraphQL API) form
+ *
+ * Field mapping (KnishIO-Client-JS CheckMolecule.fromServerData parity):
+ *   - molecule: bundleHash -> bundle, molecularHash, cellSlug, createdAt
+ *   - atom: position, walletAddress, isotope, tokenSlug (or token) -> token, value (a number or
+ *     boolean becomes its string), batchId, metaType, metaId, index, otsFragment, createdAt,
+ *     version (a number becomes its decimal string), metasJson -> meta
+ *   - metasJson: a JSON string holding [{key, value}] or {key: value}; anything else is no
+ *     meta. A null meta value is kept as a NULL value
+ *   - createdAt: an integer or digit string of milliseconds, or an RFC 3339 timestamp
+ *     (fraction truncated to milliseconds, offset applied). Atom createdAt keeps its
+ *     milliseconds in knishio_atom_t.created_at_ms; null, "" or absent leaves the default
+ * @param served_json Served molecule JSON
+ * @param molecule Receives the molecule; NULL on failure
+ * @return KNISHIO_SUCCESS; KNISHIO_ERROR_INVALID_ARGS (NULL argument); KNISHIO_ERROR_JSON_PARSE
+ *         (not JSON); KNISHIO_ERROR_INVALID_JSON (wrong shape, unparseable createdAt or an
+ *         unrepresentable value); KNISHIO_ERROR_MEMORY. Release the molecule with
+ *         knishio_molecule_free_deep().
+ */
+knishio_error_t knishio_molecule_from_server_data(
+    const char* served_json,
+    knishio_molecule_t** molecule
+);
+
+/**
+ * @brief Verify a molecule exactly as a validator's GraphQL API serves it
+ *
+ * Builds the molecule with knishio_molecule_from_server_data() and runs knishio_molecule_check()
+ * with no sender wallet. When the check fails on the molecular hash and no served atom carries
+ * a version, the molecule is rebuilt with version "4" on every atom and checked again, then
+ * with "3"; the first verified attempt, otherwise the last one, is reported.
+ * @param served_json Served molecule JSON
+ * @param out Receives the verdict. Malformed input gives verified=false and an error; an
+ *            unparseable createdAt gives the error "invalid createdAt"
+ * @return KNISHIO_ERROR_INVALID_ARGS for a NULL argument, otherwise KNISHIO_SUCCESS
+ */
+knishio_error_t knishio_verify_from_server_data(
+    const char* served_json,
+    knishio_served_verification_t* out
+);
+
 /**
  * @brief Verify the molecule's one-time signature on its own
  *
@@ -249,11 +298,14 @@ knishio_error_t knishio_molecule_to_json(
  * Accepts the molecule JSON every KnishIO SDK emits. Hashed atom fields are taken verbatim, so
  * knishio_molecule_check() re-derives the sender's molecularHash and verifies its one-time
  * signature. Field rules (JS reference parity):
- *   - value / batchId / metaType / metaId / version / otsFragment: string, or null/absent -> NULL
+ *   - value / batchId / metaType / metaId / otsFragment: string, or null/absent -> NULL
+ *   - version: string, a number (read as its decimal string), or null/absent -> NULL
  *   - position / walletAddress: string, or null/absent -> "" (JS hashes a null there as '';
  *     Kotlin omits null keys)
- *   - meta: array of {key, value}. An entry whose value is null/absent is dropped, exactly as
- *     JS Atom.getHashableValues() skips it; storing "" would change the molecular hash
+ *   - meta: array of {key, value}. On an unversioned atom an entry whose value is null/absent
+ *     is dropped, exactly as JS Atom.getHashableValues() skips it; storing "" would change the
+ *     molecular hash. A versioned atom keeps it with a NULL value, which the Version4 view
+ *     hashes as null
  *   - atom createdAt: decimal string of milliseconds that must be whole seconds, because
  *     knishio_atom_t.created_at is time_t seconds; a sub-second value is rejected rather than
  *     silently changing the hash. The molecule-level createdAt (not hashed) is truncated.

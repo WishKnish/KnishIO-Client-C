@@ -748,7 +748,7 @@ static knishio_error_t update_sponge_with_atom(
     
     /* Add created_at as string (milliseconds since epoch) */
     char created_at_str[32];
-    snprintf(created_at_str, sizeof(created_at_str), "%lld", (long long)atom->created_at * 1000LL);
+    snprintf(created_at_str, sizeof(created_at_str), "%lld", knishio_atom_created_at_ms(atom));
 #if KNISHIO_DEBUG_MODE
     fprintf(stderr, "  Hash: createdAt='%s'\n", created_at_str);
 #endif
@@ -783,20 +783,41 @@ knishio_error_t knishio_molecule_generate_hash(knishio_molecule_t* molecule) {
         return KNISHIO_ERROR_CRYPTO;
     }
     
-    /* Convert atom count to string */
-    char atom_count_str[16];
-    snprintf(atom_count_str, sizeof(atom_count_str), "%zu", molecule->atom_count);
-    
-    /* Update sponge with each atom's properties (matches JS SDK) */
+    /* When every atom carries a version (any value), the molecule hashes the Version4 view;
+     * otherwise each atom's hashable values (matches JS SDK Atom.hashAtoms). */
+    bool every_atom_versioned = true;
     for (size_t i = 0; i < molecule->atom_count; i++) {
-        knishio_error_t error = update_sponge_with_atom(&ctx, sorted_atoms[i], atom_count_str);
-        if (error != KNISHIO_SUCCESS) {
-            knishio_shake256_cleanup(&ctx);
-            knishio_free(sorted_atoms);
-            return error;
+        if (!sorted_atoms[i] || !sorted_atoms[i]->version) {
+            every_atom_versioned = false;
+            break;
         }
     }
-    
+
+    if (every_atom_versioned) {
+        char* view = knishio_atoms_version4_view_json(sorted_atoms, molecule->atom_count);
+        const bool absorbed = view && knishio_shake256_update_string(&ctx, view);
+        knishio_free(view);
+        if (!absorbed) {
+            knishio_shake256_cleanup(&ctx);
+            knishio_free(sorted_atoms);
+            return KNISHIO_ERROR_CRYPTO;
+        }
+    } else {
+        /* Convert atom count to string */
+        char atom_count_str[16];
+        snprintf(atom_count_str, sizeof(atom_count_str), "%zu", molecule->atom_count);
+
+        /* Update sponge with each atom's properties (matches JS SDK) */
+        for (size_t i = 0; i < molecule->atom_count; i++) {
+            knishio_error_t error = update_sponge_with_atom(&ctx, sorted_atoms[i], atom_count_str);
+            if (error != KNISHIO_SUCCESS) {
+                knishio_shake256_cleanup(&ctx);
+                knishio_free(sorted_atoms);
+                return error;
+            }
+        }
+    }
+
     knishio_free(sorted_atoms);
     
     /* Finalize the sponge absorb phase */

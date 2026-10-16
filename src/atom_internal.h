@@ -3,7 +3,8 @@
 
 /**
  * @file atom_internal.h
- * @brief Atom JSON parsing shared by knishio_atom_from_json() and knishio_molecule_from_json()
+ * @brief Atom JSON parsing shared by knishio_atom_from_json(), knishio_molecule_from_json() and
+ *        knishio_verify_from_server_data()
  *
  * Not part of the public API: the prototype exposes cJSON, which the public headers do not.
  */
@@ -38,6 +39,20 @@ bool knishio_cjson_optional_string(const cJSON *json, const char *key, const cha
  */
 bool knishio_cjson_millis(const char *text, long long *ms);
 
+/**
+ * @brief Format a JSON number the way JavaScript's String(n) does (shortest round-trip digits;
+ *        exponent form below 1e-6 and from 1e21).
+ * @param value Finite number
+ * @param out Output buffer (32 bytes is enough)
+ * @param size Size of out
+ * @return false for a non-finite value or a buffer that is too small
+ */
+bool knishio_json_number_to_string(double value, char *out, size_t size);
+
+/** @brief The createdAt an atom hashes, in milliseconds. */
+static inline long long knishio_atom_created_at_ms(const knishio_atom_t *atom) {
+    return atom->created_at_ms > 0 ? (long long)atom->created_at_ms : (long long)atom->created_at * 1000LL;
+}
 
 /**
  * @brief Build an atom from one parsed atom JSON object (the inverse of knishio_atom_to_json)

@@ -20,6 +20,7 @@
 #include <time.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 
 /* Internal helper function declarations */
 static knishio_error_t copy_string_field(char** dest, const char* src);
@@ -512,21 +513,29 @@ knishio_error_t knishio_atom_to_json(
     if (atom->meta_count > 0 && atom->meta) {
         strcat(buffer, "\"meta\":[");
 
+        size_t emitted = 0;
         for (size_t i = 0; i < atom->meta_count; i++) {
-            if (i > 0) {
+            knishio_meta_t* meta = atom->meta[i];
+            if (!meta || !meta->key) {
+                continue;
+            }
+            if (emitted++ > 0) {
                 strcat(buffer, ",");
             }
 
-            knishio_meta_t* meta = atom->meta[i];
-            if (meta && meta->key && meta->value) {
-                char* ek = knishio_json_escape_string(meta->key);
+            /* A NULL value (kept on versioned atoms, see knishio_atom_from_cjson) is null. */
+            char* ek = knishio_json_escape_string(meta->key);
+            if (meta->value) {
                 char* ev = knishio_json_escape_string(meta->value);
                 snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
                     "{\"key\":\"%s\",\"value\":\"%s\"}",
                     ek ? ek : "", ev ? ev : "");
-                knishio_free(ek);
                 knishio_free(ev);
+            } else {
+                snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
+                    "{\"key\":\"%s\",\"value\":null}", ek ? ek : "");
             }
+            knishio_free(ek);
         }
 
         strcat(buffer, "],");
@@ -536,7 +545,7 @@ knishio_error_t knishio_atom_to_json(
 
     /* Add creation timestamp (JS SDK compatible - milliseconds) */
     snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-        "\"createdAt\":\"%ld\",", (long)atom->created_at * 1000);
+        "\"createdAt\":\"%lld\",", knishio_atom_created_at_ms(atom));
 
     /* Add index */
     snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
@@ -654,8 +663,19 @@ knishio_error_t knishio_atom_from_cjson(const cJSON *json, knishio_atom_t **atom
         || !knishio_cjson_optional_string(json, "batchId", &batch_id)
         || !knishio_cjson_optional_string(json, "metaType", &meta_type)
         || !knishio_cjson_optional_string(json, "metaId", &meta_id)
-        || !knishio_cjson_optional_string(json, "version", &version)
         || !knishio_cjson_optional_string(json, "otsFragment", &ots_fragment)) {
+        return KNISHIO_ERROR_INVALID_JSON;
+    }
+
+    /* version: a string, or a number read as its decimal string (JS String(n)). */
+    char version_number[32];
+    const cJSON *version_item = cJSON_GetObjectItemCaseSensitive(json, "version");
+    if (cJSON_IsNumber(version_item)) {
+        if (!knishio_json_number_to_string(version_item->valuedouble, version_number, sizeof(version_number))) {
+            return KNISHIO_ERROR_INVALID_JSON;
+        }
+        version = version_number;
+    } else if (!knishio_cjson_optional_string(json, "version", &version)) {
         return KNISHIO_ERROR_INVALID_JSON;
     }
 
@@ -721,19 +741,28 @@ knishio_error_t knishio_atom_from_cjson(const cJSON *json, knishio_atom_t **atom
                 err = KNISHIO_ERROR_INVALID_JSON;
                 goto fail;
             }
-            /* The JS reference does not hash a meta entry whose value is null (Atom.js:446,
-             * Atom.getHashableValues), so it is dropped. Storing "" would absorb the key and
-             * change the molecular hash. */
+            /* The JS reference does not hash a meta entry whose value is null in the legacy
+             * hash (Atom.js:446, Atom.getHashableValues), so on an unversioned atom it is
+             * dropped; storing "" would absorb the key and change the molecular hash. A
+             * versioned atom keeps it with a NULL value: the Version4 view hashes it as null,
+             * and the legacy hash still skips it. */
             if (!meta_value || cJSON_IsNull(meta_value)) {
-                continue;
-            }
-            if (!cJSON_IsString(meta_value)) {
+                if (!version) {
+                    continue;
+                }
+            } else if (!cJSON_IsString(meta_value)) {
                 err = KNISHIO_ERROR_INVALID_JSON;
                 goto fail;
             }
+            const bool null_value = !meta_value || cJSON_IsNull(meta_value);
             knishio_meta_t *meta = NULL;
-            if ((err = knishio_meta_create(&meta, key->valuestring, meta_value->valuestring)) != KNISHIO_SUCCESS) {
+            if ((err = knishio_meta_create(&meta, key->valuestring,
+                                           null_value ? "" : meta_value->valuestring)) != KNISHIO_SUCCESS) {
                 goto fail;
+            }
+            if (null_value) {
+                knishio_free(meta->value);
+                meta->value = NULL;
             }
             if ((err = knishio_atom_add_meta(result, meta)) != KNISHIO_SUCCESS) {
                 knishio_meta_free(meta);
@@ -768,6 +797,195 @@ knishio_error_t knishio_atom_from_json(
     knishio_error_t err = knishio_atom_from_cjson(root, atom);
     cJSON_Delete(root);
     return err;
+}
+
+bool knishio_json_number_to_string(double value, char *out, size_t size) {
+    if (!out || !isfinite(value)) {
+        return false;
+    }
+    if (value == 0.0) {
+        return snprintf(out, size, "0") < (int)size;
+    }
+
+    /* Shortest digit count that reads back as the same double (ECMAScript Number::toString). */
+    char sci[40];
+    for (int precision = 0; precision < 17; precision++) {
+        snprintf(sci, sizeof(sci), "%.*e", precision, value);
+        if (strtod(sci, NULL) == value) {
+            break;
+        }
+    }
+
+    const char *p = sci;
+    const bool negative = (*p == '-');
+    if (negative) {
+        p++;
+    }
+    char digits[24];
+    int nd = 0;
+    for (; *p && *p != 'e' && nd < (int)sizeof(digits) - 1; p++) {
+        if (*p >= '0' && *p <= '9') {
+            digits[nd++] = *p;
+        }
+    }
+    while (nd > 1 && digits[nd - 1] == '0') {
+        nd--;
+    }
+    digits[nd] = '\0';
+    if (*p != 'e') {
+        return false;
+    }
+    const long exponent = strtol(p + 1, NULL, 10);
+    const int n = (int)exponent + 1;  /* the decimal point sits after n digits */
+
+    /* Lay out digits d1..dk with the decimal point after n of them. */
+    char text[64];
+    size_t len = 0;
+    if (negative) {
+        text[len++] = '-';
+    }
+    if (0 < n && n <= 21) {
+        for (int i = 0; i < nd || i < n; i++) {
+            if (i == n) {
+                text[len++] = '.';
+            }
+            text[len++] = (i < nd) ? digits[i] : '0';
+        }
+    } else if (-6 < n && n <= 0) {
+        text[len++] = '0';
+        text[len++] = '.';
+        for (int i = 0; i < -n; i++) {
+            text[len++] = '0';
+        }
+        for (int i = 0; i < nd; i++) {
+            text[len++] = digits[i];
+        }
+    } else {
+        const int e = n - 1;
+        text[len++] = digits[0];
+        if (nd > 1) {
+            text[len++] = '.';
+            for (int i = 1; i < nd; i++) {
+                text[len++] = digits[i];
+            }
+        }
+        len += (size_t)snprintf(text + len, sizeof(text) - len, "e%c%d", e < 0 ? '-' : '+', e < 0 ? -e : e);
+    }
+    text[len] = '\0';
+    return snprintf(out, size, "%s", text) < (int)size;
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* Version4 view: the structure hashed when every atom carries a version                      */
+/* ------------------------------------------------------------------------------------------ */
+
+static cJSON *string_or_null(const char *text) {
+    return text ? cJSON_CreateString(text) : cJSON_CreateNull();
+}
+
+/* Appends the single-key object {key: value} to view; takes ownership of value. The cJSON
+ * add functions return void before cJSON 1.7.13, so only the allocations are checked. */
+static bool add_view_field(cJSON *view, const char *key, cJSON *value) {
+    cJSON *field = value ? cJSON_CreateObject() : NULL;
+    if (!field) {
+        cJSON_Delete(value);
+        return false;
+    }
+    cJSON_AddItemToObject(field, key, value);
+    cJSON_AddItemToArray(view, field);
+    return true;
+}
+
+static cJSON *atom_meta_view(const knishio_atom_t *atom) {
+    cJSON *metas = cJSON_CreateArray();
+    for (size_t i = 0; metas && i < atom->meta_count; i++) {
+        const knishio_meta_t *meta = atom->meta ? atom->meta[i] : NULL;
+        if (!meta) {
+            continue;
+        }
+        cJSON *pair = cJSON_CreateArray();
+        if (!pair) {
+            cJSON_Delete(metas);
+            return NULL;
+        }
+        cJSON_AddItemToArray(metas, pair);
+        if (!add_view_field(pair, "key", string_or_null(meta->key))
+            || !add_view_field(pair, "value", string_or_null(meta->value))) {
+            cJSON_Delete(metas);
+            return NULL;
+        }
+    }
+    return metas;
+}
+
+static cJSON *atom_version4_view(const knishio_atom_t *atom) {
+    char created_at[32];
+    snprintf(created_at, sizeof(created_at), "%lld", knishio_atom_created_at_ms(atom));
+
+    cJSON *view = cJSON_CreateArray();
+    if (!view
+        || !add_view_field(view, "batchId", string_or_null(atom->batch_id))
+        || !add_view_field(view, "createdAt", cJSON_CreateString(created_at))
+        || !add_view_field(view, "index", atom->index >= 0 ? cJSON_CreateNumber(atom->index) : cJSON_CreateNull())
+        || !add_view_field(view, "isotope", string_or_null(knishio_isotope_to_string(atom->isotope)))
+        || !add_view_field(view, "meta", atom_meta_view(atom))
+        || !add_view_field(view, "metaId", string_or_null(atom->meta_id))
+        || !add_view_field(view, "metaType", string_or_null(atom->meta_type))
+        || !add_view_field(view, "position", string_or_null(atom->position))
+        || !add_view_field(view, "token", string_or_null(atom->token))
+        || !add_view_field(view, "value", string_or_null(atom->value))
+        || !add_view_field(view, "version", string_or_null(atom->version))
+        || !add_view_field(view, "walletAddress", string_or_null(atom->wallet_address))) {
+        cJSON_Delete(view);
+        return NULL;
+    }
+    return view;
+}
+
+char* knishio_atoms_version4_view_json(knishio_atom_t** atoms, size_t count) {
+    if (!atoms) {
+        return NULL;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (!atoms[i]) {
+            return NULL;
+        }
+    }
+
+    knishio_atom_t** sorted = NULL;
+    if (count > 0) {
+        sorted = knishio_malloc(sizeof(knishio_atom_t*) * count);
+        if (!sorted) {
+            return NULL;
+        }
+        memcpy(sorted, atoms, sizeof(knishio_atom_t*) * count);
+        qsort(sorted, count, sizeof(knishio_atom_t*), compare_atoms_by_index);
+    }
+
+    cJSON *views = cJSON_CreateArray();
+    for (size_t i = 0; views && i < count; i++) {
+        cJSON *view = atom_version4_view(sorted[i]);
+        if (!view) {
+            cJSON_Delete(views);
+            views = NULL;
+            break;
+        }
+        cJSON_AddItemToArray(views, view);
+    }
+    knishio_free(sorted);
+    if (!views) {
+        return NULL;
+    }
+
+    /* cJSON escapes only '"', '\\' and control characters, as JSON.stringify does. */
+    char *printed = cJSON_PrintUnformatted(views);
+    cJSON_Delete(views);
+    if (!printed) {
+        return NULL;
+    }
+    char *result = knishio_strdup(printed);
+    cJSON_free(printed);
+    return result;
 }
 
 /* Utility functions */

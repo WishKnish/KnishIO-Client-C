@@ -16,6 +16,33 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+### Added
+
+- `knishio_verify_from_server_data` verifies a molecule exactly as a validator's GraphQL API
+  serves it: RFC 3339 timestamps, `metasJson`, atoms carrying any version, and molecules
+  served without their atom versions. It fills a `knishio_served_verification_t`
+  (`verified`, `molecular_hash`, `error`); malformed input gives `verified=false` with an
+  error, and an unparseable `createdAt` gives the error `invalid createdAt`.
+- `knishio_molecule_from_server_data`: builds the molecule from its served form (the mapping
+  `knishio_verify_from_server_data` checks).
+- `knishio_atoms_version4_view_json`: the Version4 view an atom list hashes when every atom
+  carries a version.
+- `knishio_atom_t.created_at_ms`, appended as the struct's last member: an atom's createdAt in
+  milliseconds. When it is set, the molecular hash and `knishio_atom_to_json` use it instead
+  of `created_at * 1000`, so molecules created at any millisecond verify.
+- ctest entry `ServedMolecules`: the shared served-molecule and Version4 hash fixtures
+  (`tests/fixtures/served-molecules.json`, `tests/fixtures/version4-hash-vectors.json`).
+
+### Changed
+
+- A molecule whose atoms all carry a version (any value) hashes the Version4 view of its
+  atoms, as the other KnishIO SDKs do. Molecules this SDK signs carry no atom versions, so
+  their hashes and wire bytes are unchanged.
+- `knishio_atom_from_json` / `knishio_molecule_from_json` read a numeric atom `version` as its
+  decimal string, and keep a meta entry whose value is null (as a NULL value) on a versioned
+  atom; on an unversioned atom it is still dropped. `knishio_atom_to_json` writes such an
+  entry as `"value":null`.
+
 ## [1.4.0] — 2026-10-13
 
 ### Added
