@@ -306,9 +306,9 @@ knishio_error_t knishio_molecule_to_json(
  *     is dropped, exactly as JS Atom.getHashableValues() skips it; storing "" would change the
  *     molecular hash. A versioned atom keeps it with a NULL value, which the Version4 view
  *     hashes as null
- *   - atom createdAt: decimal string of milliseconds that must be whole seconds, because
- *     knishio_atom_t.created_at is time_t seconds; a sub-second value is rejected rather than
- *     silently changing the hash. The molecule-level createdAt (not hashed) is truncated.
+ *   - atom createdAt: decimal string of milliseconds, kept exactly in
+ *     knishio_atom_t.created_at_ms (and in whole seconds in created_at). The molecule-level
+ *     createdAt (not hashed) is truncated to seconds.
  *   - index: required non-negative integer (it orders the atoms for hashing)
  *   - isotope: must be one knishio_isotope_t represents (the JS-only P and A are rejected)
  *   - sourceWallet, remainderWallet, status and unknown keys are ignored

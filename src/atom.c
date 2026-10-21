@@ -679,14 +679,13 @@ knishio_error_t knishio_atom_from_cjson(const cJSON *json, knishio_atom_t **atom
         return KNISHIO_ERROR_INVALID_JSON;
     }
 
-    /* createdAt is milliseconds on the wire and whole seconds in knishio_atom_t.created_at (the
-     * hasher multiplies by 1000 again). A sub-second value cannot be represented, and truncating
-     * it would silently change the molecular hash, so it is rejected instead. */
+    /* createdAt is milliseconds on the wire. created_at keeps whole seconds; created_at_ms keeps
+     * the exact value, which the molecular hash and knishio_atom_to_json use, so a molecule signed
+     * at any millisecond verifies. */
     const cJSON *created_item = cJSON_GetObjectItemCaseSensitive(json, "createdAt");
     long long created_ms = 0;
     if (!cJSON_IsString(created_item)
-        || !knishio_cjson_millis(created_item->valuestring, &created_ms)
-        || created_ms % 1000 != 0) {
+        || !knishio_cjson_millis(created_item->valuestring, &created_ms)) {
         return KNISHIO_ERROR_INVALID_JSON;
     }
 
@@ -719,6 +718,7 @@ knishio_error_t knishio_atom_from_cjson(const cJSON *json, knishio_atom_t **atom
     /* The constructor stamps the current time and index -1; every hashed value comes from the
      * JSON verbatim instead. */
     result->created_at = (time_t)(created_ms / 1000);
+    result->created_at_ms = created_ms;
     result->index = (int)index_value;
 
     if ((err = knishio_atom_set_version(result, version)) != KNISHIO_SUCCESS) {

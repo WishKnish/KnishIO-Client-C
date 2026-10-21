@@ -118,10 +118,11 @@ typedef struct {
     knishio_error_t verdict;  /* knishio_molecule_check(), or `parsed` when parsing failed */
     size_t meta0_count;       /* atoms[0]->meta_count when parsed */
     bool null_on_failure;     /* the out-pointer stayed NULL when parsing failed */
+    long long created_at_ms0; /* atoms[0]->created_at_ms when parsed, else -1 */
 } outcome_t;
 
 static outcome_t run(const cJSON *molecule, mutation_fn mutate) {
-    outcome_t out = { KNISHIO_ERROR_MEMORY, KNISHIO_ERROR_MEMORY, 0, true };
+    outcome_t out = { KNISHIO_ERROR_MEMORY, KNISHIO_ERROR_MEMORY, 0, true, -1 };
     cJSON *copy = cJSON_Duplicate(molecule, true);
     if (!copy) return out;
     if (mutate) mutate(copy);
@@ -135,6 +136,7 @@ static outcome_t run(const cJSON *molecule, mutation_fn mutate) {
     out.null_on_failure = (out.parsed == KNISHIO_SUCCESS) || (m == NULL);
     out.verdict = (out.parsed == KNISHIO_SUCCESS) ? knishio_molecule_check(m, NULL) : out.parsed;
     out.meta0_count = (m && m->atom_count > 0) ? m->atoms[0]->meta_count : 0;
+    out.created_at_ms0 = (m && m->atom_count > 0) ? m->atoms[0]->created_at_ms : -1;
     knishio_molecule_free_deep(m);
     return out;
 }
@@ -204,9 +206,11 @@ static void test_rejections_and_shapes(const cJSON *vec) {
           "absent value/batchId keys (Kotlin's shape) read as null and the molecule still verifies", detail);
 
     o = run(molecule, sub_second_created_at);
-    snprintf(detail, sizeof(detail), "parsed=%d null_on_failure=%d", (int)o.parsed, (int)o.null_on_failure);
-    check(o.parsed == KNISHIO_ERROR_INVALID_JSON && o.null_on_failure,
-          "a sub-second atom createdAt is rejected (time_t seconds cannot hold it) instead of changing the hash", detail);
+    snprintf(detail, sizeof(detail), "parsed=%d created_at_ms=%lld verdict=%d", (int)o.parsed,
+             o.created_at_ms0, (int)o.verdict);
+    check(o.parsed == KNISHIO_SUCCESS && o.created_at_ms0 == 1700000000123LL
+              && o.verdict == KNISHIO_ERROR_MOLECULAR_HASH_MISMATCH,
+          "a sub-second atom createdAt parses with its milliseconds and is hashed as given (the edit changes the hash)", detail);
 
     o = run(molecule, drop_index);
     snprintf(detail, sizeof(detail), "parsed=%d", (int)o.parsed);
@@ -475,6 +479,68 @@ static void test_c_signs_the_frozen_vector(const cJSON *vec) {
     free(bundle);
 }
 
+/* The same molecule signed with atom timestamps at a non-zero millisecond: the milliseconds survive
+ * knishio_molecule_to_json and knishio_molecule_from_json, and the parsed molecule verifies. */
+static void test_millisecond_created_at_roundtrip(const cJSON *vec) {
+    printf("\nA molecule signed at a non-zero millisecond round-trips and verifies\n");
+    const char *seed = vec_string(vec, "seed");
+    const char *token = vec_string(vec, "token");
+    const char *source_position = vec_string(vec, "sourcePosition");
+    const char *remainder_position = vec_string(vec, "remainderPosition");
+    const char *meta_type = vec_string(vec, "metaType");
+    const char *meta_id = vec_string(vec, "metaId");
+    const char *meta_keys[] = { "name", "description" };
+    const char *meta_values[] = { "Test Metadata", "This is a test metadata for SDK testing." };
+    char detail[256];
+
+    char *secret = NULL;
+    char *bundle = NULL;
+    char *json = NULL;
+    knishio_wallet_t *source = NULL;
+    knishio_wallet_t *remainder = NULL;
+    knishio_molecule_t *m = NULL;
+    knishio_molecule_t *parsed = NULL;
+
+    bool built = seed && token && source_position && remainder_position && meta_type && meta_id
+        && knishio_generate_secret(seed, 2048, &secret)
+        && knishio_generate_bundle_hash(secret, NULL, NULL, &bundle)
+        && knishio_wallet_create_simple(&source, secret, token, source_position) == KNISHIO_SUCCESS
+        && knishio_wallet_create_simple(&remainder, secret, token, remainder_position) == KNISHIO_SUCCESS
+        && knishio_molecule_create(&m, secret, bundle, source, remainder, NULL, KNISHIO_VERSION_STRING) == KNISHIO_SUCCESS
+        && knishio_molecule_init_meta(m, meta_type, meta_id, meta_keys, meta_values, 2) == KNISHIO_SUCCESS;
+    if (built) {
+        for (size_t i = 0; i < m->atom_count; i++) {
+            m->atoms[i]->created_at = (time_t)(1700000000L + (long)i);
+            m->atoms[i]->created_at_ms = 1700000000123LL + 1000LL * (long long)i;
+        }
+        built = knishio_molecule_generate_hash(m) == KNISHIO_SUCCESS
+            && knishio_molecule_sign(m, bundle, false, true) == KNISHIO_SUCCESS;
+    }
+
+    knishio_error_t parse = KNISHIO_ERROR_MEMORY;
+    knishio_error_t verdict = KNISHIO_ERROR_MEMORY;
+    bool has_ms = false;
+    if (built && knishio_molecule_to_json(m, &json) == KNISHIO_SUCCESS && json) {
+        has_ms = strstr(json, "\"createdAt\":\"1700000000123\"") != NULL;
+        parse = knishio_molecule_from_json(json, &parsed);
+        verdict = (parse == KNISHIO_SUCCESS) ? knishio_molecule_check(parsed, NULL) : parse;
+    }
+    const long long ms0 = (parsed && parsed->atom_count > 0) ? parsed->atoms[0]->created_at_ms : -1;
+    snprintf(detail, sizeof(detail), "json has ms=%d from_json=%d created_at_ms=%lld check=%d (%s)",
+             (int)has_ms, (int)parse, ms0, (int)verdict, knishio_error_to_string(verdict));
+    check(has_ms && parse == KNISHIO_SUCCESS && ms0 == 1700000000123LL && verdict == KNISHIO_SUCCESS,
+          "a molecule signed at createdAt 1700000000123 keeps its milliseconds through to_json/from_json and verifies",
+          detail);
+
+    knishio_molecule_free_deep(parsed);
+    knishio_molecule_free_deep(m);
+    if (source) knishio_wallet_free(source);
+    if (remainder) knishio_wallet_free(remainder);
+    free(json);
+    free(secret);
+    free(bundle);
+}
+
 int main(void) {
     const char *env_path = getenv("KNISHIO_CROSS_PLATFORM_VECTORS");
     const char *path = env_path ? env_path : KNISHIO_TEST_VECTORS_PATH;
@@ -502,6 +568,7 @@ int main(void) {
     test_atom_from_json(vec);
     test_v_token_rule();
     test_c_signs_the_frozen_vector(vec);
+    test_millisecond_created_at_roundtrip(vec);
 
     cJSON_Delete(root);
     printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "OK", g_failures,

@@ -16,6 +16,13 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+### Fixed
+
+- `knishio_molecule_from_json()` and `knishio_atom_from_json()` accept an atom `createdAt` at any
+  millisecond: it is kept in `knishio_atom_t.created_at_ms` and hashed as given. A molecule another
+  SDK signed at a non-zero millisecond verifies; before, it was rejected with
+  `KNISHIO_ERROR_INVALID_JSON`.
+
 ## [1.5.0] — 2026-10-16
 
 ### Added
