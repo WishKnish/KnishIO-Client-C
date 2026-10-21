@@ -103,7 +103,8 @@ int knishio_client_get_mlkem_parameter_set(const knishio_client_t* client);
 void knishio_client_set_mlkem_parameter_set(knishio_client_t* client, int param_set);
 
 /**
- * @brief OTS version of the keys this client creates from its secret (1 default, or 2)
+ * @brief OTS version of the keys this client creates from its secret (2 default, or 1);
+ *        2 when client is NULL
  */
 int knishio_client_get_ots_version(const knishio_client_t* client);
 

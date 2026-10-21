@@ -68,7 +68,7 @@ typedef struct {
     bool insecure_tls;         /**< Skip TLS cert verification (dev/self-signed validators); default false = verify */
     int mlkem_parameter_set;   /**< ML-KEM parameter set: 1024 (default) or 768 */
     int ots_version;           /**< OTS version of the keys the client creates from its secret:
-                                *   1 (default; 0 counts as 1) or 2 */
+                                *   2 (default; 0 counts as 2) or 1 */
 } knishio_client_config_t;
 
 /**

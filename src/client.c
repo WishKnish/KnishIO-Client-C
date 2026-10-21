@@ -91,7 +91,7 @@ knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_c
     new_client->cipher_server_pubkey = NULL;
     new_client->cipher_wallet = NULL;
     new_client->mlkem_parameter_set = (config->mlkem_parameter_set == 768) ? 768 : 1024;
-    new_client->ots_version = config->ots_version == 0 ? KNISHIO_OTS_V1 : config->ots_version;
+    new_client->ots_version = config->ots_version == 0 ? KNISHIO_OTS_V2 : config->ots_version;
     knishio_wallet_set_default_mlkem_param(new_client->mlkem_parameter_set == 768 ? KNISHIO_MLKEM_768 : KNISHIO_MLKEM_1024);
     // Initialize authentication state
     memset(&new_client->auth_state, 0, sizeof(knishio_client_auth_state_t));
@@ -478,7 +478,7 @@ void knishio_client_set_mlkem_parameter_set(knishio_client_t* client, int param_
 }
 
 int knishio_client_get_ots_version(const knishio_client_t* client) {
-    return (client && client->ots_version == KNISHIO_OTS_V2) ? KNISHIO_OTS_V2 : KNISHIO_OTS_V1;
+    return (client && client->ots_version == KNISHIO_OTS_V1) ? KNISHIO_OTS_V1 : KNISHIO_OTS_V2;
 }
 
 knishio_error_t knishio_client_set_ots_version(knishio_client_t* client, int ots_version) {

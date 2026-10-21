@@ -16,6 +16,14 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+### Changed
+
+- `knishio_client_create()` creates keys and signs at OTS version 2 by default (was 1). An
+  identity a version-2 client signs for moves to version 2 and stays there, so the client needs a
+  validator that accepts version 2 (0.8.0 or later). Pass `.ots_version = KNISHIO_OTS_V1` in
+  `knishio_client_config_t` to keep version 1. Standalone wallet construction
+  (`knishio_wallet_create*`) still defaults to version 1.
+
 ### Fixed
 
 - `knishio_molecule_from_json()` and `knishio_atom_from_json()` accept an atom `createdAt` at any

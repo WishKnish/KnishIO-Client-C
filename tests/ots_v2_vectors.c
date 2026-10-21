@@ -544,14 +544,14 @@ static int run_client(void) {
 
     /* Client option */
     knishio_client_t *client = client_at(NULL, 0, NULL);
-    check(client && knishio_client_get_ots_version(client) == 1, "a zero-initialised config is OTS version 1", NULL);
+    check(client && knishio_client_get_ots_version(client) == 2, "a zero-initialised config is OTS version 2", NULL);
     g_last_error[0] = '\0';
     check(client && knishio_client_set_ots_version(client, 3) == KNISHIO_ERROR_INVALID_ARGS
-              && knishio_client_get_ots_version(client) == 1
+              && knishio_client_get_ots_version(client) == 2
               && same(g_last_error, "KnishIO: unsupported OTS version 3; expected 1 or 2."),
           "set_ots_version(3) is refused with the unsupported-version message", g_last_error);
-    check(client && knishio_client_set_ots_version(client, 2) == KNISHIO_SUCCESS
-              && knishio_client_get_ots_version(client) == 2, "set_ots_version(2) is kept", NULL);
+    check(client && knishio_client_set_ots_version(client, 1) == KNISHIO_SUCCESS
+              && knishio_client_get_ots_version(client) == 1, "set_ots_version(1) is kept", NULL);
     if (client) knishio_client_destroy(client);
     client = client_at(NULL, 3, NULL);
     check(client == NULL, "a config with ots_version 3 is refused", NULL);
