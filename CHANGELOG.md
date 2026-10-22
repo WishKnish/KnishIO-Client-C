@@ -16,11 +16,15 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-10-21
+
 ### Changed
 
-- `knishio_client_create()` creates keys and signs at OTS version 2 by default (was 1). An
-  identity a version-2 client signs for moves to version 2 and stays there, so the client needs a
-  validator that accepts version 2 (0.8.0 or later). Pass `.ots_version = KNISHIO_OTS_V1` in
+- `knishio_client_create()` defaults to OTS version 2 and ML-KEM-1024. It creates keys and signs
+  at OTS version 2 (was 1); ML-KEM-1024 stays the post-quantum transport parameter set, as it has
+  been by default since 1.0.0 (ML-KEM-768 remains the opt-in step-back). An identity a version-2
+  client signs for moves to version 2 and stays there, so the client needs a validator that
+  accepts version 2 (0.8.0 or later). Pass `.ots_version = KNISHIO_OTS_V1` in
   `knishio_client_config_t` to keep version 1. Standalone wallet construction
   (`knishio_wallet_create*`) still defaults to version 1.
 
@@ -739,7 +743,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.5.0...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.6.0...HEAD
+[1.6.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.0
 [1.5.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.5.0
 [1.4.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.4.0
 [1.3.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.3.1
