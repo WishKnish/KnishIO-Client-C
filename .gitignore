@@ -89,3 +89,5 @@ debug_shake256
 **/.DS_Store
 compile_commands.json
 cipherhash_live_test
+# CycloneDX SBOM output (.github/scripts/sbom.sh)
+/sbom-out/

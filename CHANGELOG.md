@@ -16,6 +16,14 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+### Added
+
+- CI generates a CycloneDX SBOM from `.github/sbom-components.json`: the mlkem-native submodule, the
+  KnishIO-Crypto-Core release packages bundled into the binary tarballs, the adapted tiny_sha3 source and the
+  consumer-provided system libraries. `sbom.sh` checks the file against the submodule gitlink and the publish
+  workflow's sha256 pins, and OSV scans the pinned upstream commit on every push and weekly. Each GitHub Release
+  attaches it as `knishio-client-c-<version>.cdx.json`.
+
 ## [1.6.0] — 2026-10-21
 
 ### Changed
