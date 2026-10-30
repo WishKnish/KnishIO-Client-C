@@ -16,6 +16,8 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-10-29
+
 ### Added
 
 - CI generates a CycloneDX SBOM from `.github/sbom-components.json`: the mlkem-native submodule, the
@@ -763,7 +765,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.6.0...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.6.1...HEAD
+[1.6.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.1
 [1.6.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.0
 [1.5.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.5.0
 [1.4.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.4.0
