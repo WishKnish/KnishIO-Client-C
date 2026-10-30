@@ -12,6 +12,7 @@ extern void test_wallet_suite(void);
 extern void test_molecule_suite(void);   /* Molecular validation and signing tests */
 extern void test_encrypted_transport_suite(void);  /* PQ-transport fail-closed behaviour */
 extern void test_propose_status_suite(void);  /* ProposeMolecule status != accepted fails */
+extern void test_http_connection_reuse_suite(void);  /* one keep-alive connection per client */
 
 /* Global test state */
 static int tests_run = 0;
@@ -94,6 +95,10 @@ int main(int argc, char *argv[]) {
 
     if (filter == NULL || strstr("propose_status", filter) != NULL) {
         run_test_suite("ProposeMolecule Status", test_propose_status_suite);
+    }
+
+    if (filter == NULL || strstr("http_connection_reuse", filter) != NULL) {
+        run_test_suite("HTTP Connection Reuse", test_http_connection_reuse_suite);
     }
     
     /* Cross-SDK compatibility tests */

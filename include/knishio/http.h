@@ -35,6 +35,7 @@ typedef struct knishio_http_client {
     char* auth_pubkey;             /**< Public key for X-KnishIO-Pubkey header */
     long timeout_seconds;          /**< Request timeout */
     bool verify_ssl;               /**< SSL certificate verification */
+    void* handle_pool;             /**< Internal: idle libcurl handles kept for connection reuse */
 } knishio_http_client_t;
 
 /* HTTP client lifecycle */

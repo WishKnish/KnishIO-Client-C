@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <pthread.h>
 #include <curl/curl.h>
 
 /* Internal structures for libcurl callbacks */
@@ -23,12 +24,27 @@ typedef struct {
     size_t size;
 } curl_response_data_t;
 
+/* Idle libcurl easy handles, reused across requests. A handle keeps its connection cache across
+ * curl_easy_reset, so a reused handle sends the next request on the same keep-alive connection.
+ * A handle per request (before 1.6.1) cost a TCP connection per request, and a client submitting
+ * at a sustained rate left so many sockets in TIME_WAIT that it ran out of local ports. A handle
+ * serves one request at a time, so concurrent requests on one client each take their own. */
+#define KNISHIO_HTTP_IDLE_HANDLES 8
+
+typedef struct {
+    pthread_mutex_t lock;
+    CURL* idle[KNISHIO_HTTP_IDLE_HANDLES];
+    size_t count;
+} http_handle_pool_t;
+
 /* Internal helper function declarations */
 static size_t knishio_curl_write_callback(void* contents, size_t size, size_t nmemb, curl_response_data_t* data);
 static size_t knishio_curl_header_callback(char* buffer, size_t size, size_t nitems, curl_response_data_t* data);
 static knishio_error_t copy_http_string(char** dest, const char* src);
 static void free_http_string(char** field);
 static knishio_error_t build_graphql_payload(const char* query, const char* variables, char** payload);
+static CURL* acquire_handle(knishio_http_client_t* client);
+static void release_handle(knishio_http_client_t* client, CURL* curl);
 
 /* HTTP client lifecycle functions */
 
@@ -64,6 +80,19 @@ knishio_error_t knishio_http_client_create(
     c->timeout_seconds = 30;  /* 30 second timeout */
     c->verify_ssl = true;     /* Verify SSL by default */
 
+    http_handle_pool_t* pool = knishio_malloc(sizeof(http_handle_pool_t));
+    if (!pool) {
+        knishio_http_client_free(c);
+        return KNISHIO_ERROR_MEMORY;
+    }
+    memset(pool, 0, sizeof(http_handle_pool_t));
+    if (pthread_mutex_init(&pool->lock, NULL) != 0) {
+        knishio_free(pool);
+        knishio_http_client_free(c);
+        return KNISHIO_ERROR_HTTP_INIT;
+    }
+    c->handle_pool = pool;
+
     /* Set default user agent */
     const char* user_agent = "KnishIO-C-SDK/1.0";
     error = copy_http_string(&c->user_agent, user_agent);
@@ -86,6 +115,16 @@ void knishio_http_client_free(knishio_http_client_t* client) {
     free_http_string(&client->user_agent);
     free_http_string(&client->auth_token);
     free_http_string(&client->auth_pubkey);
+
+    /* Close the idle handles, and with them their kept-alive connections */
+    http_handle_pool_t* pool = client->handle_pool;
+    if (pool) {
+        for (size_t i = 0; i < pool->count; i++) {
+            curl_easy_cleanup(pool->idle[i]);
+        }
+        pthread_mutex_destroy(&pool->lock);
+        knishio_free(pool);
+    }
 
     /* Free the client structure itself */
     knishio_free(client);
@@ -290,8 +329,8 @@ knishio_error_t knishio_http_post(
         return error;
     }
 
-    /* Initialize libcurl handle */
-    CURL* curl = curl_easy_init();
+    /* Take an idle libcurl handle (keeps its connection) or a new one */
+    CURL* curl = acquire_handle(client);
     if (!curl) {
         knishio_http_response_free(*response);
         *response = NULL;
@@ -302,7 +341,7 @@ knishio_error_t knishio_http_post(
     size_t url_len = strlen(client->base_url) + strlen(path) + 1;
     char* full_url = knishio_malloc(url_len);
     if (!full_url) {
-        curl_easy_cleanup(curl);
+        release_handle(client, curl);
         knishio_http_response_free(*response);
         *response = NULL;
         return KNISHIO_ERROR_MEMORY;
@@ -408,7 +447,7 @@ knishio_error_t knishio_http_post(
     if (headers) {
         curl_slist_free_all(headers);
     }
-    curl_easy_cleanup(curl);
+    release_handle(client, curl);
     knishio_free(full_url);
 
     return error;
@@ -429,8 +468,8 @@ knishio_error_t knishio_http_get(
         return error;
     }
 
-    /* Initialize libcurl handle */
-    CURL* curl = curl_easy_init();
+    /* Take an idle libcurl handle (keeps its connection) or a new one */
+    CURL* curl = acquire_handle(client);
     if (!curl) {
         knishio_http_response_free(*response);
         *response = NULL;
@@ -441,7 +480,7 @@ knishio_error_t knishio_http_get(
     size_t url_len = strlen(client->base_url) + strlen(path) + 1;
     char* full_url = knishio_malloc(url_len);
     if (!full_url) {
-        curl_easy_cleanup(curl);
+        release_handle(client, curl);
         knishio_http_response_free(*response);
         *response = NULL;
         return KNISHIO_ERROR_MEMORY;
@@ -488,7 +527,7 @@ knishio_error_t knishio_http_get(
     }
 
     /* Cleanup */
-    curl_easy_cleanup(curl);
+    release_handle(client, curl);
     knishio_free(full_url);
 
     return error;
@@ -542,6 +581,39 @@ void knishio_http_global_cleanup(void) {
 }
 
 /* Internal helper functions */
+
+static CURL* acquire_handle(knishio_http_client_t* client) {
+    http_handle_pool_t* pool = client->handle_pool;
+    CURL* curl = NULL;
+
+    pthread_mutex_lock(&pool->lock);
+    if (pool->count > 0) {
+        curl = pool->idle[--pool->count];
+    }
+    pthread_mutex_unlock(&pool->lock);
+
+    if (!curl) {
+        return curl_easy_init();
+    }
+    /* Clears every option the previous request set; keeps the live connections */
+    curl_easy_reset(curl);
+    return curl;
+}
+
+static void release_handle(knishio_http_client_t* client, CURL* curl) {
+    http_handle_pool_t* pool = client->handle_pool;
+
+    pthread_mutex_lock(&pool->lock);
+    if (pool->count < KNISHIO_HTTP_IDLE_HANDLES) {
+        pool->idle[pool->count++] = curl;
+        curl = NULL;
+    }
+    pthread_mutex_unlock(&pool->lock);
+
+    if (curl) {
+        curl_easy_cleanup(curl);
+    }
+}
 
 static size_t knishio_curl_write_callback(void* contents, size_t size, size_t nmemb, curl_response_data_t* data) {
     size_t realsize = size * nmemb;

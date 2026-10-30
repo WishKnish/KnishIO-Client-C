@@ -488,6 +488,7 @@ if(KNISHIO_BUILD_TESTS)
         tests/test_molecule.c
         tests/test_encrypted_transport.c
         tests/test_propose_status.c
+        tests/test_http_connection_reuse.c
     )
     
     add_executable(knishio_tests ${TEST_SOURCES})
@@ -516,6 +517,7 @@ if(KNISHIO_BUILD_TESTS)
     # its own.
     add_test(NAME cross_sdk_tests COMMAND knishio_tests --filter=cross_sdk)
     add_test(NAME propose_status_tests COMMAND knishio_tests --filter=propose_status)
+    add_test(NAME http_connection_reuse_tests COMMAND knishio_tests --filter=http_connection_reuse)
     # A filter that matches no suite must fail rather than report "0 Tests 0 Failures" as a pass.
     # The wrapper requires the non-zero exit AND the runner's no-match line, so a crash cannot
     # stand in for the guard. See tests/expect_filter_no_match_fails.cmake.

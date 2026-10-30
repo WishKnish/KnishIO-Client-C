@@ -24,6 +24,18 @@ substantiate a detail, the entry says so instead of guessing.
   workflow's sha256 pins, and OSV scans the pinned upstream commit on every push and weekly. Each GitHub Release
   attaches it as `knishio-client-c-<version>.cdx.json`.
 
+### Fixed
+
+- The HTTP client reuses its TCP connection across requests. Every request used to create and
+  destroy its own libcurl handle, and so a new connection: a client submitting at a sustained rate
+  (about 235 molecules/s from four processes in a test rig) left so many sockets in TIME_WAIT that
+  it ran out of local ports within a minute (`Cannot assign requested address`), and requests then
+  failed with `KNISHIO_ERROR_HTTP_REQUEST`. Each `knishio_http_client_t` now keeps up to 8 idle
+  libcurl handles, whose keep-alive connections the next requests reuse; concurrent requests on one
+  client each take their own handle. A connection the server closed while idle is detected and
+  replaced. `knishio_http_client_t` gains an internal `handle_pool` field, so create the client
+  only with `knishio_http_client_create()`, as before.
+
 ## [1.6.0] — 2026-10-21
 
 ### Changed
