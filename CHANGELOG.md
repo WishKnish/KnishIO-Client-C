@@ -16,6 +16,18 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+### Fixed
+
+- `knishio_client_execute_graphql()` now reuses `client->http_client` instead of calling
+  `knishio_graphql_client_create()` and `knishio_graphql_client_free()` on every operation. Release
+  1.6.1 added a libcurl handle pool to `knishio_http_client_t`, but `knishio_client_execute_graphql()`
+  still created and destroyed a fresh `knishio_graphql_client_t` — and with it a fresh
+  `knishio_http_client_t` — on each GraphQL request, so high-level `knishio_client_t` operations
+  (`knishio_client_submit_molecule()`, `knishio_client_create_meta()`, `knishio_client_query_continuid()`)
+  continued to open a new TCP connection per request and exhausted local ports at 14,115 accepted
+  molecules (~28,230 requests). `knishio_client_set_auth_token(client, NULL)` also clears the
+  authentication headers on `client->http_client`.
+
 ## [1.6.1] — 2026-10-29
 
 ### Added

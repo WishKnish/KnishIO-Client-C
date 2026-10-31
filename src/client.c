@@ -231,6 +231,8 @@ knishio_error_t knishio_client_set_auth_token(knishio_client_t *client,
                 return result;
             }
         }
+    } else {
+        knishio_http_client_clear_auth(client->http_client);
     }
     
     return KNISHIO_SUCCESS;
@@ -267,12 +269,11 @@ knishio_error_t knishio_client_clear_auth(knishio_client_t *client) {
     return KNISHIO_SUCCESS;
 }
 
-/* Build a proper graphql client from this client (its own http_client to client->uri + the client's
- * auth token), submit the operation, and free the graphql client. Replaces the prior
- * (knishio_graphql_client_t*)client cast in the create ops — knishio_client_t and
- * knishio_graphql_client_t are different structs, so the cast never propagated the auth token to
- * the X-Auth-Token header (and was UB). knishio_graphql_client_create makes its OWN http_client to
- * client->uri, so client->http_client is untouched and graphql_client_free is safe. */
+/* Borrow client->http_client in a stack knishio_graphql_client_t so every operation shares the
+ * client's idle libcurl handle pool and keep-alive connections (and inherits insecure_tls and
+ * X-Auth-Token set on client->http_client). Replaces both the old (knishio_graphql_client_t*)client
+ * cast (different struct layouts) and the 1.6.1 per-operation knishio_graphql_client_create/free
+ * pair, which allocated and destroyed a fresh http_client on every request. */
 knishio_error_t knishio_client_execute_graphql(
     knishio_client_t* client,
     const knishio_graphql_operation_t* operation,
@@ -281,28 +282,17 @@ knishio_error_t knishio_client_execute_graphql(
     if (!client || !operation || !response) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    if (!client->uri) {
+    if (!client->initialized || !client->uri || !client->http_client) {
         return KNISHIO_ERROR_INVALID_STATE;
     }
 
-    knishio_graphql_client_t* gql = NULL;
-    knishio_error_t error = knishio_graphql_client_create(&gql, client->uri, client->cell_slug);
-    if (error != KNISHIO_SUCCESS) {
-        return error;
-    }
-
-    /* The per-op gql client makes its own http_client (verify_ssl=true default) — inherit the
-     * client's insecure-TLS opt-in so it can reach a self-signed dev validator (slice 2b-i). */
-    if (client->insecure_tls && gql->http_client) {
-        knishio_http_client_set_ssl_verify(gql->http_client, false);
-    }
-
-    /* Propagate the client's auth token (slice 2a: manually-set; the full JWT flow is slice 2b).
-     * graphql_client_set_auth_token pushes it into the http client's X-Auth-Token header. */
-    if (client->auth_token) {
-        knishio_graphql_client_set_auth_token(gql, client->auth_token);
-    }
-
+    knishio_graphql_client_t gql = {
+        .http_client = client->http_client,
+        .endpoint_url = client->uri,
+        .cell_slug = client->cell_slug,
+        .auth_token = client->auth_token,
+        .debug_mode = false
+    };
     /* PQ-transport Phase E: wrap the operation in the ML-KEM CipherHash envelope when encryption is
      * enabled + the operation isn't bypassed. Encrypt the FULL body string (the validator recovers
      * it as a JSON string value and parses the inner request).
@@ -325,7 +315,6 @@ knishio_error_t knishio_client_execute_graphql(
             || client->cipher_server_pubkey[0] == '\0') {
             /* Authorized wallet / server public key missing — never send this in the clear.
              * An empty advertised key counts as missing (parity with JS/TS `!serverPubkey`). */
-            knishio_graphql_client_free(gql);
             return KNISHIO_ERROR_INVALID_STATE;
         }
         cJSON* body_json = cJSON_CreateObject();
@@ -339,14 +328,12 @@ knishio_error_t knishio_client_execute_graphql(
             cJSON_Delete(body_json);
         }
         if (!body) {
-            knishio_graphql_client_free(gql);
             return KNISHIO_ERROR_CRYPTO;
         }
         if (knishio_cipher_hash_encrypt(body, client->cipher_server_pubkey, &envelope) != KNISHIO_SUCCESS
             || !envelope) {
             free(body);
             if (envelope) free(envelope);
-            knishio_graphql_client_free(gql);
             return KNISHIO_ERROR_CRYPTO;
         }
         cJSON* cv = cJSON_CreateObject();
@@ -358,7 +345,6 @@ knishio_error_t knishio_client_execute_graphql(
         if (!cipher_vars) {
             free(body);
             free(envelope);
-            knishio_graphql_client_free(gql);
             return KNISHIO_ERROR_CRYPTO;
         }
         cipher_op.name = "CipherHash";
@@ -370,7 +356,7 @@ knishio_error_t knishio_client_execute_graphql(
         encrypted_request = true;
     }
 
-    error = knishio_graphql_execute(gql, exec_op, response);
+    knishio_error_t error = knishio_graphql_execute(&gql, exec_op, response);
 
     /* Decrypt the CipherHash response envelope back to the inner GraphQL response JSON and derive
      * success, errors and molecularHash from THAT, as the ORIGINAL operation: the envelope reply
@@ -408,7 +394,6 @@ knishio_error_t knishio_client_execute_graphql(
     if (envelope) free(envelope);
     if (cipher_vars) free(cipher_vars);
 
-    knishio_graphql_client_free(gql);
     return error;
 }
 

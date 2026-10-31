@@ -8,6 +8,8 @@
  */
 #include "unity.h"
 #include "knishio/http.h"
+#include "knishio/knishio.h"
+#include "knishio/graphql.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -156,7 +158,38 @@ static void test_a_connection_the_server_closed_is_not_reused(void) {
     TEST_ASSERT_EQUAL_INT(2, server.accepts);
 }
 
+/* 1.6.1 pooled handles in knishio_http_client_t, but knishio_client_execute_graphql still created
+ * and freed a fresh knishio_graphql_client_t (and its own http_client) on every operation. */
+static void test_client_execute_graphql_reuses_one_connection(void) {
+    test_server_t server;
+    server_start(&server, 5, false);
+    char url[64];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/graphql", server.port);
+    knishio_client_config_t cfg = {.uri = url, .cell_slug = "test"};
+    knishio_client_t* client = NULL;
+    TEST_ASSERT_EQUAL_INT(KNISHIO_SUCCESS, knishio_client_create(&client, &cfg));
+    knishio_graphql_operation_t op = {
+        .name = "ContinuId",
+        .query = "query { __typename }",
+        .variables_json = NULL,
+        .requires_auth = false,
+        .is_mutation = false
+    };
+    for (int i = 0; i < 5; i++) {
+        knishio_graphql_response_t* response = NULL;
+        TEST_ASSERT_EQUAL_INT(KNISHIO_SUCCESS, knishio_client_execute_graphql(client, &op, &response));
+        TEST_ASSERT_NOT_NULL(response);
+        TEST_ASSERT_EQUAL_INT(200, (int)response->status_code);
+        knishio_graphql_response_free(response);
+    }
+    knishio_client_destroy(client);
+    server_join(&server);
+    TEST_ASSERT_EQUAL_INT(5, server.requests);
+    TEST_ASSERT_EQUAL_INT(1, server.accepts);
+}
+
 void test_http_connection_reuse_suite(void) {
     RUN_TEST(test_sequential_posts_share_one_connection);
     RUN_TEST(test_a_connection_the_server_closed_is_not_reused);
+    RUN_TEST(test_client_execute_graphql_reuses_one_connection);
 }
