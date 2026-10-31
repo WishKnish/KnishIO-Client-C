@@ -16,6 +16,8 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+## [1.6.2] — 2026-10-31
+
 ### Fixed
 
 - `knishio_client_execute_graphql()` now reuses `client->http_client` instead of calling
@@ -777,7 +779,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.6.1...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.6.2...HEAD
+[1.6.2]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.2
 [1.6.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.1
 [1.6.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.0
 [1.5.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.5.0
