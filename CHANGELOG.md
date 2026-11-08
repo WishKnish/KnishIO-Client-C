@@ -16,6 +16,17 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+### Added
+
+- `KcoreParityVectors` ctest (`tests/kcore_parity_vectors.c`): the 16 shared kcore parity vectors
+  (`tests/fixtures/kcore-parity-vectors.json`, vendored from the monorepo master) — metadata, value
+  transfer, token creation and wallet creation molecules at OTS v1 and v2, with unique and with
+  colliding `createdAt`. Each molecule must parse, pass `knishio_molecule_check_ots()` and rehash to
+  its expected molecular hash; re-signed from its secret and source wallet it must reproduce the
+  molecular hash and every `otsFragment` byte for byte. It runs in both CI lanes, so the pure build and
+  the `KNISHIO_USE_KCORE=ON` build are each held to the same bytes; with kcore linked it also checks
+  that kcore answers at run time. A missing fixture fails the test.
+
 ## [1.6.2] — 2026-10-31
 
 ### Fixed

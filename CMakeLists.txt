@@ -690,6 +690,28 @@ if(KNISHIO_BUILD_TESTS)
         SKIP_RETURN_CODE 77
         ENVIRONMENT "KNISHIO_OTS_V2_VECTORS=${CMAKE_SOURCE_DIR}/../shared-test-results/ots-v2-vectors.json")
 
+    # kcore parity: the 16 shared full-molecule vectors (vendored from the cross-SDK master)
+    # verify and re-sign byte for byte on this build's backend, so the gate-kcore lane proves
+    # kcore and the default lane proves the pure path. The fixture is vendored, so a missing
+    # file fails rather than skips. With kcore linked the test also calls kcore directly.
+    add_executable(kcore_parity_vectors tests/kcore_parity_vectors.c)
+    target_link_libraries(kcore_parity_vectors PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(kcore_parity_vectors PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(kcore_parity_vectors PRIVATE
+        _GNU_SOURCE
+        KNISHIO_KCORE_PARITY_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/kcore-parity-vectors.json"
+    )
+    if(KNISHIO_USE_KCORE)
+        target_link_libraries(kcore_parity_vectors PRIVATE KnishIO::kcore-static)
+        target_compile_definitions(kcore_parity_vectors PRIVATE KNISHIO_HAVE_KCORE=1)
+    endif()
+    add_test(NAME KcoreParityVectors COMMAND kcore_parity_vectors)
+    set_tests_properties(KcoreParityVectors PROPERTIES LABELS "kcore;vectors;parity;signature")
+
     # Served molecules (knishio_verify_from_server_data) and the Version4 hash vectors, both
     # vendored from the shared cross-SDK masters; exits 77 (skipped) when either is absent.
     add_executable(served_molecules tests/served_molecules.c)
