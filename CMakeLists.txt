@@ -741,6 +741,22 @@ if(KNISHIO_BUILD_TESTS)
     add_test(NAME CheckMoleculeRules COMMAND check_molecule_rules)
     set_tests_properties(CheckMoleculeRules PROPERTIES LABELS "check;signature")
 
+    # Molecules the C builders make hash to the JS SDK's molecular hash (digests pinned from a
+    # paired JS/C probe), and P/A molecules signed by the JS SDK parse and verify.
+    add_executable(signed_bytes_parity tests/signed_bytes_parity.c)
+    target_link_libraries(signed_bytes_parity PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(signed_bytes_parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(signed_bytes_parity PRIVATE
+        _GNU_SOURCE
+        KNISHIO_PEERING_APPEND_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/peering-append-molecules.json"
+    )
+    add_test(NAME SignedBytesParity COMMAND signed_bytes_parity)
+    set_tests_properties(SignedBytesParity PROPERTIES LABELS "vectors;parity;signature")
+
     # The cross-SDK signingWallet forgery fixture (built with JS 1.2.1): knishio_molecule_check()
     # accepts B's normally signed molecule and rejects B's signature under victim A's address even
     # when atoms[0] names B in a signingWallet meta. Fixture path is baked in.

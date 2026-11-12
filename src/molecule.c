@@ -28,12 +28,23 @@
 #include <time.h>
 #include <errno.h>
 #include <math.h>
+#include <inttypes.h>
 
 /* Internal helper function declarations */
 static knishio_error_t resize_atoms_array(knishio_molecule_t* molecule);
 static knishio_error_t copy_string_field(char** dest, const char* src);
 static void free_string_field(char** field);
 static int compare_atoms_by_index(const void* a, const void* b);
+
+/* Atom values are integer strings as JS String(n) renders them ("-0" never appears). Amounts are
+ * int64_t and a wallet balance is a double holding a whole number, exact within ±(2^53-1). */
+#define KNISHIO_AMOUNT_BUF 24
+static void format_amount(char out[KNISHIO_AMOUNT_BUF], int64_t value) {
+    snprintf(out, KNISHIO_AMOUNT_BUF, "%" PRId64, value);
+}
+static int64_t wallet_balance(const knishio_wallet_t* w) {
+    return (int64_t)w->balance;
+}
 
 /* Molecule lifecycle functions */
 
@@ -185,7 +196,16 @@ knishio_error_t knishio_molecule_add_atom(
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
-    
+
+    /* JS Molecule.addAtom(): atom.version = this.version, and a JS molecule only carries a
+     * version its Versions table knows ("4"). Any other molecule->version leaves the atom as is. */
+    if (molecule->version && strcmp(molecule->version, "4") == 0) {
+        error = knishio_atom_set_version(atom, "4");
+        if (error != KNISHIO_SUCCESS) {
+            return error;
+        }
+    }
+
     molecule->atoms[molecule->atom_count] = atom;
     molecule->atom_count++;
 
@@ -1059,10 +1079,15 @@ knishio_error_t knishio_molecule_from_json(
         if (err != KNISHIO_SUCCESS) {
             goto done;
         }
-        /* knishio_molecule_add_atom() overwrites the index with the insertion position, but the
-         * index is what orders the atoms for hashing, so the sender's value is restored. */
+        /* knishio_molecule_add_atom() overwrites the index with the insertion position (and the
+         * version with a "4" molecule's), but both are hashed as the sender sent them, so the
+         * sender's values are restored. */
         const int index = atom->index;
+        char *version = atom->version;
+        atom->version = NULL;
         err = knishio_molecule_add_atom(mol, atom);
+        knishio_free(atom->version);
+        atom->version = version;
         if (err != KNISHIO_SUCCESS) {
             knishio_atom_free_deep(atom);
             goto done;
@@ -1558,10 +1583,11 @@ knishio_error_t knishio_molecule_init_meta(
 }
 
 /**
- * @brief Initialize an authorization molecule (matches JavaScript SDK Molecule.initAuthorization).
- * U-isotope atom (signed by source_wallet; no metaType/metaId; meta = [encrypt, pubkey, characters]
- * in JS order — encrypt from the caller, pubkey/characters from the signing wallet via setAtomWallet)
- * + a ContinuID I-atom. The validator issues a bundle-scoped JWT from the U-atom's walletAddress.
+ * @brief Initialize an authorization molecule (matches JavaScript SDK Molecule.initAuthorization
+ * as KnishIOClient.requestAuthToken fills it).
+ * U-isotope atom (signed by source_wallet; no metaType/metaId; meta = [encrypt, walletPubkey],
+ * walletPubkey only when the wallet has an ML-KEM public key) + a ContinuID I-atom. The
+ * validator issues a bundle-scoped JWT from the U-atom's walletAddress.
  */
 knishio_error_t knishio_molecule_init_authorization(
     knishio_molecule_t* molecule,
@@ -1591,21 +1617,16 @@ knishio_error_t knishio_molecule_init_authorization(
         return result;
     }
 
-    /* Meta in JS order: encrypt (from caller), then pubkey + characters (setAtomWallet). */
+    /* Meta in JS order: encrypt, then walletPubkey — the signing wallet's ML-KEM public key as a
+     * SIGNED meta (PQ-transport Phase E), so the validator encrypts CipherHash responses back to
+     * THIS wallet. JS sends no "pubkey" or "characters" here. */
     {
-        const char* keys[4];
-        const char* vals[4];
+        const char* keys[2];
+        const char* vals[2];
         size_t n = 0;
         keys[n] = "encrypt"; vals[n] = encrypt ? "true" : "false"; n++;
-        if (sw->pubkey) {
-            keys[n] = "pubkey"; vals[n] = sw->pubkey; n++;
-            /* PQ-transport Phase E: convey the signing wallet's ML-KEM public key as a SIGNED
-             * walletPubkey U-atom meta (this U-atom is signed → MITM-proof), so the validator's
-             * extract_enc_pubkey can encrypt CipherHash responses back to THIS wallet. */
+        if (sw->pubkey && sw->pubkey[0]) {
             keys[n] = "walletPubkey"; vals[n] = sw->pubkey; n++;
-        }
-        if (sw->characters) {
-            keys[n] = "characters"; vals[n] = sw->characters; n++;
         }
         u_atom->meta = malloc(sizeof(knishio_meta_t*) * n);
         if (u_atom->meta) {
@@ -1808,7 +1829,7 @@ knishio_error_t knishio_molecule_init_shadow_wallet_claim(
 knishio_error_t knishio_molecule_init_value(
     knishio_molecule_t* molecule,
     knishio_wallet_t* recipient_wallet,
-    int amount
+    int64_t amount
 ) {
     if (!molecule || !recipient_wallet) {
         return KNISHIO_ERROR_INVALID_ARGS;
@@ -1825,8 +1846,8 @@ knishio_error_t knishio_molecule_init_value(
     
     /* Add source atom (debit full balance - UTXO pattern matches JavaScript) */
     knishio_atom_t* source_atom = NULL;
-    char source_value[32];
-    snprintf(source_value, sizeof(source_value), "-%d", (int)molecule->source_wallet->balance);
+    char source_value[KNISHIO_AMOUNT_BUF];
+    format_amount(source_value, -wallet_balance(molecule->source_wallet));
 
     knishio_error_t result = knishio_atom_create(
         &source_atom,
@@ -1852,8 +1873,8 @@ knishio_error_t knishio_molecule_init_value(
 
     /* Add recipient atom (credit amount) */
     knishio_atom_t* recipient_atom = NULL;
-    char recipient_value[32];
-    snprintf(recipient_value, sizeof(recipient_value), "%d", amount);
+    char recipient_value[KNISHIO_AMOUNT_BUF];
+    format_amount(recipient_value, amount);
     
     result = knishio_atom_create(
         &recipient_atom,
@@ -1886,9 +1907,8 @@ knishio_error_t knishio_molecule_init_value(
     /* Add remainder atom if remainder wallet exists */
     if (molecule->remainder_wallet) {
         knishio_atom_t* remainder_atom = NULL;
-        char remainder_value[32];
-        int remainder_amount = (int)molecule->source_wallet->balance - amount;
-        snprintf(remainder_value, sizeof(remainder_value), "%d", remainder_amount);
+        char remainder_value[KNISHIO_AMOUNT_BUF];
+        format_amount(remainder_value, wallet_balance(molecule->source_wallet) - amount);
         
         result = knishio_atom_create(
             &remainder_atom,
@@ -1925,7 +1945,7 @@ knishio_error_t knishio_molecule_init_value(
 knishio_error_t knishio_molecule_init_values(
     knishio_molecule_t* molecule,
     knishio_wallet_t** recipient_wallets,
-    const int* amounts,
+    const int64_t* amounts,
     size_t recipient_count
 ) {
     if (!molecule || !recipient_wallets || !amounts || recipient_count == 0) {
@@ -1936,7 +1956,7 @@ knishio_error_t knishio_molecule_init_values(
     }
 
     /* Total to distribute across all recipients */
-    int total = 0;
+    int64_t total = 0;
     for (size_t i = 0; i < recipient_count; i++) {
         total += amounts[i];
     }
@@ -1946,8 +1966,8 @@ knishio_error_t knishio_molecule_init_values(
 
     /* Source atom: debit the ENTIRE balance (UTXO drain); carries the SENT union of token units. */
     knishio_atom_t* source_atom = NULL;
-    char source_value[32];
-    snprintf(source_value, sizeof(source_value), "-%d", (int)molecule->source_wallet->balance);
+    char source_value[KNISHIO_AMOUNT_BUF];
+    format_amount(source_value, -wallet_balance(molecule->source_wallet));
     knishio_error_t result = knishio_atom_create(
         &source_atom,
         knishio_wallet_get_position(molecule->source_wallet),
@@ -1974,8 +1994,8 @@ knishio_error_t knishio_molecule_init_values(
             return KNISHIO_ERROR_INVALID_ARGS;
         }
         knishio_atom_t* recipient_atom = NULL;
-        char recipient_value[32];
-        snprintf(recipient_value, sizeof(recipient_value), "%d", amounts[i]);
+        char recipient_value[KNISHIO_AMOUNT_BUF];
+        format_amount(recipient_value, amounts[i]);
         result = knishio_atom_create(
             &recipient_atom,
             knishio_wallet_get_position(recipient_wallet),
@@ -2002,8 +2022,8 @@ knishio_error_t knishio_molecule_init_values(
 
     /* Remainder atom: +(balance - total), walletBundle -> sender bundle, KEPT units. */
     knishio_atom_t* remainder_atom = NULL;
-    char remainder_value[32];
-    snprintf(remainder_value, sizeof(remainder_value), "%d", (int)molecule->source_wallet->balance - total);
+    char remainder_value[KNISHIO_AMOUNT_BUF];
+    format_amount(remainder_value, wallet_balance(molecule->source_wallet) - total);
     result = knishio_atom_create(
         &remainder_atom,
         knishio_wallet_get_position(molecule->remainder_wallet),
@@ -2054,7 +2074,7 @@ static void set_wallet_bundle_meta(knishio_atom_t* atom, const char* bundle_hash
 static knishio_error_t init_buffer_common(
     knishio_molecule_t* molecule,
     knishio_wallet_t* middle_wallet,
-    int amount,
+    int64_t amount,
     bool deposit
 ) {
     if (!molecule || !middle_wallet) {
@@ -2073,7 +2093,7 @@ static knishio_error_t init_buffer_common(
         return KNISHIO_ERROR_BALANCE_INSUFFICIENT;
     }
 
-    const int balance = (int)molecule->source_wallet->balance;
+    const int64_t balance = wallet_balance(molecule->source_wallet);
 
     /* Deposit moves V -> B, withdraw moves B -> V. */
     const knishio_isotope_t outer  = deposit ? KNISHIO_ISOTOPE_V : KNISHIO_ISOTOPE_B;
@@ -2099,8 +2119,8 @@ static knishio_error_t init_buffer_common(
 
     /* Source: full-balance debit, so a PARTIAL buffer op still conserves. */
     knishio_atom_t* source_atom = NULL;
-    char source_value[32];
-    snprintf(source_value, sizeof(source_value), "-%d", balance);
+    char source_value[KNISHIO_AMOUNT_BUF];
+    format_amount(source_value, -balance);
 
     knishio_error_t result = knishio_atom_create(
         &source_atom,
@@ -2131,8 +2151,8 @@ static knishio_error_t init_buffer_common(
 
     /* Middle: the buffered (deposit) or withdrawn (withdraw) amount. */
     knishio_atom_t* middle_atom = NULL;
-    char middle_value[32];
-    snprintf(middle_value, sizeof(middle_value), "%d", amount);
+    char middle_value[KNISHIO_AMOUNT_BUF];
+    format_amount(middle_value, amount);
 
     result = knishio_atom_create(
         &middle_atom,
@@ -2157,8 +2177,8 @@ static knishio_error_t init_buffer_common(
 
     /* Remainder: whatever the full-balance debit did not send. */
     knishio_atom_t* remainder_atom = NULL;
-    char remainder_value[32];
-    snprintf(remainder_value, sizeof(remainder_value), "%d", balance - amount);
+    char remainder_value[KNISHIO_AMOUNT_BUF];
+    format_amount(remainder_value, balance - amount);
 
     result = knishio_atom_create(
         &remainder_atom,
@@ -2187,7 +2207,7 @@ static knishio_error_t init_buffer_common(
 knishio_error_t knishio_molecule_init_deposit_buffer(
     knishio_molecule_t* molecule,
     knishio_wallet_t* buffer_wallet,
-    int amount
+    int64_t amount
 ) {
     return init_buffer_common(molecule, buffer_wallet, amount, true);
 }
@@ -2195,7 +2215,7 @@ knishio_error_t knishio_molecule_init_deposit_buffer(
 knishio_error_t knishio_molecule_init_withdraw_buffer(
     knishio_molecule_t* molecule,
     knishio_wallet_t* recipient_wallet,
-    int amount
+    int64_t amount
 ) {
     return init_buffer_common(molecule, recipient_wallet, amount, false);
 }
@@ -2204,11 +2224,13 @@ knishio_error_t knishio_molecule_init_withdraw_buffer(
  * @brief Initialize a token-burn molecule: canonical 3 V-atoms, zero-sum.
  * Mirrors init_value, but the "recipient" is the all-zeros burn bundle (token destruction):
  * the burn-target atom has EMPTY position/address + metaType 'walletBundle' + metaId all-zeros.
- * Pure V (NO ContinuID atom). Requires source_wallet (with balance) + remainder_wallet.
+ * Pure V (NO ContinuID atom). Requires source_wallet (with balance) + remainder_wallet. The
+ * source and remainder atoms carry their wallets' batchId (JS Atom.create takes wallet.batchId);
+ * the burn atom has none.
  */
 knishio_error_t knishio_molecule_init_burn(
     knishio_molecule_t* molecule,
-    int amount
+    int64_t amount
 ) {
     if (!molecule) {
         return KNISHIO_ERROR_INVALID_ARGS;
@@ -2222,8 +2244,8 @@ knishio_error_t knishio_molecule_init_burn(
 
     /* V-atom 1: debit the ENTIRE source balance (UTXO; conservation needs -balance, not -amount) */
     knishio_atom_t* source_atom = NULL;
-    char source_value[32];
-    snprintf(source_value, sizeof(source_value), "-%d", (int)molecule->source_wallet->balance);
+    char source_value[KNISHIO_AMOUNT_BUF];
+    format_amount(source_value, -wallet_balance(molecule->source_wallet));
     knishio_error_t result = knishio_atom_create(
         &source_atom,
         knishio_wallet_get_position(molecule->source_wallet),
@@ -2231,7 +2253,7 @@ knishio_error_t knishio_molecule_init_burn(
         KNISHIO_ISOTOPE_V,
         molecule->source_wallet->token,
         source_value,
-        NULL
+        molecule->source_wallet->batch_id
     );
     if (result != KNISHIO_SUCCESS) {
         return result;
@@ -2247,8 +2269,8 @@ knishio_error_t knishio_molecule_init_burn(
     /* V-atom 2: credit the burn amount to the all-zeros burn address (destruction).
      * Empty position/address (no signing wallet); metaType walletBundle + metaId all-zeros. */
     knishio_atom_t* burn_atom = NULL;
-    char burn_value[32];
-    snprintf(burn_value, sizeof(burn_value), "%d", amount);
+    char burn_value[KNISHIO_AMOUNT_BUF];
+    format_amount(burn_value, amount);
     result = knishio_atom_create(
         &burn_atom,
         "",
@@ -2273,8 +2295,8 @@ knishio_error_t knishio_molecule_init_burn(
 
     /* V-atom 3: remainder back to the source identity */
     knishio_atom_t* remainder_atom = NULL;
-    char remainder_value[32];
-    snprintf(remainder_value, sizeof(remainder_value), "%d", (int)molecule->source_wallet->balance - amount);
+    char remainder_value[KNISHIO_AMOUNT_BUF];
+    format_amount(remainder_value, wallet_balance(molecule->source_wallet) - amount);
     result = knishio_atom_create(
         &remainder_atom,
         knishio_wallet_get_position(molecule->remainder_wallet),
@@ -2282,7 +2304,7 @@ knishio_error_t knishio_molecule_init_burn(
         KNISHIO_ISOTOPE_V,
         molecule->remainder_wallet->token,
         remainder_value,
-        NULL
+        molecule->remainder_wallet->batch_id
     );
     if (result != KNISHIO_SUCCESS) {
         return result;
@@ -2364,7 +2386,7 @@ static char* token_units_to_json(const knishio_token_unit_t* const* units, size_
 knishio_error_t knishio_molecule_init_replenish(
     knishio_molecule_t* molecule,
     const knishio_wallet_t* credited_wallet,
-    int amount,
+    int64_t amount,
     const knishio_token_unit_t* units,
     size_t unit_count
 ) {
@@ -2386,7 +2408,7 @@ knishio_error_t knishio_molecule_init_replenish(
     if (unit_count > 0) {
         snprintf(value, sizeof(value), "%zu", unit_count);
     } else {
-        snprintf(value, sizeof(value), "%d", amount);
+        snprintf(value, sizeof(value), "%" PRId64, amount);
     }
 
     char* units_json = NULL;
@@ -2531,8 +2553,8 @@ knishio_error_t knishio_molecule_init_fuse_token(
     if (knishio_molecule_fusion_error(source, fused_ids, fused_count, new_unit_id)) {
         return KNISHIO_ERROR_TRANSFER_BALANCE;
     }
-    const int balance = (int)source->balance;
-    if (balance < (int)fused_count) {
+    const int64_t balance = wallet_balance(source);
+    if (balance < (int64_t)fused_count) {
         return KNISHIO_ERROR_BALANCE_INSUFFICIENT;
     }
 
@@ -2607,10 +2629,10 @@ knishio_error_t knishio_molecule_init_fuse_token(
         }
     }
 
-    char v_source[32], v_burn[32], v_remainder[32];
-    snprintf(v_source, sizeof(v_source), "-%d", balance);
+    char v_source[KNISHIO_AMOUNT_BUF], v_burn[32], v_remainder[KNISHIO_AMOUNT_BUF];
+    format_amount(v_source, -balance);
     snprintf(v_burn, sizeof(v_burn), "%zu", fused_count - 1);
-    snprintf(v_remainder, sizeof(v_remainder), "%d", balance - (int)fused_count);
+    format_amount(v_remainder, balance - (int64_t)fused_count);
 
     /* 0: V source, -B, carrying the SENT set (the fused units, source order). */
     result = add_bundle_atom(molecule, KNISHIO_ISOTOPE_V, source->position, source->address,

@@ -51,6 +51,26 @@ substantiate a detail, the entry says so instead of guessing.
 - The P (peering) and A (append request) isotopes are now `KNISHIO_ISOTOPE_P`/`KNISHIO_ISOTOPE_A`,
   so molecules carrying them parse (`knishio_molecule_from_json`, served data) and are checked by
   the JS P/A rules instead of being refused as unknown isotopes.
+- Signed bytes now match the JS SDK; each case below changes the molecular hash (and so the
+  signature) of the molecules it covers, and no other SDK reproduced the old C bytes. Digests are
+  pinned against the JS SDK in the new `SignedBytesParity` ctest.
+  - Authorization (U) atoms carry only `encrypt` and `walletPubkey`, as `requestAuthToken` sends
+    them; C also wrote `pubkey` and `characters`.
+  - A molecule created with version `"4"` gives every atom version `"4"` (JS `Molecule.addAtom`),
+    so it hashes the Version 4 view; before, the atoms carried no version. Client operations now
+    create unversioned molecules (they passed the unknown version `"V4"`, which JS drops).
+  - Burn molecules carry the source and remainder wallets' `batchId` (it was dropped).
+  - Amounts are 64-bit: `knishio_molecule_init_value`, `init_values` (now `const int64_t*`),
+    `init_deposit_buffer`, `init_withdraw_buffer`, `init_replenish`, `init_burn`, the
+    `amount` fields of `knishio_create_token_params_t` and `knishio_transfer_recipient_t`, and
+    `knishio_client_deposit_buffer_token`/`withdraw_buffer_token`/`replenish_token` take
+    `int64_t`, and served balances are read with `strtoll`. Values at or above 2^31 were truncated
+    or wrapped (`atoi`, `(int)`, `%d`); a transfer of 9007199254740991 now writes
+    `-9007199254740991`/`9007199254740991`/`0`, and a zero balance debits `0`, not `-0`.
+    Breaking for callers that pass an `int*` to `init_values`.
+- `knishio_generate_bundle_hash()` hashes any secret string, as JS `generateBundleHash` does; it
+  refused anything that was not 2048 hex characters, leaving wallets made from a passphrase
+  without a bundle.
 
 ## [1.6.2] — 2026-10-31
 

@@ -139,7 +139,7 @@ knishio_error_t knishio_client_create_wallet(
 
     error = knishio_molecule_create(
         &molecule, source->secret, source->bundle_hash, source, remainder,
-        knishio_client_get_cell_slug((knishio_client_t*)client), "V4"
+        knishio_client_get_cell_slug((knishio_client_t*)client), NULL
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;

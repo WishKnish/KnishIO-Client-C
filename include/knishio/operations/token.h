@@ -45,7 +45,7 @@ typedef enum {
 typedef struct {
     const char* token;              /**< Token slug/identifier */
     const char* name;               /**< Human-readable token name */
-    int amount;                     /**< Initial supply amount */
+    int64_t amount;                 /**< Initial supply amount */
     knishio_token_fungibility_t fungibility; /**< Token fungibility type */
     const char** units;             /**< Array of unit IDs (for NFTs) */
     size_t unit_count;              /**< Number of units */
@@ -141,7 +141,7 @@ knishio_error_t knishio_client_request_tokens(
 knishio_error_t knishio_client_replenish_token(
     knishio_client_t* client,
     const char* token,
-    int amount,
+    int64_t amount,
     const knishio_token_unit_t* units,
     size_t unit_count,
     knishio_request_tokens_result_t** result

@@ -33,15 +33,12 @@ bool knishio_generate_secret(const char* seed, size_t length, char** secret) {
     return knishio_shake256_hash(seed, output_bits, secret);
 }
 
-/* Updated to support new signature with token and position parameters */
+/* JS generateBundleHash(secret): SHAKE256-256 of the secret string, whatever its form — a
+ * 2048-hex secret, a 64-hex seed or a passphrase all have a bundle hash. token/position are
+ * optional and only validated when given. */
 bool knishio_generate_bundle_hash(const char* secret, const char* token, 
                                   const char* position, char** bundle_hash) {
     if (secret == NULL || bundle_hash == NULL) {
-        return false;
-    }
-    
-    /* Validate secret format and length */
-    if (!knishio_validate_hex(secret, KNISHIO_SECRET_LENGTH)) {
         return false;
     }
     

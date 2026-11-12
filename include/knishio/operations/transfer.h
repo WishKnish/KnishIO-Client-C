@@ -74,7 +74,7 @@ typedef struct {
     const char* bundle_hash;        /**< Recipient bundle hash */
     const char** units;             /**< Array of unit IDs for this recipient (stackable) */
     size_t unit_count;              /**< Number of units for this recipient */
-    int amount;                     /**< Fungible amount (when unit_count == 0) */
+    int64_t amount;                 /**< Fungible amount (when unit_count == 0) */
     const char* batch_id;           /**< Batch ID -> claimable shadow (optional) */
 } knishio_transfer_recipient_t;
 
@@ -219,7 +219,7 @@ knishio_error_t knishio_client_burn_tokens(
 knishio_error_t knishio_client_deposit_buffer_token(
     knishio_client_t* client,
     const char* token,
-    int amount,
+    int64_t amount,
     knishio_transfer_result_t** result
 );
 
@@ -243,7 +243,7 @@ knishio_error_t knishio_client_deposit_buffer_token(
 knishio_error_t knishio_client_withdraw_buffer_token(
     knishio_client_t* client,
     const char* token,
-    int amount,
+    int64_t amount,
     const char* recipient_bundle,
     knishio_transfer_result_t** result
 );

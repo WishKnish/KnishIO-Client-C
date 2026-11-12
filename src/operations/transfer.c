@@ -64,7 +64,7 @@ knishio_error_t knishio_client_transfer_tokens(
         return KNISHIO_ERROR_INVALID_ARGS;  /* can't move units AND an amount */
     }
     /* Units-only stackable transfer → amount = unit count (mirrors transfer_tokens_multi). */
-    int amt = (params->unit_count > 0) ? (int) params->unit_count : (int) params->amount;
+    int64_t amt = (params->unit_count > 0) ? (int64_t) params->unit_count : (int64_t) params->amount;
     if (amt <= 0) {
         return KNISHIO_ERROR_INVALID_ARGS;  /* nothing to transfer */
     }
@@ -134,7 +134,7 @@ knishio_error_t knishio_client_transfer_tokens(
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
-    source->balance = (double) atoi(tok_amount);
+    source->balance = (double) strtoll(tok_amount, NULL, 10);
     if (bw) {
         /* Move the parsed token units onto the (key-bearing) source wallet (re-derived source has
          * none, so a plain assign is safe — ownership transfers from bw, which is freed in cleanup). */
@@ -186,7 +186,7 @@ knishio_error_t knishio_client_transfer_tokens(
     /* 6. Build the molecule + the canonical 3-V-atom value transfer. */
     error = knishio_molecule_create(
         &molecule, user->secret, user->bundle_hash, source, remainder,
-        knishio_client_get_cell_slug(client), "V4"
+        knishio_client_get_cell_slug(client), NULL
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -266,7 +266,7 @@ knishio_error_t knishio_client_transfer_tokens_multi(
     knishio_wallet_t** recipients = NULL;   /* N shadow wallets */
     knishio_wallet_t* remainder = NULL;
     knishio_wallet_t* bw = NULL;            /* Balance wallet (carries the source's tokenUnits) */
-    int* amounts = NULL;
+    int64_t* amounts = NULL;
     const char*** unit_lists = NULL;
     size_t* unit_counts = NULL;
     char* remainder_position = NULL;
@@ -275,7 +275,7 @@ knishio_error_t knishio_client_transfer_tokens_multi(
     knishio_molecule_t* molecule = NULL;
     knishio_graphql_response_t* response = NULL;
 
-    amounts = knishio_calloc(n, sizeof(int));
+    amounts = knishio_calloc(n, sizeof(int64_t));
     unit_lists = knishio_calloc(n, sizeof(const char**));
     unit_counts = knishio_calloc(n, sizeof(size_t));
     recipients = knishio_calloc(n, sizeof(knishio_wallet_t*));
@@ -285,7 +285,7 @@ knishio_error_t knishio_client_transfer_tokens_multi(
     }
 
     /* Per-recipient amount: stackable -> unit_count; fungible -> amount (never both). */
-    int total = 0;
+    int64_t total = 0;
     for (size_t i = 0; i < n; i++) {
         const knishio_transfer_recipient_t* r = &params->recipients[i];
         if (r->unit_count > 0) {
@@ -293,7 +293,7 @@ knishio_error_t knishio_client_transfer_tokens_multi(
                 error = KNISHIO_ERROR_INVALID_ARGS;  /* can't move units AND an amount */
                 goto cleanup;
             }
-            amounts[i] = (int) r->unit_count;
+            amounts[i] = (int64_t) r->unit_count;
         } else {
             amounts[i] = r->amount;
         }
@@ -352,7 +352,7 @@ knishio_error_t knishio_client_transfer_tokens_multi(
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
-    source->balance = (double) atoi(tok_amount);
+    source->balance = (double) strtoll(tok_amount, NULL, 10);
     if (bw) {
         /* Move the parsed token units onto the (key-bearing) source wallet (re-derived source has
          * none, so a plain assign is safe — ownership transfers from bw, which is freed in cleanup). */
@@ -411,7 +411,7 @@ knishio_error_t knishio_client_transfer_tokens_multi(
     /* 6. Build the molecule + the (N+2)-V-atom value transfer. */
     error = knishio_molecule_create(
         &molecule, user->secret, user->bundle_hash, source, remainder,
-        knishio_client_get_cell_slug(client), "V4"
+        knishio_client_get_cell_slug(client), NULL
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -759,7 +759,7 @@ knishio_error_t knishio_client_burn_tokens(
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
-    source->balance = (double) atoi(tok_amount);
+    source->balance = (double) strtoll(tok_amount, NULL, 10);
 
     /* 4. Remainder: a fresh same-token wallet (the change returns to the source identity). */
     if (!knishio_generate_position(&remainder_position)) {
@@ -784,12 +784,12 @@ knishio_error_t knishio_client_burn_tokens(
     /* 5. Build the molecule + the canonical 3-V-atom burn. */
     error = knishio_molecule_create(
         &molecule, user->secret, user->bundle_hash, source, remainder,
-        knishio_client_get_cell_slug(client), "V4"
+        knishio_client_get_cell_slug(client), NULL
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
-    error = knishio_molecule_init_burn(molecule, (int) amount);
+    error = knishio_molecule_init_burn(molecule, (int64_t) amount);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -970,7 +970,7 @@ cleanup:
 knishio_error_t knishio_client_deposit_buffer_token(
     knishio_client_t* client,
     const char* token,
-    int amount,
+    int64_t amount,
     knishio_transfer_result_t** result
 ) {
     if (!client || !token || amount <= 0 || !result) {
@@ -1024,7 +1024,7 @@ knishio_error_t knishio_client_deposit_buffer_token(
 
     error = knishio_molecule_create(
         &molecule, user->secret, user->bundle_hash, source, remainder,
-        knishio_client_get_cell_slug(client), "V4"
+        knishio_client_get_cell_slug(client), NULL
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -1061,7 +1061,7 @@ cleanup:
 knishio_error_t knishio_client_withdraw_buffer_token(
     knishio_client_t* client,
     const char* token,
-    int amount,
+    int64_t amount,
     const char* recipient_bundle,
     knishio_transfer_result_t** result
 ) {
@@ -1118,7 +1118,7 @@ knishio_error_t knishio_client_withdraw_buffer_token(
 
     error = knishio_molecule_create(
         &molecule, user->secret, user->bundle_hash, source, remainder,
-        knishio_client_get_cell_slug(client), "V4"
+        knishio_client_get_cell_slug(client), NULL
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;

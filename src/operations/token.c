@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <inttypes.h>
 
 /* GraphQL mutation templates */
 
@@ -141,7 +142,7 @@ knishio_error_t knishio_client_create_token(
      * molecule->remainder_wallet). */
     error = knishio_molecule_create(
         &molecule, source->secret, source->bundle_hash, source, remainder,
-        knishio_client_get_cell_slug((knishio_client_t*)client), "V4"
+        knishio_client_get_cell_slug((knishio_client_t*)client), NULL
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -205,7 +206,7 @@ knishio_error_t knishio_client_create_token(
         if (is_stackable && params->unit_count > 0) {
             snprintf(amount_str, sizeof(amount_str), "%zu", params->unit_count); /* supply = unit count */
         } else {
-            snprintf(amount_str, sizeof(amount_str), "%d", params->amount);
+            snprintf(amount_str, sizeof(amount_str), "%" PRId64, params->amount);
         }
 
         error = knishio_molecule_init_token_creation(molecule, recipient, amount_str, keys, vals, n);
@@ -378,7 +379,7 @@ static knishio_error_t token_result_from_response(
 knishio_error_t knishio_client_replenish_token(
     knishio_client_t* client,
     const char* token,
-    int amount,
+    int64_t amount,
     const knishio_token_unit_t* units,
     size_t unit_count,
     knishio_request_tokens_result_t** result
@@ -444,7 +445,7 @@ knishio_error_t knishio_client_replenish_token(
     }
 
     error = knishio_molecule_create(&molecule, source->secret, source->bundle_hash, source, remainder,
-                                    knishio_client_get_cell_slug(client), "V4");
+                                    knishio_client_get_cell_slug(client), NULL);
     if (error == KNISHIO_SUCCESS) error = knishio_molecule_init_replenish(molecule, credited, amount, units, unit_count);
     if (error == KNISHIO_SUCCESS) error = knishio_molecule_generate_hash(molecule);
     if (error == KNISHIO_SUCCESS) error = knishio_molecule_sign(molecule, source->bundle_hash, false, true);
@@ -542,7 +543,7 @@ knishio_error_t knishio_client_fuse_token(
     }
 
     error = knishio_molecule_create(&molecule, user->secret, user->bundle_hash, source, remainder,
-                                    knishio_client_get_cell_slug(client), "V4");
+                                    knishio_client_get_cell_slug(client), NULL);
     if (error == KNISHIO_SUCCESS) {
         error = knishio_molecule_init_fuse_token(molecule, recipient, fused_token_unit_ids,
                                                  fused_count, new_token_unit);

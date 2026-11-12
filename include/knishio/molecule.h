@@ -385,13 +385,13 @@ knishio_error_t knishio_molecule_init_meta(
  * Adds V-isotope atoms: source debit, recipient credit, remainder (UTXO pattern)
  * @param molecule Molecule to initialize
  * @param recipient_wallet Recipient wallet
- * @param amount Transfer amount
+ * @param amount Transfer amount (whole number; values are written as JS String(n) writes them)
  * @return KNISHIO_SUCCESS on success, error code on failure
  */
 knishio_error_t knishio_molecule_init_value(
     knishio_molecule_t* molecule,
     knishio_wallet_t* recipient_wallet,
-    int amount
+    int64_t amount
 );
 
 /**
@@ -408,7 +408,7 @@ knishio_error_t knishio_molecule_init_value(
 knishio_error_t knishio_molecule_init_values(
     knishio_molecule_t* molecule,
     knishio_wallet_t** recipient_wallets,
-    const int* amounts,
+    const int64_t* amounts,
     size_t recipient_count
 );
 
@@ -434,7 +434,7 @@ knishio_error_t knishio_molecule_init_values(
 knishio_error_t knishio_molecule_init_deposit_buffer(
     knishio_molecule_t* molecule,
     knishio_wallet_t* buffer_wallet,
-    int amount
+    int64_t amount
 );
 
 /**
@@ -460,7 +460,7 @@ knishio_error_t knishio_molecule_init_deposit_buffer(
 knishio_error_t knishio_molecule_init_withdraw_buffer(
     knishio_molecule_t* molecule,
     knishio_wallet_t* recipient_wallet,
-    int amount
+    int64_t amount
 );
 
 /**
@@ -484,7 +484,7 @@ knishio_error_t knishio_molecule_init_withdraw_buffer(
 knishio_error_t knishio_molecule_init_replenish(
     knishio_molecule_t* molecule,
     const knishio_wallet_t* credited_wallet,
-    int amount,
+    int64_t amount,
     const knishio_token_unit_t* units,
     size_t unit_count
 );
@@ -541,7 +541,7 @@ knishio_error_t knishio_molecule_init_fuse_token(
  */
 knishio_error_t knishio_molecule_init_burn(
     knishio_molecule_t* molecule,
-    int amount
+    int64_t amount
 );
 
 /**
@@ -601,9 +601,10 @@ knishio_error_t knishio_molecule_init_shadow_wallet_claim(
 /**
  * @brief Initialize an authorization molecule (matches JavaScript SDK initAuthorization)
  * Adds a U-isotope atom (signed by molecule->source_wallet; no metaType/metaId; meta =
- * [encrypt, pubkey, characters] in JS order) + an I-isotope ContinuID atom. Used to request
- * a bundle-scoped auth token; the validator extracts the pubkey from the U-atom's walletAddress
- * and issues a JWT (U-isotope is OTS-exempt, but the molecular hash is still verified).
+ * [encrypt, walletPubkey] as KnishIOClient.requestAuthToken sends it, walletPubkey only when the
+ * wallet has an ML-KEM public key) + an I-isotope ContinuID atom. Used to request a bundle-scoped
+ * auth token; the validator issues a JWT for the U-atom's wallet (U-isotope is OTS-exempt, but
+ * the molecular hash is still verified).
  * @param molecule Molecule (must have source_wallet [token "AUTH", or "USER" at the ContinuID pointer] + remainder_wallet set)
  * @param encrypt Whether the session requests encrypted communications (meta "encrypt")
  * @return KNISHIO_SUCCESS on success, error code on failure

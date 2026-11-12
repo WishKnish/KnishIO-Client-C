@@ -266,7 +266,7 @@ static knishio_error_t knishio_propose_profile_auth(
 
     error = knishio_molecule_create(
         &molecule, source->secret, source->bundle_hash, source, remainder,
-        knishio_client_get_cell_slug(client), "V4"
+        knishio_client_get_cell_slug(client), NULL
     );
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;

@@ -568,7 +568,7 @@ knishio_error_t knishio_client_create_molecule(
         source_wallet,
         NULL,  /* remainder wallet */
         cell_slug,
-        "V4"   /* protocol version */
+        NULL   /* unversioned atoms (JS default serverSdkVersion 3) */
     );
 }
 
@@ -787,7 +787,7 @@ knishio_error_t knishio_client_create_meta(
         goto cleanup;
     }
     error = knishio_molecule_create(&molecule, source->secret, source->bundle_hash, source, remainder,
-                                    knishio_client_get_cell_slug(client), "V4");
+                                    knishio_client_get_cell_slug(client), NULL);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }

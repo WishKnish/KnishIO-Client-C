@@ -300,9 +300,12 @@ void test_wallet_error_handling(void) {
     TEST_ASSERT_FALSE(knishio_generate_bundle_hash("secret", "TEST", 
                                                    KNISHIO_FIXED_POSITION, NULL));
     
-    /* Test invalid secret length for bundle generation */
-    TEST_ASSERT_FALSE(knishio_generate_bundle_hash("too_short", "TEST", 
-                                                   KNISHIO_FIXED_POSITION, &output));
+    /* Any secret string has a bundle hash (JS generateBundleHash: SHAKE256-256 of the string).
+     * The digest is the JS SDK's for the same input (paired probe, 2026-11-12). */
+    TEST_ASSERT_TRUE(knishio_generate_bundle_hash("fleet audit passphrase", NULL, NULL, &output));
+    TEST_ASSERT_EQUAL_STRING("3aa43f7ac87489b90185cbe3806277e4b95e1bb9e4155783a3122f9ed4e6dc60", output);
+    knishio_free(output);
+    output = NULL;
     
     /* Test wallet creation with NULL parameters */
     TEST_ASSERT_FALSE(knishio_wallet_create(NULL, "seed", "TEST", NULL));
