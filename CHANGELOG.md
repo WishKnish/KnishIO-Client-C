@@ -34,6 +34,24 @@ substantiate a detail, the entry says so instead of guessing.
   unparsable file now fails `OtsV2Vectors`, and missing fixtures fail `ServedMolecules`; neither test
   can exit as skipped (code 77) any more.
 
+### Fixed
+
+- `knishio_molecule_check()` follows the JS reference verifier (`CheckMolecule.js`). It accepted
+  correctly signed molecules that every other SDK rejects: a negative V value after the first atom,
+  a V atom paying back to the signing address, a V value that is not a number (`atof` read it as
+  0), a V sum within 0.01 of zero (now exactly zero, in the same double arithmetic as JS), M
+  `readPolicy`/`writePolicy` entries that name no meta key or list values other than bundle hashes,
+  `all` or `self`, T atoms missing `token` (or, for `wallet`, `position`/`bundle`) meta, and any R
+  atom (policy keys and rule structure were never checked). Atoms are now checked in index order,
+  so a molecule whose JSON lists atoms out of order verifies like JS instead of failing the
+  signature check, and the per-atom V rules cannot be dodged by reordering. New codes:
+  `KNISHIO_ERROR_TRANSFER_MALFORMED`, `_TO_SELF`, `_BALANCE`, `_REMAINDER`, `KNISHIO_ERROR_POLICY_INVALID`,
+  `KNISHIO_ERROR_RULE_INVALID`, `KNISHIO_ERROR_WRONG_TOKEN_TYPE` (P/A). `knishio_molecule_check_ots()`
+  also reads fragments in index order. Test: `CheckMoleculeRules`.
+- The P (peering) and A (append request) isotopes are now `KNISHIO_ISOTOPE_P`/`KNISHIO_ISOTOPE_A`,
+  so molecules carrying them parse (`knishio_molecule_from_json`, served data) and are checked by
+  the JS P/A rules instead of being refused as unknown isotopes.
+
 ## [1.6.2] — 2026-10-31
 
 ### Fixed

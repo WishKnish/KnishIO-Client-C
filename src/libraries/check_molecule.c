@@ -24,9 +24,18 @@
  * cross-SDK compatibility. Provides comprehensive molecular validation including:
  * - Molecular hash verification
  * - One-time signature (OTS) verification  
- * - All isotope validation (V, M, I, R, C, T, U)
+ * - All isotope validation (V, M, I, R, C, T, U, P, A, B, F)
  * - ContinuID validation
  * - Batch ID validation
+ *
+ * Every rule runs over a view of the atoms sorted by index, as JS sorts them (Atom.sortAtoms):
+ * "the first atom" and "a non-primary atom" mean index order, never the order a peer's JSON
+ * happened to list them in.
+ *
+ * One JS rule is deliberately not ported: isotopeV() with no sender wallet throws
+ * TransferRemainderException when the last V atom's value is non-zero. The validator does not
+ * apply it and knishio_verify_from_server_data() checks served transfers with no sender wallet,
+ * so porting it would reject every served transfer that has a remainder.
  */
 
 #include "knishio/molecule.h"
@@ -40,22 +49,88 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "knishio/meta.h"
 #include <math.h>
 #include <errno.h>
+#include <strings.h>
+
+#include <cjson/cJSON.h>
 
 /* Forward declarations for internal functions */
 static bool check_molecular_hash(const knishio_molecule_t* molecule);
 static knishio_error_t check_ots(const knishio_molecule_t* molecule);
 static bool check_batch_id(const knishio_molecule_t* molecule);
 static bool check_continuid(const knishio_molecule_t* molecule);
-static bool check_isotope_m(const knishio_molecule_t* molecule);
-static bool check_isotope_t(const knishio_molecule_t* molecule);
+static knishio_error_t check_isotope_m(const knishio_molecule_t* molecule);
+static knishio_error_t check_isotope_t(const knishio_molecule_t* molecule);
 static bool check_isotope_c(const knishio_molecule_t* molecule);
 static bool check_isotope_u(const knishio_molecule_t* molecule);
 static bool check_isotope_i(const knishio_molecule_t* molecule);
-static bool check_isotope_r(const knishio_molecule_t* molecule);
-static bool check_isotope_v(const knishio_molecule_t* molecule, const knishio_wallet_t* sender_wallet, knishio_error_t* why);
-static bool check_token_consistency(const knishio_molecule_t* molecule);
+static knishio_error_t check_isotope_r(const knishio_molecule_t* molecule);
+static knishio_error_t check_isotope_p(const knishio_molecule_t* molecule);
+static knishio_error_t check_isotope_a(const knishio_molecule_t* molecule);
+static knishio_error_t check_isotope_v(const knishio_molecule_t* molecule, const knishio_wallet_t* sender_wallet);
+
+static int compare_atom_index(const void* a, const void* b) {
+    const int ia = (*(const knishio_atom_t* const*)a)->index;
+    const int ib = (*(const knishio_atom_t* const*)b)->index;
+    return (ia > ib) - (ia < ib);
+}
+
+/* The aggregated meta value for key (JS Meta.aggregateMeta: a later entry wins). *present is set
+ * when the key exists at all, even with a NULL value. */
+static const char* meta_value(const knishio_atom_t* atom, const char* key, bool* present) {
+    const char* found = NULL;
+    bool seen = false;
+    for (size_t i = 0; i < atom->meta_count; i++) {
+        const knishio_meta_t* m = atom->meta ? atom->meta[i] : NULL;
+        if (m && m->key && strcmp(m->key, key) == 0) {
+            found = m->value;
+            seen = true;
+        }
+    }
+    if (present) *present = seen;
+    return found;
+}
+
+/* JS truthiness of a meta value or atom field: present and not "". */
+static bool truthy(const char* s) {
+    return s && s[0] != '\0';
+}
+
+/* A value as JS Number() reads it: NULL, "" or whitespace is 0; otherwise a decimal number
+ * filling the whole string (surrounding whitespace allowed). Returns false where JS gives NaN;
+ * non-finite values are refused too. */
+static bool js_number(const char* s, double* out) {
+    if (!s) {
+        *out = 0.0;
+        return true;
+    }
+    const char* p = s;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\f' || *p == '\v') p++;
+    if (*p == '\0') {
+        *out = 0.0;
+        return true;
+    }
+    errno = 0;
+    char* end = NULL;
+    const double v = strtod(p, &end);
+    if (end == p || errno == ERANGE || !isfinite(v)) {
+        return false;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r' || *end == '\f' || *end == '\v') end++;
+    if (*end != '\0') {
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
+/* JS strict equality of two nullable strings. */
+static bool same_string(const char* a, const char* b) {
+    if (!a || !b) return a == b;
+    return strcmp(a, b) == 0;
+}
 
 /**
  * @brief Complete molecule verification (matches JavaScript CheckMolecule.verify exactly)
@@ -70,14 +145,7 @@ knishio_error_t knishio_molecule_check(
     const knishio_molecule_t* molecule,
     const knishio_wallet_t* sender_wallet
 ) {
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG knishio_molecule_check: ENTERED function\n");
-#endif
-
     if (!molecule) {
-#if KNISHIO_DEBUG_MODE
-        printf("DEBUG knishio_molecule_check: NULL molecule\n");
-#endif
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
@@ -89,64 +157,55 @@ knishio_error_t knishio_molecule_check(
         return KNISHIO_ERROR_MOLECULAR_HASH_MISSING;
     }
 
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        if (!molecule->atoms[i]) {
+            return KNISHIO_ERROR_ATOMS_MISSING;
+        }
+    }
+
+    /* Every check reads the atoms in index order (JS Atom.sortAtoms), on a view: the caller's
+     * array order is left as it is. */
+    knishio_atom_t** sorted = malloc(sizeof(knishio_atom_t*) * molecule->atom_count);
+    if (!sorted) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+    memcpy(sorted, molecule->atoms, sizeof(knishio_atom_t*) * molecule->atom_count);
+    qsort(sorted, molecule->atom_count, sizeof(knishio_atom_t*), compare_atom_index);
+    knishio_molecule_t view = *molecule;
+    view.atoms = sorted;
+
     /* Order matches JavaScript CheckMolecule.verify. */
-    if (!check_molecular_hash(molecule))   return KNISHIO_ERROR_MOLECULAR_HASH_MISMATCH;
-    const knishio_error_t ots_error = check_ots(molecule);
-    if (ots_error != KNISHIO_SUCCESS)      return ots_error;
-    if (!check_batch_id(molecule))         return KNISHIO_ERROR_BATCH_ID;
-    /* A USER-signed molecule without an I atom: JS CheckMolecule.continuId() throws
-     * AtomsMissingException, and validator 0.6.1 answers "AtomsMissing" — same code here. */
-    if (!check_continuid(molecule))        return KNISHIO_ERROR_ATOMS_MISSING;
-    if (!check_isotope_m(molecule))        return KNISHIO_ERROR_META_MISSING;
-    if (!check_isotope_t(molecule))        return KNISHIO_ERROR_INVALID_STATE;
-    if (!check_isotope_c(molecule))        return KNISHIO_ERROR_INVALID_STATE;
-    if (!check_isotope_u(molecule))        return KNISHIO_ERROR_INVALID_STATE;
-    if (!check_isotope_i(molecule))        return KNISHIO_ERROR_INVALID_STATE;
-    if (!check_isotope_r(molecule))        return KNISHIO_ERROR_INVALID_STATE;
-    /* The V/cross-isotope check reports WHICH way it failed: an unbalanced sum and a
-     * malformed B/F meta shape are different defects and the negative vectors target them
-     * separately. */
-    knishio_error_t v_why = KNISHIO_ERROR_TRANSFER_UNBALANCED;
-    if (!check_isotope_v(molecule, sender_wallet, &v_why)) return v_why;
-    if (!check_token_consistency(molecule)) return KNISHIO_ERROR_TRANSFER_MISMATCHED;
-
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG knishio_molecule_check: Overall validation result: PASS\n");
-#endif
-
-    return KNISHIO_SUCCESS;
-}
-
-/**
- * @brief Every V atom must carry atoms[0]'s token (KNISHIO_ERROR_TRANSFER_MISMATCHED)
- *
- * Matches the JS reference (CheckMolecule.isotopeV, CheckMolecule.js:545-548) and the Rust SDK
- * (check_molecule.rs:558-561): each V atom's token is compared with atoms[0]'s. Every other
- * isotope has its own per-isotope token rule (check_isotope_*: U = AUTH, I/M/C/T = USER). This
- * used to require ALL non-F atoms to share atoms[0]'s token, which rejected every U+I
- * authorization molecule (U = AUTH, I = USER) that the reference and the validator accept.
- */
-static bool check_token_consistency(const knishio_molecule_t* molecule) {
-    const char* first_token = molecule->atoms[0]->token;
-    if (!first_token) {
-        return true;
-    }
-
-    for (size_t i = 1; i < molecule->atom_count; i++) {
-        const knishio_atom_t* atom = molecule->atoms[i];
-        if (!atom || atom->isotope != KNISHIO_ISOTOPE_V || !atom->token) {
-            continue;
-        }
-        if (strcmp(atom->token, first_token) != 0) {
-#if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_token_consistency: FAIL - V atom %zu token '%s' != '%s'\n",
-                   i, atom->token, first_token);
-#endif
-            return false;
+    knishio_error_t err = KNISHIO_SUCCESS;
+    if (!check_molecular_hash(&view)) {
+        err = KNISHIO_ERROR_MOLECULAR_HASH_MISMATCH;
+    } else if ((err = check_ots(&view)) != KNISHIO_SUCCESS) {
+        /* check_ots's own code */
+    } else if (!check_batch_id(&view)) {
+        err = KNISHIO_ERROR_BATCH_ID;
+    } else if (!check_continuid(&view)) {
+        /* A USER-signed molecule without an I atom: JS CheckMolecule.continuId() throws
+         * AtomsMissingException, and validator 0.6.1 answers "AtomsMissing" — same code here. */
+        err = KNISHIO_ERROR_ATOMS_MISSING;
+    } else if ((err = check_isotope_m(&view)) != KNISHIO_SUCCESS
+               || (err = check_isotope_t(&view)) != KNISHIO_SUCCESS) {
+        /* the rule's own code */
+    } else if (!check_isotope_c(&view) || !check_isotope_u(&view) || !check_isotope_i(&view)) {
+        err = KNISHIO_ERROR_INVALID_STATE;
+    } else {
+        /* R, P, A, then B/F and V (each reports which way it failed: an unbalanced sum and a
+         * malformed B/F meta shape are different defects, and the negative vectors target them
+         * separately). */
+        if ((err = check_isotope_r(&view)) == KNISHIO_SUCCESS
+            && (err = check_isotope_p(&view)) == KNISHIO_SUCCESS
+            && (err = check_isotope_a(&view)) == KNISHIO_SUCCESS) {
+            err = check_isotope_v(&view, sender_wallet);
         }
     }
-    return true;
+
+    free(sorted);
+    return err;
 }
+
 
 /**
  * @brief Verify molecular hash matches atom composition
@@ -364,7 +423,23 @@ knishio_error_t knishio_molecule_check_ots(const knishio_molecule_t* molecule) {
     if (molecule->atom_count == 0 || !molecule->atoms) {
         return KNISHIO_ERROR_ATOMS_MISSING;
     }
-    return check_ots(molecule);
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        if (!molecule->atoms[i]) {
+            return KNISHIO_ERROR_ATOMS_MISSING;
+        }
+    }
+    /* Fragments concatenate, and atoms[0] signs, in index order (as knishio_molecule_check). */
+    knishio_atom_t** sorted = malloc(sizeof(knishio_atom_t*) * molecule->atom_count);
+    if (!sorted) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+    memcpy(sorted, molecule->atoms, sizeof(knishio_atom_t*) * molecule->atom_count);
+    qsort(sorted, molecule->atom_count, sizeof(knishio_atom_t*), compare_atom_index);
+    knishio_molecule_t view = *molecule;
+    view.atoms = sorted;
+    const knishio_error_t err = check_ots(&view);
+    free(sorted);
+    return err;
 }
 
 /**
@@ -495,125 +570,106 @@ static bool check_continuid(const knishio_molecule_t* molecule) {
     return true;
 }
 
+/* JS Wallet.isBundleHash: 64 characters of [0-9A-Fa-f]. */
+static bool is_bundle_hash(const char* s) {
+    size_t n = 0;
+    for (; s[n]; n++) {
+        const char c = s[n];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+    return n == 64;
+}
+
 /**
  * @brief Check M-isotope atoms (matches JavaScript isotopeM())
+ *
+ * Meta present and token USER (KNISHIO_ERROR_META_MISSING, as before). A readPolicy/writePolicy
+ * meta is a JSON object; every entry other than readPolicy/writePolicy must name a meta key of
+ * the atom and list only bundle hashes, "all" or "self" (KNISHIO_ERROR_POLICY_INVALID).
  */
-static bool check_isotope_m(const knishio_molecule_t* molecule) {
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_isotope_m: Starting M-isotope validation\n");
-#endif
-    
-    /* Get all M isotope atoms */
-    knishio_atom_t** m_atoms = NULL;
-    size_t m_count = 0;
-    
-    if (knishio_molecule_filter_atoms_by_isotope(molecule, "M", &m_atoms, &m_count) != KNISHIO_SUCCESS) {
-        #if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_isotope_m: FAIL - Could not filter M atoms\n");
-        #endif
-        return false;
-    }
-    
-    /* No M atoms is valid */
-    if (m_count == 0) {
-        free(m_atoms);
-        #if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_isotope_m: PASS - No M atoms to validate\n");
-        #endif
-        return true;
-    }
-    
-    /* Validate each M atom */
-    for (size_t i = 0; i < m_count; i++) {
-        const knishio_atom_t* atom = m_atoms[i];
-        
-        /* Must have meta data */
+static knishio_error_t check_isotope_m(const knishio_molecule_t* molecule) {
+    static const char* const policy_keys[] = { "readPolicy", "writePolicy" };
+
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        const knishio_atom_t* atom = molecule->atoms[i];
+        if (atom->isotope != KNISHIO_ISOTOPE_M) {
+            continue;
+        }
         if (!atom->meta || atom->meta_count < 1) {
-            free(m_atoms);
-            #if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_isotope_m: FAIL - M atom missing meta data\n");
-            #endif
-            return false;
+            return KNISHIO_ERROR_META_MISSING;
         }
-        
-        /* Must have USER token */
-        if (!atom->token || strcmp(atom->token, "USER") != 0) {
-            free(m_atoms);
-            #if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_isotope_m: FAIL - M atom token must be USER, got: %s\n", atom->token ? atom->token : "NULL");
-            #endif
-            return false;
+        if (!same_string(atom->token, "USER")) {
+            return KNISHIO_ERROR_META_MISSING;
         }
-        
-        /* Note: Policy validation is complex and may require JSON parsing
-         * For now, we validate the basic structure */
+
+        for (size_t k = 0; k < 2; k++) {
+            const char* text = meta_value(atom, policy_keys[k], NULL);
+            if (!truthy(text)) {
+                continue;
+            }
+            cJSON* policy = cJSON_Parse(text);
+            bool valid = cJSON_IsObject(policy);
+            const cJSON* entry = NULL;
+            if (valid) {
+                cJSON_ArrayForEach(entry, policy) {
+                    if (strcmp(entry->string, "readPolicy") == 0 || strcmp(entry->string, "writePolicy") == 0) {
+                        continue;
+                    }
+                    bool present = false;
+                    meta_value(atom, entry->string, &present);
+                    if (!present || !cJSON_IsArray(entry)) {
+                        valid = false;
+                        break;
+                    }
+                    const cJSON* v = NULL;
+                    cJSON_ArrayForEach(v, entry) {
+                        const char* s = cJSON_IsString(v) ? v->valuestring : NULL;
+                        if (!s || !(is_bundle_hash(s) || strcmp(s, "all") == 0 || strcmp(s, "self") == 0)) {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if (!valid) {
+                        break;
+                    }
+                }
+            }
+            cJSON_Delete(policy);
+            if (!valid) {
+                return KNISHIO_ERROR_POLICY_INVALID;
+            }
+        }
     }
-    
-    free(m_atoms);
-    #if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_isotope_m: PASS\n");
-    #endif
-    return true;
+    return KNISHIO_SUCCESS;
 }
 
 /**
  * @brief Check T-isotope atoms (matches JavaScript isotopeT())
+ *
+ * A metaType of "wallet" (any case) needs truthy position and bundle meta, and every T atom a
+ * truthy token meta (KNISHIO_ERROR_META_MISSING); then token USER and index 0
+ * (KNISHIO_ERROR_INVALID_STATE, as before).
  */
-static bool check_isotope_t(const knishio_molecule_t* molecule) {
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_isotope_t: Starting T-isotope validation\n");
-#endif
-    
-    /* Get all T isotope atoms */
-    knishio_atom_t** t_atoms = NULL;
-    size_t t_count = 0;
-    
-    if (knishio_molecule_filter_atoms_by_isotope(molecule, "T", &t_atoms, &t_count) != KNISHIO_SUCCESS) {
-        #if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_isotope_t: FAIL - Could not filter T atoms\n");
-        #endif
-        return false;
-    }
-    
-    /* No T atoms is valid */
-    if (t_count == 0) {
-        free(t_atoms);
-        #if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_isotope_t: PASS - No T atoms to validate\n");
-        #endif
-        return true;
-    }
-    
-    /* Validate each T atom */
-    for (size_t i = 0; i < t_count; i++) {
-        const knishio_atom_t* atom = t_atoms[i];
-        
-        /* Must have USER token */
-        if (!atom->token || strcmp(atom->token, "USER") != 0) {
-            free(t_atoms);
-            #if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_isotope_t: FAIL - T atom token must be USER, got: %s\n", atom->token ? atom->token : "NULL");
-            #endif
-            return false;
+static knishio_error_t check_isotope_t(const knishio_molecule_t* molecule) {
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        const knishio_atom_t* atom = molecule->atoms[i];
+        if (atom->isotope != KNISHIO_ISOTOPE_T) {
+            continue;
         }
-        
-        /* Must have index equal to 0 */
-        if (atom->index != 0) {
-            free(t_atoms);
-            #if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_isotope_t: FAIL - T atom index must be 0, got: %d\n", atom->index);
-            #endif
-            return false;
+        if (atom->meta_type && strcasecmp(atom->meta_type, "wallet") == 0
+            && (!truthy(meta_value(atom, "position", NULL)) || !truthy(meta_value(atom, "bundle", NULL)))) {
+            return KNISHIO_ERROR_META_MISSING;
         }
-        
-        /* Note: Meta validation for wallet-specific fields would require more complex parsing */
+        if (!truthy(meta_value(atom, "token", NULL))) {
+            return KNISHIO_ERROR_META_MISSING;
+        }
+        if (!same_string(atom->token, "USER") || atom->index != 0) {
+            return KNISHIO_ERROR_INVALID_STATE;
+        }
     }
-    
-    free(t_atoms);
-    #if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_isotope_t: PASS\n");
-    #endif
-    return true;
+    return KNISHIO_SUCCESS;
 }
 
 /**
@@ -791,218 +847,292 @@ static bool check_isotope_i(const knishio_molecule_t* molecule) {
     return true;
 }
 
+/* JS truthiness of a parsed JSON value: absent, null, false, 0 and "" are falsy; [] and {} are not. */
+static bool cjson_truthy(const cJSON* v) {
+    return v && !cJSON_IsNull(v) && !cJSON_IsFalse(v)
+        && !(cJSON_IsNumber(v) && v->valuedouble == 0)
+        && !(cJSON_IsString(v) && v->valuestring[0] == '\0');
+}
+
+/* JS Rule.toObject() on one parsed rule: condition and callback must be truthy (MetaMissing);
+ * every condition needs truthy key, value and comparison and every callback a truthy action
+ * (RuleArgumentException), and a truthy callback amount must be numeric (CodeException); both
+ * of those are KNISHIO_ERROR_RULE_INVALID here. */
+static knishio_error_t check_rule_item(const cJSON* item) {
+    const cJSON* condition = cJSON_IsObject(item) ? cJSON_GetObjectItemCaseSensitive(item, "condition") : NULL;
+    const cJSON* callback = cJSON_IsObject(item) ? cJSON_GetObjectItemCaseSensitive(item, "callback") : NULL;
+    if (!cjson_truthy(condition) || !cjson_truthy(callback)) {
+        return KNISHIO_ERROR_META_MISSING;
+    }
+    if (!cJSON_IsArray(condition) || !cJSON_IsArray(callback)) {
+        return KNISHIO_ERROR_RULE_INVALID;
+    }
+    const cJSON* c = NULL;
+    cJSON_ArrayForEach(c, condition) {
+        if (!cJSON_IsObject(c)
+            || !cjson_truthy(cJSON_GetObjectItemCaseSensitive(c, "key"))
+            || !cjson_truthy(cJSON_GetObjectItemCaseSensitive(c, "value"))
+            || !cjson_truthy(cJSON_GetObjectItemCaseSensitive(c, "comparison"))) {
+            return KNISHIO_ERROR_RULE_INVALID;
+        }
+    }
+    cJSON_ArrayForEach(c, callback) {
+        if (!cJSON_IsObject(c) || !cjson_truthy(cJSON_GetObjectItemCaseSensitive(c, "action"))) {
+            return KNISHIO_ERROR_RULE_INVALID;
+        }
+        const cJSON* amount = cJSON_GetObjectItemCaseSensitive(c, "amount");
+        if (cjson_truthy(amount) && !cJSON_IsNumber(amount)) {
+            /* JS isNumeric: a string with non-blank content that Number() reads */
+            double ignored = 0;
+            const char* s = cJSON_IsString(amount) ? amount->valuestring : NULL;
+            while (s && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')) s++;
+            if (!s || *s == '\0' || !js_number(amount->valuestring, &ignored)) {
+                return KNISHIO_ERROR_RULE_INVALID;
+            }
+        }
+    }
+    return KNISHIO_SUCCESS;
+}
+
 /**
  * @brief Check R-isotope atoms (matches JavaScript isotopeR())
+ *
+ * A policy meta may only carry read/write; a rule meta is a non-empty JSON array of rules, each
+ * with a condition and a callback list (Rule.toObject).
  */
-static bool check_isotope_r(const knishio_molecule_t* molecule) {
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_isotope_r: Starting R-isotope validation\n");
-#endif
-    
-    /* Get all R isotope atoms */
-    knishio_atom_t** r_atoms = NULL;
-    size_t r_count = 0;
-    
-    if (knishio_molecule_filter_atoms_by_isotope(molecule, "R", &r_atoms, &r_count) != KNISHIO_SUCCESS) {
-        #if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_isotope_r: FAIL - Could not filter R atoms\n");
-        #endif
-        return false;
-    }
-    
-    /* No R atoms is valid */
-    if (r_count == 0) {
-        free(r_atoms);
-        #if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_isotope_r: PASS - No R atoms to validate\n");
-        #endif
-        return true;
-    }
-    
-    /* Validate each R atom */
-    for (size_t i = 0; i < r_count; i++) {
-        const knishio_atom_t* atom = r_atoms[i];
-        
-        /* Note: R atoms require complex policy and rule validation that would need JSON parsing
-         * For now, we perform basic structural validation */
-        
-        /* Must have meta data for policy/rule validation */
-        if (!atom->meta || atom->meta_count < 1) {
-            #if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_isotope_r: WARNING - R atom %zu has no meta data\n", i);
-            #endif
-            /* Continue rather than fail, as this might be a valid case */
+static knishio_error_t check_isotope_r(const knishio_molecule_t* molecule) {
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        const knishio_atom_t* atom = molecule->atoms[i];
+        if (atom->isotope != KNISHIO_ISOTOPE_R) {
+            continue;
+        }
+
+        const char* policy_text = meta_value(atom, "policy", NULL);
+        if (truthy(policy_text)) {
+            cJSON* policy = cJSON_Parse(policy_text);
+            if (!policy) {
+                return KNISHIO_ERROR_POLICY_INVALID;
+            }
+            bool mixed = !cJSON_IsObject(policy);
+            const cJSON* entry = NULL;
+            cJSON_ArrayForEach(entry, policy) {
+                if (!entry->string || (strcmp(entry->string, "read") != 0 && strcmp(entry->string, "write") != 0)) {
+                    mixed = true;
+                }
+            }
+            cJSON_Delete(policy);
+            if (mixed) {
+                return KNISHIO_ERROR_META_MISSING;   /* "Mixing rules with politics!" */
+            }
+        }
+
+        const char* rule_text = meta_value(atom, "rule", NULL);
+        if (truthy(rule_text)) {
+            cJSON* rules = cJSON_Parse(rule_text);
+            if (!rules) {
+                return KNISHIO_ERROR_RULE_INVALID;
+            }
+            knishio_error_t err = cJSON_IsArray(rules) ? KNISHIO_SUCCESS : KNISHIO_ERROR_META_MISSING;
+            const cJSON* item = NULL;
+            if (err == KNISHIO_SUCCESS) {
+                cJSON_ArrayForEach(item, rules) {
+                    if ((err = check_rule_item(item)) != KNISHIO_SUCCESS) {
+                        break;
+                    }
+                }
+            }
+            if (err == KNISHIO_SUCCESS && cJSON_GetArraySize(rules) < 1) {
+                err = KNISHIO_ERROR_META_MISSING;    /* "No rules!" */
+            }
+            cJSON_Delete(rules);
+            if (err != KNISHIO_SUCCESS) {
+                return err;
+            }
         }
     }
-    
-    free(r_atoms);
-    #if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_isotope_r: PASS\n");
-    #endif
-    return true;
+    return KNISHIO_SUCCESS;
+}
+
+/** @brief Check P-isotope (peering) atoms (matches JavaScript isotopeP()) */
+static knishio_error_t check_isotope_p(const knishio_molecule_t* molecule) {
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        const knishio_atom_t* atom = molecule->atoms[i];
+        if (atom->isotope != KNISHIO_ISOTOPE_P) {
+            continue;
+        }
+        if (!same_string(atom->token, "USER")) {
+            return KNISHIO_ERROR_WRONG_TOKEN_TYPE;
+        }
+        if (!truthy(meta_value(atom, "peerHost", NULL))) {
+            return KNISHIO_ERROR_META_MISSING;
+        }
+    }
+    return KNISHIO_SUCCESS;
+}
+
+/** @brief Check A-isotope (append request) atoms (matches JavaScript isotopeA()) */
+static knishio_error_t check_isotope_a(const knishio_molecule_t* molecule) {
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        const knishio_atom_t* atom = molecule->atoms[i];
+        if (atom->isotope != KNISHIO_ISOTOPE_A) {
+            continue;
+        }
+        if (!same_string(atom->token, "USER")) {
+            return KNISHIO_ERROR_WRONG_TOKEN_TYPE;
+        }
+        if (!truthy(atom->meta_type) || !truthy(atom->meta_id)
+            || !truthy(meta_value(atom, "action", NULL))) {
+            return KNISHIO_ERROR_META_MISSING;
+        }
+    }
+    return KNISHIO_SUCCESS;
+}
+
+/* B or F atoms (JavaScript isotopeB()/isotopeF(), CheckMolecule.js:410-501): each carries
+ * metaType "walletBundle" and a non-empty metaId, and a numeric value (F: not negative); when
+ * the molecule has V atoms, the V values then these atoms' values sum to exactly zero.
+ *
+ * This is what check_isotope_v() relies on when it skips the V-only sum. The two are a single
+ * unit: shipping the skip without this check is not a relaxed rule, it is a deleted one. That
+ * exact mistake was found live in three sibling SDKs, each accepting molecules that created or
+ * destroyed value while passing every positive test. */
+static knishio_error_t check_cross_isotope(const knishio_molecule_t* molecule, knishio_isotope_t isotope) {
+    bool any_v = false;
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        const knishio_atom_t* atom = molecule->atoms[i];
+        if (atom->isotope == KNISHIO_ISOTOPE_V) {
+            any_v = true;
+        }
+        if (atom->isotope != isotope) {
+            continue;
+        }
+        /* Empty is rejected, but "0" is a legitimate metaId, so test the string, not its value. */
+        if (!same_string(atom->meta_type, "walletBundle") || !truthy(atom->meta_id)) {
+            return KNISHIO_ERROR_META_MISSING;
+        }
+        double value = 0;
+        if (!js_number(atom->value, &value)) {
+            return KNISHIO_ERROR_TRANSFER_MALFORMED;
+        }
+        if (isotope == KNISHIO_ISOTOPE_F && value < 0) {
+            return KNISHIO_ERROR_TRANSFER_MALFORMED;
+        }
+    }
+    if (!any_v) {
+        return KNISHIO_SUCCESS;
+    }
+
+    /* JS sums [...vAtoms, ...crossAtoms] and skips a value that is NaN (the V rule rejects it). */
+    double sum = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        const knishio_isotope_t want = pass == 0 ? KNISHIO_ISOTOPE_V : isotope;
+        for (size_t i = 0; i < molecule->atom_count; i++) {
+            double value = 0;
+            if (molecule->atoms[i]->isotope == want && js_number(molecule->atoms[i]->value, &value)) {
+                sum += value;
+            }
+        }
+    }
+    return sum == 0 ? KNISHIO_SUCCESS : KNISHIO_ERROR_TRANSFER_UNBALANCED;
 }
 
 /**
- * @brief Check V-isotope atoms with balance validation (JavaScript pattern)
- * Matches JavaScript CheckMolecule.isotopeV()
+ * @brief Check V-isotope atoms (matches JavaScript CheckMolecule.isotopeV(), with isotopeB()
+ *        and isotopeF() run first as JS verify() does)
+ *
+ * Every V atom: a numeric value (TRANSFER_MALFORMED), atoms[0]'s token (TRANSFER_MISMATCHED);
+ * after the first atom, not negative (TRANSFER_MALFORMED) and not atoms[0]'s address
+ * (TRANSFER_TO_SELF). Without B/F atoms the V values sum to exactly zero (TRANSFER_UNBALANCED),
+ * in the same double arithmetic JS uses. With a sender wallet, its balance plus atoms[0]'s value
+ * must not be negative (TRANSFER_BALANCE) and, without B/F atoms, must equal that sum
+ * (TRANSFER_REMAINDER). A 2-atom V transfer signed by a V atom takes JS's short path: same
+ * token, non-negative end atom, the two values summing to zero.
  */
-/* Conservation and meta-shape validation for cross-isotope (B/F) molecules.
- *
- * Mirrors isotopeB()/isotopeF() in the JavaScript reference (CheckMolecule.js:395-486):
- *   - every B/F atom carries metaType "walletBundle" and a non-empty metaId
- *   - F atom values must not be negative
- *   - the combined V+B (and V+F) values sum to zero
- *
- * This is what check_isotope_v() delegates to when it skips the V-only sum. The two are a
- * single unit: shipping the skip without this check is not a relaxed rule, it is a deleted
- * one. That exact mistake was found live in three sibling SDKs, each accepting molecules
- * that created or destroyed value while passing every positive test.
- *
- * Note C had no F validation at all before this, so it covers F as well as B.
- */
-static bool check_cross_isotope_conservation(const knishio_molecule_t* molecule, knishio_error_t* why) {
-    long double cross_sum = 0.0L;
-    bool saw_cross_isotope = false;
+static knishio_error_t check_isotope_v(const knishio_molecule_t* molecule, const knishio_wallet_t* sender_wallet) {
+    bool has_b = false;
+    bool has_f = false;
+    size_t v_count = 0;
+    const knishio_atom_t* end_atom = NULL;
+    for (size_t i = 0; i < molecule->atom_count; i++) {
+        const knishio_atom_t* a = molecule->atoms[i];
+        has_b = has_b || a->isotope == KNISHIO_ISOTOPE_B;
+        has_f = has_f || a->isotope == KNISHIO_ISOTOPE_F;
+        if (a->isotope == KNISHIO_ISOTOPE_V) {
+            v_count++;
+            end_atom = a;
+        }
+    }
 
+    knishio_error_t err = KNISHIO_SUCCESS;
+    if (has_b && (err = check_cross_isotope(molecule, KNISHIO_ISOTOPE_B)) != KNISHIO_SUCCESS) {
+        return err;
+    }
+    if (has_f && (err = check_cross_isotope(molecule, KNISHIO_ISOTOPE_F)) != KNISHIO_SUCCESS) {
+        return err;
+    }
+    if (v_count == 0) {
+        return KNISHIO_SUCCESS;
+    }
+
+    const bool has_cross_isotope = has_b || has_f;
+    const knishio_atom_t* first_atom = molecule->atoms[0];
+
+    if (!has_cross_isotope && first_atom->isotope == KNISHIO_ISOTOPE_V && v_count == 2) {
+        double first_value = 0;
+        double end_value = 0;
+        if (!same_string(first_atom->token, end_atom->token)) {
+            return KNISHIO_ERROR_TRANSFER_MISMATCHED;
+        }
+        if (!js_number(end_atom->value, &end_value) || end_value < 0) {
+            return KNISHIO_ERROR_TRANSFER_MALFORMED;
+        }
+        if (!js_number(first_atom->value, &first_value) || first_value + end_value != 0) {
+            return KNISHIO_ERROR_TRANSFER_UNBALANCED;
+        }
+        return KNISHIO_SUCCESS;
+    }
+
+    double sum = 0;
     for (size_t i = 0; i < molecule->atom_count; i++) {
         const knishio_atom_t* atom = molecule->atoms[i];
-        if (!atom) {
+        if (atom->isotope != KNISHIO_ISOTOPE_V) {
             continue;
         }
-
-        const bool is_b = (atom->isotope == KNISHIO_ISOTOPE_B);
-        const bool is_f = (atom->isotope == KNISHIO_ISOTOPE_F);
-
-        if (is_b || is_f) {
-            saw_cross_isotope = true;
-
-            /* B/F atoms must reference a wallet bundle. Empty is rejected, but "0" is a
-             * legitimate metaId, so test the string rather than its truthiness. */
-            if (!atom->meta_type || strcmp(atom->meta_type, "walletBundle") != 0 ||
-                !atom->meta_id || atom->meta_id[0] == '\0') {
-                if (why) *why = KNISHIO_ERROR_META_MISSING;
-                return false;
+        double value = 0;
+        if (!js_number(atom->value, &value)) {
+            return KNISHIO_ERROR_TRANSFER_MALFORMED;
+        }
+        if (!same_string(atom->token, first_atom->token)) {
+            return KNISHIO_ERROR_TRANSFER_MISMATCHED;
+        }
+        if (i > 0) {
+            if (value < 0) {
+                return KNISHIO_ERROR_TRANSFER_MALFORMED;
             }
-        } else if (atom->isotope != KNISHIO_ISOTOPE_V) {
-            continue;
-        }
-
-        /* V, B and F atom values all participate in the combined conservation sum */
-        if (!atom->value || atom->value[0] == '\0') {
-            continue;
-        }
-
-        /* A value that will not parse is malformed, not zero */
-        errno = 0;
-        char* end = NULL;
-        long double parsed = strtold(atom->value, &end);
-        if (end == atom->value || *end != '\0' || errno == ERANGE) {
-            return false;
-        }
-
-        /* F atoms must not be negative */
-        if (is_f && parsed < 0.0L) {
-            return false;
-        }
-
-        cross_sum += parsed;
-    }
-
-    if (!saw_cross_isotope) {
-        return true;
-    }
-
-    return fabsl(cross_sum) < 1e-9L;
-}
-
-static bool check_isotope_v(const knishio_molecule_t* molecule, const knishio_wallet_t* sender_wallet, knishio_error_t* why) {
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_isotope_v: Checking V-isotope atoms\n");
-#endif
-
-    /* Cross-isotope (buffer-family) molecules carry the balancing weight on B/F atoms, so
-     * the V-only sum below is non-zero by construction and must be skipped. Skipping is
-     * only sound because check_cross_isotope_conservation() enforces conservation over the
-     * combined set — the gate and the delegate are added together, deliberately. */
-    bool has_cross_isotope = false;
-    for (size_t i = 0; i < molecule->atom_count; i++) {
-        knishio_atom_t* a = knishio_molecule_get_atom(molecule, i);
-        if (a && (a->isotope == KNISHIO_ISOTOPE_B || a->isotope == KNISHIO_ISOTOPE_F)) {
-            has_cross_isotope = true;
-            break;
-        }
-    }
-
-    if (has_cross_isotope) {
-        return check_cross_isotope_conservation(molecule, why);
-    }
-
-    /* Count V-isotope atoms */
-    int v_atom_count = 0;
-    double total_value = 0.0;
-
-    for (size_t i = 0; i < molecule->atom_count; i++) {
-        knishio_atom_t* atom = knishio_molecule_get_atom(molecule, i);
-        if (atom && atom->isotope == KNISHIO_ISOTOPE_V) {
-            v_atom_count++;
-
-            if (atom->value) {
-                double value = atof(atom->value);
-                total_value += value;
-#if KNISHIO_DEBUG_MODE
-                printf("DEBUG check_isotope_v: V-atom %d value: %.1f\n", v_atom_count-1, value);
-#endif
+            if (same_string(atom->wallet_address, first_atom->wallet_address)) {
+                return KNISHIO_ERROR_TRANSFER_TO_SELF;
             }
         }
+        sum += value;
     }
 
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_isotope_v: Total V atoms: %d, Total value: %.1f\n", v_atom_count, total_value);
-#endif
-
-    /* All atoms must sum to zero for balanced transaction (JavaScript logic) */
-    bool balanced = (fabs(total_value) < 0.01);
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_isotope_v: Balanced: %s\n", balanced ? "YES" : "NO");
-#endif
-
-    if (!balanced) {
-#if KNISHIO_DEBUG_MODE
-        printf("DEBUG check_isotope_v: FAIL - Transaction not balanced\n");
-#endif
-        return false;
+    if (!has_cross_isotope && sum != 0) {
+        return KNISHIO_ERROR_TRANSFER_UNBALANCED;
     }
 
-    /* Additional sender wallet validation if provided (JavaScript logic) */
-    if (sender_wallet && v_atom_count > 0) {
-        knishio_atom_t* first_atom = knishio_molecule_get_atom(molecule, 0);
-        if (first_atom && first_atom->isotope == KNISHIO_ISOTOPE_V && first_atom->value) {
-            double first_value = atof(first_atom->value);
-            double remainder = sender_wallet->balance + first_value;
-
-#if KNISHIO_DEBUG_MODE
-            printf("DEBUG check_isotope_v: Sender balance: %.1f, First atom: %.1f, Remainder: %.1f\n",
-                   sender_wallet->balance, first_value, remainder);
-#endif
-
-            if (remainder < 0) {
-#if KNISHIO_DEBUG_MODE
-                printf("DEBUG check_isotope_v: FAIL - Insufficient balance\n");
-#endif
-                return false;
-            }
-
-            if (fabs(remainder - total_value) > 0.01) {
-#if KNISHIO_DEBUG_MODE
-                printf("DEBUG check_isotope_v: FAIL - Remainder mismatch\n");
-#endif
-                return false;
-            }
+    if (sender_wallet) {
+        double first_value = 0;
+        if (!js_number(first_atom->value, &first_value)) {
+            return KNISHIO_ERROR_TRANSFER_MALFORMED;
+        }
+        const double remainder = sender_wallet->balance + first_value;
+        if (remainder < 0) {
+            return KNISHIO_ERROR_TRANSFER_BALANCE;
+        }
+        if (!has_cross_isotope && remainder != sum) {
+            return KNISHIO_ERROR_TRANSFER_REMAINDER;
         }
     }
 
-#if KNISHIO_DEBUG_MODE
-    printf("DEBUG check_isotope_v: PASS\n");
-#endif
-    return true;
+    return KNISHIO_SUCCESS;
 }

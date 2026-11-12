@@ -50,7 +50,9 @@ static const char* isotope_strings[] = {
     "L",     /* KNISHIO_ISOTOPE_L */
     "S",     /* KNISHIO_ISOTOPE_S */
     "F",     /* KNISHIO_ISOTOPE_F */
-    "B"      /* KNISHIO_ISOTOPE_B */
+    "B",     /* KNISHIO_ISOTOPE_B */
+    "P",     /* KNISHIO_ISOTOPE_P */
+    "A"      /* KNISHIO_ISOTOPE_A */
 };
 
 /* Adding an isotope to the enum without adding its string here is a compile error. */
@@ -643,7 +645,7 @@ knishio_error_t knishio_atom_from_cjson(const cJSON *json, knishio_atom_t **atom
     if (!cJSON_IsString(isotope_item) || !cJSON_IsString(token_item)) {
         return KNISHIO_ERROR_INVALID_JSON;
     }
-    /* Unknown includes the JS-only P and A isotopes, which knishio_isotope_t cannot represent. */
+    /* An isotope string knishio_isotope_t does not represent is malformed input. */
     knishio_isotope_t isotope = knishio_isotope_from_string(isotope_item->valuestring);
     if (isotope == KNISHIO_ISOTOPE_UNKNOWN) {
         return KNISHIO_ERROR_INVALID_JSON;

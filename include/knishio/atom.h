@@ -47,6 +47,8 @@ typedef enum {
     KNISHIO_ISOTOPE_S,            /**< Shadow isotope */
     KNISHIO_ISOTOPE_F,            /**< Fusion isotope */
     KNISHIO_ISOTOPE_B,            /**< Buffer isotope (buffer deposit/withdraw) */
+    KNISHIO_ISOTOPE_P,            /**< Peering isotope (peer registration) */
+    KNISHIO_ISOTOPE_A,            /**< Append-request isotope */
 
     /* Sentinel. Keep last.
      *

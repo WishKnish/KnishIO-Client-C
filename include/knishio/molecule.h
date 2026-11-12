@@ -310,7 +310,7 @@ knishio_error_t knishio_molecule_to_json(
  *     knishio_atom_t.created_at_ms (and in whole seconds in created_at). The molecule-level
  *     createdAt (not hashed) is truncated to seconds.
  *   - index: required non-negative integer (it orders the atoms for hashing)
- *   - isotope: must be one knishio_isotope_t represents (the JS-only P and A are rejected)
+ *   - isotope: must be one knishio_isotope_t represents (V C M U I R T L S F B P A)
  *   - sourceWallet, remainderWallet, status and unknown keys are ignored
  * @param json_input Molecule JSON
  * @param molecule Receives the molecule; NULL on failure

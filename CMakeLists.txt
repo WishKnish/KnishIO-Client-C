@@ -728,6 +728,19 @@ if(KNISHIO_BUILD_TESTS)
     set_tests_properties(ServedMolecules PROPERTIES
         LABELS "vectors;parity;signature")
 
+    # The JS reference verifier rules (CheckMolecule.js) on correctly signed molecules: V value,
+    # self-transfer and token rules, index-ordered checking, and the M/T/R/P/A isotope rules.
+    add_executable(check_molecule_rules tests/check_molecule_rules.c)
+    target_link_libraries(check_molecule_rules PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(check_molecule_rules PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(check_molecule_rules PRIVATE _GNU_SOURCE)
+    add_test(NAME CheckMoleculeRules COMMAND check_molecule_rules)
+    set_tests_properties(CheckMoleculeRules PROPERTIES LABELS "check;signature")
+
     # The cross-SDK signingWallet forgery fixture (built with JS 1.2.1): knishio_molecule_check()
     # accepts B's normally signed molecule and rejects B's signature under victim A's address even
     # when atoms[0] names B in a signingWallet meta. Fixture path is baked in.

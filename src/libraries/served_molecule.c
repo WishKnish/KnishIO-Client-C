@@ -299,7 +299,7 @@ static knishio_error_t build_served_atom(const cJSON *json, const char *version_
         return fail(why, KNISHIO_ERROR_INVALID_JSON, "invalid served molecule: atom field type");
     }
 
-    /* Unknown includes the JS-only P and A isotopes, which knishio_isotope_t cannot represent. */
+    /* An isotope string knishio_isotope_t does not represent is malformed input. */
     const knishio_isotope_t isotope = isotope_text ? knishio_isotope_from_string(isotope_text)
                                                    : KNISHIO_ISOTOPE_UNKNOWN;
     if (isotope == KNISHIO_ISOTOPE_UNKNOWN) {
