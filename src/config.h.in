@@ -34,7 +34,6 @@
 
 /* Build options */
 #cmakedefine01 KNISHIO_BUILD_TESTS
-#cmakedefine01 KNISHIO_BUILD_EXAMPLES
 #cmakedefine01 KNISHIO_BUILD_DOCS
 #cmakedefine01 KNISHIO_ENABLE_COVERAGE
 #cmakedefine01 KNISHIO_ENABLE_SANITIZERS

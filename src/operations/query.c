@@ -6,7 +6,10 @@
 #include "knishio/knishio.h"
 #include "knishio/operations/query.h"
 #include "knishio/graphql.h"
-#include "knishio/json/builder.h"
+#include "knishio/client_ops.h"
+#include "knishio/utils/memory.h"
+
+#include <cjson/cJSON.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -77,81 +80,21 @@ static const char* QUERY_ACTIVE_SESSION =
     "}";
 
 
-/* Helper to build JSON array from string array */
-static char* build_json_array(const char** items, size_t count) {
-    if (!items || count == 0) return NULL;
-    
-    /* Calculate required size */
-    size_t total_size = 3; /* for [] and null terminator */
-    for (size_t i = 0; i < count; i++) {
-        total_size += strlen(items[i]) + 3; /* for quotes and comma */
+/* Add a string variable when present; false only on allocation failure. */
+static bool add_string(cJSON* vars, const char* key, const char* value) {
+    return !value || cJSON_AddStringToObject(vars, key, value) != NULL;
+}
+
+/* Add a string-array variable when non-empty; false only on allocation failure. */
+static bool add_string_array(cJSON* vars, const char* key, const char** values, size_t count) {
+    if (!values || count == 0) return true;
+    cJSON* array = cJSON_AddArrayToObject(vars, key);
+    for (size_t i = 0; array && i < count; i++) {
+        if (!cJSON_AddItemToArray(array, cJSON_CreateString(values[i] ? values[i] : ""))) {
+            return false;
+        }
     }
-    
-    char* json_array = malloc(total_size);
-    if (!json_array) return NULL;
-    
-    strcpy(json_array, "[");
-    for (size_t i = 0; i < count; i++) {
-        if (i > 0) strcat(json_array, ",");
-        strcat(json_array, "\"");
-        strcat(json_array, items[i]);
-        strcat(json_array, "\"");
-    }
-    strcat(json_array, "]");
-    
-    return json_array;
-}
-
-/* Helper to add field to variables JSON */
-static void add_json_field(char* json, const char* key, const char* value, bool* first) {
-    if (!value) return;
-    
-    if (!*first) strcat(json, ",");
-    strcat(json, "\"");
-    strcat(json, key);
-    strcat(json, "\":\"");
-    strcat(json, value);
-    strcat(json, "\"");
-    *first = false;
-}
-
-/* Helper to add array field to variables JSON */
-static void add_json_array_field(char* json, const char* key, const char** values, size_t count, bool* first) {
-    if (!values || count == 0) return;
-    
-    char* json_array = build_json_array(values, count);
-    if (!json_array) return;
-    
-    if (!*first) strcat(json, ",");
-    strcat(json, "\"");
-    strcat(json, key);
-    strcat(json, "\":");
-    strcat(json, json_array);
-    *first = false;
-    
-    free(json_array);
-}
-
-/* Helper to add boolean field to variables JSON */
-static void add_json_bool_field(char* json, const char* key, bool value, bool* first) {
-    if (!*first) strcat(json, ",");
-    strcat(json, "\"");
-    strcat(json, key);
-    strcat(json, "\":");
-    strcat(json, value ? "true" : "false");
-    *first = false;
-}
-
-/* Helper to add integer field to variables JSON */
-static void add_json_int_field(char* json, const char* key, int value, bool* first) {
-    if (!*first) strcat(json, ",");
-    strcat(json, "\"");
-    strcat(json, key);
-    strcat(json, "\":");
-    char int_str[32];
-    snprintf(int_str, sizeof(int_str), "%d", value);
-    strcat(json, int_str);
-    *first = false;
+    return array != NULL;
 }
 
 /* Query atoms by various parameters */
@@ -164,47 +107,43 @@ knishio_error_t knishio_client_query_atom(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     
-    /* Build variables JSON - allocate large buffer for complex query */
-    char* variables = malloc(4096);
+    /* Build variables JSON (cJSON escapes every value and sizes the text) */
+    cJSON* vars = cJSON_CreateObject();
+    bool built = vars
+        && add_string_array(vars, "molecularHashes", params->molecular_hashes, params->molecular_hash_count)
+        && add_string(vars, "molecularHash", params->molecular_hash)
+        && add_string_array(vars, "bundleHashes", params->bundle_hashes, params->bundle_hash_count)
+        && add_string(vars, "bundleHash", params->bundle_hash)
+        && add_string_array(vars, "positions", params->positions, params->position_count)
+        && add_string(vars, "position", params->position)
+        && add_string_array(vars, "walletAddresses", params->wallet_addresses, params->wallet_address_count)
+        && add_string(vars, "walletAddress", params->wallet_address)
+        && add_string_array(vars, "isotopes", params->isotopes, params->isotope_count)
+        && add_string(vars, "isotope", params->isotope)
+        && add_string_array(vars, "tokenSlugs", params->token_slugs, params->token_slug_count)
+        && add_string(vars, "tokenSlug", params->token_slug)
+        && add_string_array(vars, "cellSlugs", params->cell_slugs, params->cell_slug_count)
+        && add_string(vars, "cellSlug", params->cell_slug)
+        && add_string_array(vars, "batchIds", params->batch_ids, params->batch_id_count)
+        && add_string(vars, "batchId", params->batch_id)
+        && add_string_array(vars, "values", params->values, params->value_count)
+        && add_string(vars, "value", params->value)
+        && add_string_array(vars, "metaTypes", params->meta_types, params->meta_type_count)
+        && add_string(vars, "metaType", params->meta_type)
+        && add_string_array(vars, "metaIds", params->meta_ids, params->meta_id_count)
+        && add_string(vars, "metaId", params->meta_id)
+        && add_string_array(vars, "indexes", params->indexes, params->index_count)
+        && add_string(vars, "index", params->index)
+        && add_string(vars, "filter", params->filter)
+        && cJSON_AddBoolToObject(vars, "latest", params->latest)
+        && (params->limit <= 0 || cJSON_AddNumberToObject(vars, "limit", params->limit))
+        && (params->offset <= 0 || cJSON_AddNumberToObject(vars, "offset", params->offset));
+    char* variables = built ? cJSON_PrintUnformatted(vars) : NULL;
+    cJSON_Delete(vars);
     if (!variables) {
         return KNISHIO_ERROR_MEMORY;
     }
-    
-    strcpy(variables, "{");
-    bool first = true;
-    
-    /* Add all possible parameters */
-    add_json_array_field(variables, "molecularHashes", params->molecular_hashes, params->molecular_hash_count, &first);
-    add_json_field(variables, "molecularHash", params->molecular_hash, &first);
-    add_json_array_field(variables, "bundleHashes", params->bundle_hashes, params->bundle_hash_count, &first);
-    add_json_field(variables, "bundleHash", params->bundle_hash, &first);
-    add_json_array_field(variables, "positions", params->positions, params->position_count, &first);
-    add_json_field(variables, "position", params->position, &first);
-    add_json_array_field(variables, "walletAddresses", params->wallet_addresses, params->wallet_address_count, &first);
-    add_json_field(variables, "walletAddress", params->wallet_address, &first);
-    add_json_array_field(variables, "isotopes", params->isotopes, params->isotope_count, &first);
-    add_json_field(variables, "isotope", params->isotope, &first);
-    add_json_array_field(variables, "tokenSlugs", params->token_slugs, params->token_slug_count, &first);
-    add_json_field(variables, "tokenSlug", params->token_slug, &first);
-    add_json_array_field(variables, "cellSlugs", params->cell_slugs, params->cell_slug_count, &first);
-    add_json_field(variables, "cellSlug", params->cell_slug, &first);
-    add_json_array_field(variables, "batchIds", params->batch_ids, params->batch_id_count, &first);
-    add_json_field(variables, "batchId", params->batch_id, &first);
-    add_json_array_field(variables, "values", params->values, params->value_count, &first);
-    add_json_field(variables, "value", params->value, &first);
-    add_json_array_field(variables, "metaTypes", params->meta_types, params->meta_type_count, &first);
-    add_json_field(variables, "metaType", params->meta_type, &first);
-    add_json_array_field(variables, "metaIds", params->meta_ids, params->meta_id_count, &first);
-    add_json_field(variables, "metaId", params->meta_id, &first);
-    add_json_array_field(variables, "indexes", params->indexes, params->index_count, &first);
-    add_json_field(variables, "index", params->index, &first);
-    add_json_field(variables, "filter", params->filter, &first);
-    add_json_bool_field(variables, "latest", params->latest, &first);
-    if (params->limit > 0) add_json_int_field(variables, "limit", params->limit, &first);
-    if (params->offset > 0) add_json_int_field(variables, "offset", params->offset, &first);
-    
-    strcat(variables, "}");
-    
+
     /* Execute GraphQL query */
     knishio_graphql_response_t* response = NULL;
     knishio_graphql_operation_t operation = {
@@ -214,15 +153,11 @@ knishio_error_t knishio_client_query_atom(
         .requires_auth = false,
         .is_mutation = false
     };
-    
-    knishio_error_t error = knishio_graphql_execute(
-        (knishio_graphql_client_t*)client,
-        &operation,
-        &response
-    );
-    
-    free(variables);
-    
+
+    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
+
+    cJSON_free(variables);
+
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
@@ -265,11 +200,17 @@ knishio_error_t knishio_client_query_active_session(
     }
     
     /* Build variables JSON */
-    char variables[512];
-    snprintf(variables, sizeof(variables), 
-        "{\"bundleHash\":\"%s\",\"metaType\":\"%s\",\"metaId\":\"%s\"}",
-        params->bundle_hash, params->meta_type, params->meta_id);
-    
+    cJSON* vars = cJSON_CreateObject();
+    bool built = vars
+        && add_string(vars, "bundleHash", params->bundle_hash)
+        && add_string(vars, "metaType", params->meta_type)
+        && add_string(vars, "metaId", params->meta_id);
+    char* variables = built ? cJSON_PrintUnformatted(vars) : NULL;
+    cJSON_Delete(vars);
+    if (!variables) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+
     /* Execute GraphQL query */
     knishio_graphql_response_t* response = NULL;
     knishio_graphql_operation_t operation = {
@@ -279,12 +220,9 @@ knishio_error_t knishio_client_query_active_session(
         .requires_auth = false,
         .is_mutation = false
     };
-    
-    knishio_error_t error = knishio_graphql_execute(
-        (knishio_graphql_client_t*)client,
-        &operation,
-        &response
-    );
+
+    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
+    cJSON_free(variables);
     
     if (error != KNISHIO_SUCCESS) {
         return error;
@@ -308,6 +246,24 @@ knishio_error_t knishio_client_query_active_session(
     knishio_graphql_response_free(response);
     *result = session_result;
     return KNISHIO_SUCCESS;
+}
+
+void knishio_query_atom_result_free(knishio_query_atom_result_t* result) {
+    if (!result) return;
+    for (size_t i = 0; result->atoms && i < result->atom_count; i++) {
+        knishio_atom_free_deep(result->atoms[i]);
+    }
+    free(result->atoms);
+    knishio_free(result->response);
+    knishio_free(result->error_message);
+    free(result);
+}
+
+void knishio_query_active_session_result_free(knishio_query_active_session_result_t* result) {
+    if (!result) return;
+    knishio_free(result->response);
+    knishio_free(result->error_message);
+    free(result);
 }
 
 

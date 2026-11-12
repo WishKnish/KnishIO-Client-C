@@ -58,8 +58,13 @@ static knishio_error_t mem_set_item(knishio_storage_backend_t *backend, const ch
     pthread_mutex_lock(&state->lock);
     for (size_t i = 0; i < state->count; i++) {
         if (strcmp(state->pairs[i].key, key) == 0) {
+            char *copy = strdup(value);
+            if (!copy) {
+                pthread_mutex_unlock(&state->lock);
+                return KNISHIO_ERROR_MEMORY;
+            }
             free(state->pairs[i].value);
-            state->pairs[i].value = strdup(value);
+            state->pairs[i].value = copy;
             pthread_mutex_unlock(&state->lock);
             return KNISHIO_SUCCESS;
         }
@@ -76,8 +81,16 @@ static knishio_error_t mem_set_item(knishio_storage_backend_t *backend, const ch
         state->capacity = new_cap;
     }
 
-    state->pairs[state->count].key = strdup(key);
-    state->pairs[state->count].value = strdup(value);
+    char *key_copy = strdup(key);
+    char *value_copy = strdup(value);
+    if (!key_copy || !value_copy) {
+        free(key_copy);
+        free(value_copy);
+        pthread_mutex_unlock(&state->lock);
+        return KNISHIO_ERROR_MEMORY;
+    }
+    state->pairs[state->count].key = key_copy;
+    state->pairs[state->count].value = value_copy;
     state->count++;
     pthread_mutex_unlock(&state->lock);
     return KNISHIO_SUCCESS;
@@ -257,8 +270,13 @@ static knishio_error_t file_set_item(knishio_storage_backend_t *backend, const c
     bool updated = false;
     for (size_t i = 0; i < state->count; i++) {
         if (strcmp(state->pairs[i].key, key) == 0) {
+            char *copy = strdup(value);
+            if (!copy) {
+                pthread_mutex_unlock(&state->lock);
+                return KNISHIO_ERROR_MEMORY;
+            }
             free(state->pairs[i].value);
-            state->pairs[i].value = strdup(value);
+            state->pairs[i].value = copy;
             updated = true;
             break;
         }
@@ -275,8 +293,16 @@ static knishio_error_t file_set_item(knishio_storage_backend_t *backend, const c
             state->pairs = new_pairs;
             state->capacity = new_cap;
         }
-        state->pairs[state->count].key = strdup(key);
-        state->pairs[state->count].value = strdup(value);
+        char *key_copy = strdup(key);
+        char *value_copy = strdup(value);
+        if (!key_copy || !value_copy) {
+            free(key_copy);
+            free(value_copy);
+            pthread_mutex_unlock(&state->lock);
+            return KNISHIO_ERROR_MEMORY;
+        }
+        state->pairs[state->count].key = key_copy;
+        state->pairs[state->count].value = value_copy;
         state->count++;
     }
 

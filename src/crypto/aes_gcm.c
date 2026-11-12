@@ -7,9 +7,11 @@
 
 #include "knishio/crypto/aes_gcm.h"
 #include "knishio/error/context.h"
+#include "knishio/utils/memory.h"
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,6 +32,10 @@ knishio_error_t knishio_aes_gcm_encrypt(
 ) {
     if (!plaintext || !key || !ciphertext_out || !ciphertext_len_out) {
         return KNISHIO_ERROR_NULL_POINTER;
+    }
+    /* EVP takes an int length, and the IV + tag are added to the output size */
+    if (plaintext_len > (size_t)INT_MAX - AES_GCM_IV_SIZE - AES_GCM_TAG_SIZE) {
+        return KNISHIO_ERROR_INVALID_ARGS;
     }
 
     EVP_CIPHER_CTX *ctx = NULL;
@@ -78,7 +84,7 @@ knishio_error_t knishio_aes_gcm_encrypt(
     }
 
     /* Encrypt plaintext */
-    if (EVP_EncryptUpdate(ctx, output + AES_GCM_IV_SIZE, &len, plaintext, plaintext_len) != 1) {
+    if (EVP_EncryptUpdate(ctx, output + AES_GCM_IV_SIZE, &len, plaintext, (int)plaintext_len) != 1) {
         goto cleanup;
     }
     ciphertext_len = len;
@@ -132,8 +138,9 @@ knishio_error_t knishio_aes_gcm_decrypt(
         return KNISHIO_ERROR_NULL_POINTER;
     }
 
-    /* Validate minimum length: IV + tag */
-    if (ciphertext_len < AES_GCM_IV_SIZE + AES_GCM_TAG_SIZE) {
+    /* Validate minimum length: IV + tag; EVP takes an int length */
+    if (ciphertext_len < AES_GCM_IV_SIZE + AES_GCM_TAG_SIZE
+        || ciphertext_len - AES_GCM_IV_SIZE - AES_GCM_TAG_SIZE > (size_t)INT_MAX) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
@@ -178,7 +185,7 @@ knishio_error_t knishio_aes_gcm_decrypt(
     }
 
     /* Decrypt ciphertext */
-    if (EVP_DecryptUpdate(ctx, plaintext, &len, encrypted_data, encrypted_len) != 1) {
+    if (EVP_DecryptUpdate(ctx, plaintext, &len, encrypted_data, (int)encrypted_len) != 1) {
         goto cleanup;
     }
     plaintext_len = len;
@@ -211,6 +218,8 @@ cleanup:
         EVP_CIPHER_CTX_free(ctx);
     }
     if (plaintext) {
+        /* Unauthenticated plaintext (tag failure) never outlives this call */
+        knishio_secure_zero(plaintext, encrypted_len + 1);
         free(plaintext);
     }
     return result;
@@ -227,6 +236,9 @@ knishio_error_t knishio_aes_gcm_encrypt_iv(
 ) {
     if (!plaintext || !key || !iv || !ciphertext_out || !ciphertext_len_out) {
         return KNISHIO_ERROR_NULL_POINTER;
+    }
+    if (plaintext_len > (size_t)INT_MAX - AES_GCM_TAG_SIZE || iv_len > (size_t)INT_MAX) {
+        return KNISHIO_ERROR_INVALID_ARGS;
     }
 
     EVP_CIPHER_CTX *ctx = NULL;
@@ -304,7 +316,8 @@ knishio_error_t knishio_aes_gcm_decrypt_iv(
         return KNISHIO_ERROR_NULL_POINTER;
     }
 
-    if (ciphertext_len < AES_GCM_TAG_SIZE) {
+    if (ciphertext_len < AES_GCM_TAG_SIZE || ciphertext_len - AES_GCM_TAG_SIZE > (size_t)INT_MAX
+        || iv_len > (size_t)INT_MAX) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
@@ -369,6 +382,8 @@ cleanup:
         EVP_CIPHER_CTX_free(ctx);
     }
     if (plaintext) {
+        /* Unauthenticated plaintext (tag failure) never outlives this call */
+        knishio_secure_zero(plaintext, encrypted_len + 1);
         free(plaintext);
     }
     return result;

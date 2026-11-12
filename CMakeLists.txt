@@ -27,7 +27,6 @@ add_compile_definitions(_GNU_SOURCE)
 
 # Build options
 option(KNISHIO_BUILD_TESTS "Build tests" ON)  # knishio_tests is fully green (SHAKE256 + molecule + wallet + cross-SDK suites, fixtures refreshed cycles 37-38). Run via ctest or ./build/knishio_tests. c_self_test (cross-SDK parity) is built unconditionally.
-option(KNISHIO_BUILD_EXAMPLES "Build examples" OFF)  # examples reference disabled subsystems (graphql/subscriptions/auth) — never linked
 option(KNISHIO_BUILD_DOCS "Build documentation" OFF)
 option(KNISHIO_ENABLE_COVERAGE "Enable code coverage" OFF)
 option(KNISHIO_ENABLE_SANITIZERS "Enable sanitizers" OFF)
@@ -174,13 +173,9 @@ set(KNISHIO_SOURCES
     src/policy_meta.c
     src/policy/rule.c
 
-    # Authentication system
+    # Guest fingerprint
     src/fingerprint.c
-    # src/client_auth.c  # Temporarily disabled - compilation errors
-    
-    # JavaScript SDK equivalent constructors  
-    # src/js_equivalent_constructors.c  # Temporarily disabled - need error code fixes
-    
+
     # Utilities
     src/utils/memory.c
     src/utils/string.c
@@ -208,8 +203,7 @@ set(KNISHIO_SOURCES
     src/json/serializers.c
     
     # HTTP/GraphQL communication
-    src/http.c  # Simple implementation - focused on essential functionality
-    # src/http/client.c  # Enhanced implementation - disabled due to structure conflicts
+    src/http.c
     src/graphql.c
     src/graphql/query.c
     src/graphql/mutation.c
@@ -218,18 +212,12 @@ set(KNISHIO_SOURCES
     # WebSocket implementation (conditional)
     ${WEBSOCKET_SOURCES}
     
-    # Complete GraphQL operations system
-    # src/query/queries.c  # Temporarily disabled - needs JSON API fixes
-    # src/mutation/mutations.c  # Temporarily disabled - needs JSON API fixes
-    # src/subscribe/subscriptions.c  # Temporarily disabled - needs JSON API fixes
-    # src/operations/graphql_operations.c  # Temporarily disabled - needs JSON API fixes
-    
+
     # Response system
     src/response/response.c
     src/response/response_types.c
     src/response/response_balance.c
     src/response/response_wallet_list.c
-    # src/response/response_continu_id.c  # Temporarily disabled - needs JSON API fixes
     src/response/responses.c
     
     # Error handling
@@ -478,9 +466,8 @@ if(KNISHIO_BUILD_TESTS)
     enable_testing()
     
     # Define test executables
-    # Single-main consistent set. test_json.c/test_auth_system.c/test_graphql_operations.c
-    # each define their own main() (duplicate-main link error) — omitted; resurrecting the
-    # broader suites (memory/string/error/bigint/signature/perf/leak) is a follow-up.
+    # Single-main consistent set. test_json.c defines its own main() (duplicate-main link
+    # error) and is not built.
     set(TEST_SOURCES
         tests/test_main.c
         tests/test_shake256.c
@@ -524,37 +511,12 @@ if(KNISHIO_BUILD_TESTS)
     add_test(NAME filter_matching_nothing_fails
              COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:knishio_tests>
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/expect_filter_no_match_fails.cmake)
-endif()
 
-# Examples
-if(KNISHIO_BUILD_EXAMPLES)
-    # Auth demo example
-    add_executable(auth_demo examples/auth_demo.c)
-    target_link_libraries(auth_demo PRIVATE knishio-client)
-    target_include_directories(auth_demo PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-    
-    # GraphQL operations example
-    add_executable(graphql_operations_example examples/graphql_operations_example.c)
-    target_link_libraries(graphql_operations_example PRIVATE knishio-client)
-    target_include_directories(graphql_operations_example PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-    
-    
-    # Other examples (if they exist)
-    file(GLOB EXAMPLE_FILES examples/*.c)
-    foreach(EXAMPLE_FILE ${EXAMPLE_FILES})
-        get_filename_component(EXAMPLE_NAME ${EXAMPLE_FILE} NAME_WE)
-        if(NOT EXAMPLE_NAME STREQUAL "auth_demo" AND NOT EXAMPLE_NAME STREQUAL "graphql_operations_example")
-            add_executable(${EXAMPLE_NAME} ${EXAMPLE_FILE})
-            target_link_libraries(${EXAMPLE_NAME} PRIVATE knishio-client)
-            target_include_directories(${EXAMPLE_NAME} PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/include
-            )
-        endif()
-    endforeach()
+    # Every function an installed header declares is defined by the library.
+    add_test(NAME HeaderSymbols
+             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/packaging/check-header-symbols.sh
+                     ${CMAKE_CURRENT_SOURCE_DIR}/include $<TARGET_FILE:knishio-client-static>)
+    set_tests_properties(HeaderSymbols PROPERTIES LABELS "packaging;headers")
 endif()
 
 # C SDK Self-Test executable removed - only working self-test is maintained
@@ -804,6 +766,23 @@ if(KNISHIO_BUILD_TESTS)
     add_test(NAME PhaseBClientOps COMMAND phaseb_client_ops)
     set_tests_properties(PhaseBClientOps PROPERTIES LABELS "phaseb;token;buffer;check" TIMEOUT 120)
 
+    # Client operations against a loopback GraphQL stub: every operation goes through the
+    # client transport (o1), variables and molecule JSON are sized from their content (s2),
+    # identifier/policy/rule molecules are real and pass the SDK check (o2), and guest auth uses
+    # a random per-process fingerprint and the guest wallet's ML-KEM key (o3).
+    add_executable(client_operations_loopback tests/client_operations_loopback.c)
+    target_link_libraries(client_operations_loopback PRIVATE
+        knishio-client-static
+        m
+        ${CMAKE_THREAD_LIBS_INIT}
+    )
+    target_include_directories(client_operations_loopback PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(client_operations_loopback PRIVATE _GNU_SOURCE)
+    foreach(section o1 s2 o2 o3)
+        add_test(NAME ClientOperationsLoopback_${section} COMMAND client_operations_loopback ${section})
+        set_tests_properties(ClientOperationsLoopback_${section} PROPERTIES LABELS "client;loopback" TIMEOUT 180)
+    endforeach()
+
     # Secret storage envelope tests (AES-256-GCM + PBKDF2 cross-SDK envelope, camelCase metadata, memory and file backends)
     add_executable(test_secret_storage tests/test_secret_storage.c)
     target_link_libraries(test_secret_storage PRIVATE
@@ -925,7 +904,6 @@ message(STATUS "  CURL: ${CURL_FOUND}")
 message(STATUS "  cJSON: ${CJSON_FOUND}")
 message(STATUS "  kcore: ${KNISHIO_USE_KCORE}")
 message(STATUS "  Build tests: ${KNISHIO_BUILD_TESTS}")
-message(STATUS "  Build examples: ${KNISHIO_BUILD_EXAMPLES}")
 message(STATUS "  Build docs: ${KNISHIO_BUILD_DOCS}")
 message(STATUS "  Coverage: ${KNISHIO_ENABLE_COVERAGE}")
 message(STATUS "  Sanitizers: ${KNISHIO_ENABLE_SANITIZERS}")

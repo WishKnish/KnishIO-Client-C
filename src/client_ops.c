@@ -24,6 +24,20 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include <cjson/cJSON.h>
+
+/* GraphQL variables {"k1":v1[,"k2":v2]} built with cJSON (escaped, sized to fit); a NULL value
+ * or key is left out. Caller frees with cJSON_free; NULL on allocation failure. */
+static char* string_variables(const char* k1, const char* v1, const char* k2, const char* v2) {
+    cJSON* vars = cJSON_CreateObject();
+    bool ok = vars
+        && (!k1 || !v1 || cJSON_AddStringToObject(vars, k1, v1))
+        && (!k2 || !v2 || cJSON_AddStringToObject(vars, k2, v2));
+    char* text = ok ? cJSON_PrintUnformatted(vars) : NULL;
+    cJSON_Delete(vars);
+    return text;
+}
+
 static void client_clear_storage_options(knishio_client_t* client) {
     if (!client) return;
     if (client->auth_state.storage_label) {
@@ -401,13 +415,13 @@ knishio_error_t knishio_client_get_source_wallet(
     }
 
     /* No ledger wallet to inherit from: a new key at the client's OTS version. */
-    knishio_error_t result = knishio_wallet_create_with_ots_version(
+    knishio_error_t result = knishio_wallet_create_with_mlkem_param(
         wallet,
         secret,
         token ? token : "USER",
         KNISHIO_FIXED_POSITION,
-        knishio_client_get_ots_version(client)
-    ) ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
+        knishio_client_get_ots_version(client),
+        knishio_client_mlkem_param(client)) ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
 
     client_release_secret(secret, secret_len, owned);
     return result;
@@ -455,8 +469,9 @@ knishio_error_t knishio_client_get_source_wallet_continuid(
         error = knishio_client_own_wallet_at(client, secret, tok, cid->wallet->position,
                                              cid->wallet->address, wallet);
     } else {
-        error = knishio_wallet_create_with_ots_version(wallet, secret, tok, KNISHIO_FIXED_POSITION,
-                                                       knishio_client_get_ots_version(client))
+        error = knishio_wallet_create_with_mlkem_param(wallet, secret, tok, KNISHIO_FIXED_POSITION,
+                                                       knishio_client_get_ots_version(client),
+                                                       knishio_client_mlkem_param(client))
             ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     }
 
@@ -535,7 +550,8 @@ knishio_error_t knishio_client_own_wallet_at(
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
-    return knishio_wallet_create_with_ots_version(wallet, secret, token, position, ots_version)
+    return knishio_wallet_create_with_mlkem_param(wallet, secret, token, position, ots_version,
+                                                  knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
 }
 
@@ -621,8 +637,7 @@ knishio_error_t knishio_client_propose_molecule(
         .is_mutation = true
     };
     
-    /* Submit through a proper graphql client (built from the client; auth token propagates),
-     * not the old (knishio_graphql_client_t*)client cast. */
+    /* Submit through the client transport (auth token, TLS settings, CipherHash). */
     error = knishio_client_execute_graphql(client, &operation, &response);
     knishio_free(variables);
     
@@ -686,6 +701,67 @@ knishio_error_t knishio_client_submit_molecule(
     return error;
 }
 
+knishio_error_t knishio_client_continuid_molecule(
+    knishio_client_t* client,
+    knishio_wallet_t** source,
+    knishio_wallet_t** remainder,
+    knishio_molecule_t** molecule
+) {
+    if (!client || !source || !remainder || !molecule) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    *source = NULL;
+    *remainder = NULL;
+    *molecule = NULL;
+
+    knishio_error_t error = knishio_client_get_source_wallet_continuid(client, "USER", source);
+    char* position = NULL;
+    if (error == KNISHIO_SUCCESS && !knishio_generate_position(&position)) {
+        error = KNISHIO_ERROR_CRYPTO;
+    }
+    if (error == KNISHIO_SUCCESS
+        && !knishio_wallet_create_with_mlkem_param(remainder, (*source)->secret, "USER", position,
+                                                   knishio_client_successor_ots_version(client, (*source)->ots_version),
+                                                   knishio_client_mlkem_param(client))) {
+        error = KNISHIO_ERROR_CRYPTO;
+    }
+    knishio_free(position);
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_molecule_create(molecule, (*source)->secret, (*source)->bundle_hash, *source, *remainder,
+                                        knishio_client_get_cell_slug(client), NULL);
+    }
+    if (error != KNISHIO_SUCCESS) {
+        knishio_molecule_free_deep(*molecule);
+        knishio_wallet_free(*remainder);
+        knishio_wallet_free(*source);
+        *molecule = NULL;
+        *remainder = NULL;
+        *source = NULL;
+    }
+    return error;
+}
+
+knishio_error_t knishio_client_sign_and_submit(
+    knishio_client_t* client,
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* source,
+    const char* operation_name,
+    const char* mutation,
+    knishio_graphql_response_t** response
+) {
+    if (!client || !molecule || !source || !response) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    knishio_error_t error = knishio_molecule_generate_hash(molecule);
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_molecule_sign(molecule, source->bundle_hash, false, true);
+    }
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_client_submit_molecule(client, molecule, operation_name, mutation, response);
+    }
+    return error;
+}
+
 /* Query batch information */
 knishio_error_t knishio_client_query_batch(
     knishio_client_t* client,
@@ -710,12 +786,13 @@ knishio_error_t knishio_client_query_batch(
         "  }"
         "}";
     
-    /* Build variables */
-    char variables[256];
-    snprintf(variables, sizeof(variables), "{\"batchId\":\"%s\"}", batch_id);
-    
-    /* Execute query */
-    return knishio_client_execute_query(client, query, variables, result);
+    char* variables = string_variables("batchId", batch_id, NULL, NULL);
+    if (!variables) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+    knishio_error_t error = knishio_client_execute_query(client, query, variables, result);
+    cJSON_free(variables);
+    return error;
 }
 
 /* Query batch history */
@@ -741,12 +818,13 @@ knishio_error_t knishio_client_query_batch_history(
         "  }"
         "}";
     
-    /* Build variables */
-    char variables[256];
-    snprintf(variables, sizeof(variables), "{\"batchId\":\"%s\"}", batch_id);
-    
-    /* Execute query */
-    return knishio_client_execute_query(client, query, variables, result);
+    char* variables = string_variables("batchId", batch_id, NULL, NULL);
+    if (!variables) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+    knishio_error_t error = knishio_client_execute_query(client, query, variables, result);
+    cJSON_free(variables);
+    return error;
 }
 
 /* Create metadata: an M atom signed by the USER wallet at the ContinuID pointer plus the
@@ -780,8 +858,9 @@ knishio_error_t knishio_client_create_meta(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", remainder_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, source->secret, "USER", remainder_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -856,19 +935,13 @@ knishio_error_t knishio_client_query_meta(
         "  }"
         "}";
     
-    /* Build variables */
-    char variables[512];
-    if (meta_id) {
-        snprintf(variables, sizeof(variables), 
-                "{\"metaType\":\"%s\",\"metaId\":\"%s\"}", 
-                meta_type, meta_id);
-    } else {
-        snprintf(variables, sizeof(variables), 
-                "{\"metaType\":\"%s\"}", meta_type);
+    char* variables = string_variables("metaType", meta_type, "metaId", meta_id);
+    if (!variables) {
+        return KNISHIO_ERROR_MEMORY;
     }
-    
-    /* Execute query */
-    return knishio_client_execute_query(client, query, variables, result);
+    knishio_error_t error = knishio_client_execute_query(client, query, variables, result);
+    cJSON_free(variables);
+    return error;
 }
 
 /* Execute raw GraphQL query */
@@ -892,9 +965,7 @@ knishio_error_t knishio_client_execute_query(
         .is_mutation = false
     };
     
-    /* Cast client to GraphQL client for now */
-    knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
-    knishio_error_t error = knishio_graphql_execute(graphql_client, &operation, &response);
+    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
     
     if (error != KNISHIO_SUCCESS) {
         return error;
@@ -933,9 +1004,7 @@ knishio_error_t knishio_client_execute_mutation(
         .is_mutation = true
     };
     
-    /* Cast client to GraphQL client for now */
-    knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
-    knishio_error_t error = knishio_graphql_execute(graphql_client, &operation, &response);
+    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
     
     if (error != KNISHIO_SUCCESS) {
         return error;

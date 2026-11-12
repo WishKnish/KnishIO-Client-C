@@ -42,7 +42,10 @@ bool knishio_base64_encode(const unsigned char* data, size_t data_len, char** ba
         return false;
     }
 
-    /* Calculate output length */
+    /* 4 output characters per 3 input bytes, plus the terminator, must fit in size_t */
+    if (data_len > (SIZE_MAX / 4 - 1) * 3) {
+        return false;
+    }
     size_t output_len = 4 * ((data_len + 2) / 3);
     
     /* Allocate output buffer (+1 for null terminator) */
@@ -213,6 +216,10 @@ bool knishio_base64_to_hex(const char* base64_str, char** hex_output) {
     }
 
     /* Convert binary to hex */
+    if (bin_len > (SIZE_MAX - 1) / 2) {
+        knishio_free(bin_data);
+        return false;
+    }
     size_t hex_len = bin_len * 2;
     char* hex_str = knishio_malloc(hex_len + 1);
     if (!hex_str) {

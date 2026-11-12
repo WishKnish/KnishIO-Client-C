@@ -45,19 +45,6 @@ void knishio_client_destroy(knishio_client_t *client);
 /* Authentication functions */
 
 /**
- * @brief Request authentication token from server
- * Equivalent to JavaScript SDK authentication request functionality
- * 
- * @param client KnishIO client instance
- * @param wallet Wallet to authenticate with
- * @param auth_token Output authentication token (allocated, must be freed)
- * @return KNISHIO_SUCCESS on success, error code on failure
- */
-knishio_error_t knishio_client_request_auth_token(knishio_client_t *client,
-                                                  knishio_wallet_t *wallet,
-                                                  knishio_auth_token_t **auth_token);
-
-/**
  * @brief Set authentication token for client
  * All subsequent requests will use this token for authentication
  * 

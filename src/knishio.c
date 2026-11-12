@@ -32,4 +32,6 @@ void knishio_cleanup(void) {
     g_initialized = false;
 }
 
-/* Error utility function - implemented in error/context.c */
+const char* knishio_error_message(knishio_error_t error) {
+    return knishio_error_to_string(error);
+}

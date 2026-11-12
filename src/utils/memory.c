@@ -12,13 +12,9 @@
 #include <sys/mman.h>
 #endif
 
-/* Random number generation includes */
-#ifdef _WIN32
-#include <wincrypt.h>
-#else
-#include <fcntl.h>
-#include <unistd.h>
-#endif
+/* Random number generation: OpenSSL CSPRNG */
+#include <limits.h>
+#include <openssl/rand.h>
 
 /* Default alignment */
 #define DEFAULT_ALIGNMENT 8
@@ -403,43 +399,16 @@ bool knishio_random_bytes(uint8_t *buffer, size_t size) {
     if (buffer == NULL || size == 0) {
         return false;
     }
-    
-#ifdef _WIN32
-    HCRYPTPROV hCryptProv;
-    if (!CryptAcquireContext(&hCryptProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
-        return false;
-    }
-    
-    BOOL success = CryptGenRandom(hCryptProv, (DWORD)size, buffer);
-    CryptReleaseContext(hCryptProv, 0);
-    
-    return success != FALSE;
-    
-#else
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd < 0) {
-        /* Fallback to /dev/random if urandom is not available */
-        fd = open("/dev/random", O_RDONLY);
-        if (fd < 0) {
+
+    while (size > 0) {
+        int chunk = size > (size_t)INT_MAX ? INT_MAX : (int)size;
+        if (RAND_bytes(buffer, chunk) != 1) {
             return false;
         }
+        buffer += chunk;
+        size -= (size_t)chunk;
     }
-    
-    ssize_t bytes_read = 0;
-    size_t total_read = 0;
-    
-    while (total_read < size) {
-        bytes_read = read(fd, buffer + total_read, size - total_read);
-        if (bytes_read <= 0) {
-            close(fd);
-            return false;
-        }
-        total_read += (size_t)bytes_read;
-    }
-    
-    close(fd);
     return true;
-#endif
 }
 
 /* Debug functions */

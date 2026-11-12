@@ -13,13 +13,9 @@
 
 #ifdef _WIN32
     #include <windows.h>
-    #include <bcrypt.h>
-    #pragma comment(lib, "bcrypt.lib")
-#else
-    #include <unistd.h>
-    #include <fcntl.h>
-    #include <sys/random.h>
 #endif
+#include <limits.h>
+#include <openssl/rand.h>
 
 /* ===== Memory Safety Implementation ===== */
 
@@ -227,48 +223,16 @@ int knishio_secure_strcmp(const char *a, const char *b) {
 
 bool knishio_secure_random(void *buffer, size_t size) {
     if (!buffer || size == 0) return false;
-    
-#ifdef _WIN32
-    // Windows: Use BCryptGenRandom
-    NTSTATUS status = BCryptGenRandom(NULL, (PUCHAR)buffer, (ULONG)size, 
-                                      BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-    return NT_SUCCESS(status);
-    
-#elif defined(__linux__) || defined(__APPLE__)
-    // Linux/macOS: Try getrandom first, fall back to /dev/urandom
-    #ifdef __linux__
-        // Linux has getrandom() system call
-        ssize_t ret = getrandom(buffer, size, 0);
-        if (ret == (ssize_t)size) {
-            return true;
-        }
-    #endif
-    
-    // Fall back to /dev/urandom
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd < 0) return false;
-    
-    ssize_t bytes_read = read(fd, buffer, size);
-    close(fd);
-    
-    return bytes_read == (ssize_t)size;
-    
-#else
-    // Unsupported platform - use less secure method as fallback
-    #warning "Secure random not available on this platform, using less secure fallback"
-    
-    static int initialized = 0;
-    if (!initialized) {
-        srand((unsigned int)time(NULL) ^ (unsigned int)getpid());
-        initialized = 1;
-    }
-    
+
+    /* OpenSSL's CSPRNG only; no device-file or rand() fallback. */
     unsigned char *p = (unsigned char *)buffer;
-    for (size_t i = 0; i < size; i++) {
-        p[i] = (unsigned char)(rand() & 0xFF);
+    while (size > 0) {
+        int chunk = size > (size_t)INT_MAX ? INT_MAX : (int)size;
+        if (RAND_bytes(p, chunk) != 1) return false;
+        p += chunk;
+        size -= (size_t)chunk;
     }
     return true;
-#endif
 }
 
 bool knishio_secure_random_range(uint64_t min, uint64_t max, uint64_t *result) {

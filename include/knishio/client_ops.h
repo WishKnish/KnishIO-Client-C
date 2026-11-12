@@ -53,6 +53,36 @@ typedef struct knishio_client_extended {
 /* High-level client operations for full JS SDK alignment */
 
 /**
+ * @brief Authentication settings for knishio_client_configure_auth
+ */
+typedef struct {
+    char* secret;                   /**< Secret to store on the client (NULL leaves it unchanged) */
+} knishio_client_auth_config_t;
+
+/**
+ * @brief Store the configured secret on the client (and in its secret storage, if attached)
+ */
+knishio_error_t knishio_client_configure_auth(
+    knishio_client_t* client,
+    const knishio_client_auth_config_t* config
+);
+
+/**
+ * @brief Log in with a secret (JS requestAuthToken -> requestProfileAuthToken)
+ *
+ * Stores the secret, submits a signed U-isotope authorization molecule and sets the returned
+ * token on the client.
+ *
+ * @return KNISHIO_SUCCESS, KNISHIO_ERROR_AUTHORIZATION_REJECTED when the validator refuses the
+ *         authorization, or a transport error
+ */
+knishio_error_t knishio_client_authenticate(
+    knishio_client_t* client,
+    const char* secret,
+    bool encrypt
+);
+
+/**
  * @brief Initialize client with authentication
  * Combines client creation with auth token request
  * Equivalent to JS: new KnishIOClient() + requestAuthToken()

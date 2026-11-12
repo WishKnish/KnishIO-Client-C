@@ -1058,19 +1058,23 @@ bool knishio_wallet_create_from_params(knishio_wallet_t **wallet,
                                                               KNISHIO_OTS_V1);
 }
 
-bool knishio_wallet_create_from_params_with_ots_version(knishio_wallet_t **wallet,
-                                                        const char *secret,
-                                                        const char *bundle,
-                                                        const char *token,
-                                                        const char *address,
-                                                        const char *position,
-                                                        const char *batch_id,
-                                                        const char *characters,
-                                                        int ots_version) {
+static bool wallet_create_from_params(knishio_wallet_t **wallet,
+                                      const char *secret,
+                                      const char *bundle,
+                                      const char *token,
+                                      const char *address,
+                                      const char *position,
+                                      const char *batch_id,
+                                      const char *characters,
+                                      int ots_version,
+                                      knishio_mlkem_param_t mlkem_param) {
     if (!wallet || !secret || !token || !position) {
         return false;
     }
     if (ots_version != KNISHIO_OTS_V1 && ots_version != KNISHIO_OTS_V2) {
+        return false;
+    }
+    if (mlkem_param != KNISHIO_MLKEM_1024 && mlkem_param != KNISHIO_MLKEM_768) {
         return false;
     }
     
@@ -1082,7 +1086,7 @@ bool knishio_wallet_create_from_params_with_ots_version(knishio_wallet_t **walle
     
     knishio_wallet_t *w = *wallet;
     memset(w, 0, sizeof(knishio_wallet_t));
-    w->mlkem_param = knishio_wallet_get_default_mlkem_param();
+    w->mlkem_param = mlkem_param;
     w->ots_version = ots_version;
     
     /* Set basic properties */
@@ -1137,6 +1141,19 @@ bool knishio_wallet_create_from_params_with_ots_version(knishio_wallet_t **walle
     return true;
 }
 
+bool knishio_wallet_create_from_params_with_ots_version(knishio_wallet_t **wallet,
+                                                        const char *secret,
+                                                        const char *bundle,
+                                                        const char *token,
+                                                        const char *address,
+                                                        const char *position,
+                                                        const char *batch_id,
+                                                        const char *characters,
+                                                        int ots_version) {
+    return wallet_create_from_params(wallet, secret, bundle, token, address, position, batch_id,
+                                     characters, ots_version, knishio_wallet_get_default_mlkem_param());
+}
+
 /**
  * @brief Create wallet with ContinuID (JavaScript SDK compatibility)
  */
@@ -1152,11 +1169,16 @@ bool knishio_wallet_create_with_ots_version(knishio_wallet_t **wallet,
                                             const char *token,
                                             const char *position,
                                             int ots_version) {
-    if (!wallet || !secret || !token || !position) {
-        return false;
-    }
-    
-    /* Use the comprehensive create_from_params function */
-    return knishio_wallet_create_from_params_with_ots_version(wallet, secret, NULL, token, NULL, position,
-                                                              NULL, "BASE64", ots_version);
+    return knishio_wallet_create_with_mlkem_param(wallet, secret, token, position, ots_version,
+                                                  knishio_wallet_get_default_mlkem_param());
+}
+
+bool knishio_wallet_create_with_mlkem_param(knishio_wallet_t **wallet,
+                                            const char *secret,
+                                            const char *token,
+                                            const char *position,
+                                            int ots_version,
+                                            knishio_mlkem_param_t mlkem_param) {
+    return wallet_create_from_params(wallet, secret, NULL, token, NULL, position, NULL, "BASE64",
+                                     ots_version, mlkem_param);
 }

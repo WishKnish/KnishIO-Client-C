@@ -13,12 +13,6 @@ extern "C" {
 /* Forward declaration - full definition is in wallet.h */
 typedef struct knishio_token_unit knishio_token_unit_t;
 
-/**
- * @brief Free token unit
- * @param unit Token unit to free
- */
-void knishio_token_unit_free(knishio_token_unit_t *unit);
-
 #ifdef __cplusplus
 }
 #endif

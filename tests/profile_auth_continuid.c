@@ -40,7 +40,6 @@
 #include "knishio/knishio.h"
 #include "knishio/atom.h"
 #include "knishio/auth_token.h"
-#include "knishio/client_auth.h"
 #include "knishio/client.h"
 #include "knishio/client_ops.h"
 #include "knishio/meta.h"

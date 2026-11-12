@@ -170,10 +170,74 @@ void test_plaintext_client_is_unaffected(void) {
     knishio_client_destroy(client);
 }
 
+/* JS Wallet.encryptMessage refuses a server key that is not the client's ML-KEM parameter set
+ * (Wallet.js:684-686). A 1024 client handed a valid 1184-byte ML-KEM-768 key must fail closed
+ * instead of silently encapsulating at 768. */
+void test_encrypted_transport_wrong_parameter_set_fails_closed(void) {
+    char* secret = NULL;
+    TEST_ASSERT_TRUE(knishio_generate_secret("param-set-test-seed", 2048, &secret));
+    knishio_wallet_t* auth_wallet = NULL;
+    knishio_wallet_t* server_768 = NULL;
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_wallet_create_simple(
+        &auth_wallet, secret, "AUTH", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_wallet_create_simple(
+        &server_768, secret, "USER", "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"));
+    TEST_ASSERT_TRUE(knishio_wallet_set_mlkem_param(server_768, KNISHIO_MLKEM_768));
+
+    knishio_client_t* client = make_encrypted_client();
+    TEST_ASSERT_EQUAL(1024, knishio_client_get_mlkem_parameter_set(client));
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_client_set_cipher_context(client, server_768->pubkey, auth_wallet));
+
+    knishio_graphql_operation_t op = balance_operation();
+    knishio_graphql_response_t* response = NULL;
+    knishio_error_t error = knishio_client_execute_graphql(client, &op, &response);
+
+    TEST_ASSERT_EQUAL(KNISHIO_ERROR_CRYPTO, error);
+    TEST_ASSERT_NULL(response);
+
+    knishio_client_destroy(client);
+    knishio_wallet_free(auth_wallet);
+    knishio_wallet_free(server_768);
+    knishio_free(secret);
+}
+
+/* Creating a client with ML-KEM-768 must not change the wallets another (1024) client builds:
+ * the parameter set belongs to the client, not to a process-wide default. */
+void test_client_parameter_set_is_per_client(void) {
+    char* secret = NULL;
+    TEST_ASSERT_TRUE(knishio_generate_secret("per-client-param-seed", 2048, &secret));
+
+    knishio_client_t* client_1024 = make_encrypted_client();
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_client_set_secret(client_1024, secret));
+
+    knishio_client_config_t config = {0};
+    config.uri = TEST_URI;
+    config.mlkem_parameter_set = 768;
+    knishio_client_t* client_768 = NULL;
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_client_create(&client_768, &config));
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_client_set_secret(client_768, secret));
+
+    knishio_wallet_t* w1024 = NULL;
+    knishio_wallet_t* w768 = NULL;
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_client_get_source_wallet(client_1024, "USER", &w1024));
+    TEST_ASSERT_EQUAL(KNISHIO_SUCCESS, knishio_client_get_source_wallet(client_768, "USER", &w768));
+    TEST_ASSERT_EQUAL(KNISHIO_MLKEM_1024, knishio_wallet_get_mlkem_param(w1024));
+    TEST_ASSERT_EQUAL(KNISHIO_MLKEM_768, knishio_wallet_get_mlkem_param(w768));
+    TEST_ASSERT_EQUAL(KNISHIO_MLKEM_1024, knishio_wallet_get_default_mlkem_param());
+
+    knishio_wallet_free(w1024);
+    knishio_wallet_free(w768);
+    knishio_client_destroy(client_1024);
+    knishio_client_destroy(client_768);
+    knishio_free(secret);
+}
+
 void test_encrypted_transport_suite(void) {
     RUN_TEST(test_encrypted_transport_missing_keys_fails_closed);
     RUN_TEST(test_encrypted_transport_encryption_failure_fails_closed);
     RUN_TEST(test_encrypted_transport_empty_pubkey_is_missing);
     RUN_TEST(test_encrypted_transport_bypassed_operation_is_attempted);
     RUN_TEST(test_plaintext_client_is_unaffected);
+    RUN_TEST(test_encrypted_transport_wrong_parameter_set_fails_closed);
+    RUN_TEST(test_client_parameter_set_is_per_client);
 }

@@ -16,31 +16,6 @@
 /* Main response types matching JavaScript SDK */
 #include "response_balance.h"
 #include "response_wallet_list.h"
-#include "response_propose_molecule.h"
-#include "response_atom.h"
-#include "response_create_token.h"
-#include "response_transfer_tokens.h"
-#include "response_continu_id.h"
-
-/* Additional implemented response types */
-#include "response_wallet_bundle.h"
-#include "response_create_wallet.h"
-#include "response_active_session.h"
-#include "response_request_authorization.h"
-#include "response_meta_type.h"
-
-/* Newly implemented response types (2025) */
-#include "response_create_meta.h"
-#include "response_meta_batch.h"
-#include "response_request_tokens.h"
-#include "response_request_authorization_guest.h"
-#include "response_authorization_guest.h"
-#include "response_create_identifier.h"
-#include "response_link_identifier.h"
-#include "response_claim_shadow_wallet.h"
-#include "response_create_rule.h"
-#include "response_policy.h"
-#include "response_query_active_session.h"
 
 #ifdef __cplusplus
 extern "C" {

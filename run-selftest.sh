@@ -33,7 +33,6 @@ echo -e "${YELLOW}⚙️  Configuring CMake build...${NC}"
 cmake . \
     -DCMAKE_BUILD_TYPE=Release \
     -DKNISHIO_BUILD_TESTS=ON \
-    -DKNISHIO_BUILD_EXAMPLES=ON \
     -DKNISHIO_ENABLE_SANITIZERS=OFF
 
 # Build the working self-test target (complete JavaScript parity)

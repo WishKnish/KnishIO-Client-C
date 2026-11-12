@@ -69,6 +69,9 @@ static knishio_error_t bin_to_hex(const uint8_t *data, size_t data_len, char **h
         return KNISHIO_ERROR_NULL_POINTER;
     }
     
+    if (data_len > (SIZE_MAX - 1) / 2) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
     char *hex = malloc(data_len * 2 + 1);
     if (!hex) {
         return KNISHIO_ERROR_MEMORY;

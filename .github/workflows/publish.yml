@@ -154,7 +154,6 @@ jobs:
           CC=clang-22 CXX=clang++-22 cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DKNISHIO_BUILD_TESTS=ON \
-            -DKNISHIO_BUILD_EXAMPLES=OFF \
             -DCLANG_TIDY_EXE="$(command -v clang-tidy-22)" \
             -DKNISHIO_USE_KCORE=ON -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/kcore"
 
@@ -164,7 +163,6 @@ jobs:
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DKNISHIO_BUILD_TESTS=ON \
-            -DKNISHIO_BUILD_EXAMPLES=OFF \
             -DKNISHIO_USE_KCORE=ON -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/kcore"
 
       - name: Build
@@ -267,8 +265,7 @@ jobs:
           tar -xzf "dist/knishio-client-c-$VERSION-src.tar.gz" -C "$RUNNER_TEMP/src"
           cmake -S "$SRC" -B "$RUNNER_TEMP/src-build" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DKNISHIO_BUILD_TESTS=OFF \
-            -DKNISHIO_BUILD_EXAMPLES=OFF
+            -DKNISHIO_BUILD_TESTS=OFF
           cmake --build "$RUNNER_TEMP/src-build" -j"$(nproc)"
           cd "$SRC"
           KNISHIO_DISABLE_CROSS_VALIDATION=true \

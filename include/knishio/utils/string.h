@@ -235,26 +235,6 @@ size_t knishio_string_rfind(const knishio_string_t *str, const char *needle);
 size_t knishio_string_replace(knishio_string_t *str, const char *search, const char *replace);
 
 /**
- * @brief Split string by delimiter
- * @param str String object
- * @param delimiter Delimiter string
- * @param parts Array of resulting parts (output)
- * @param count Number of parts (output)
- * @return True on success, false on failure
- */
-bool knishio_string_split(const knishio_string_t *str, const char *delimiter, 
-                         knishio_string_t ***parts, size_t *count);
-
-/**
- * @brief Join array of strings with delimiter
- * @param parts Array of strings to join
- * @param count Number of strings
- * @param delimiter Delimiter string
- * @return New joined string or NULL on failure
- */
-knishio_string_t* knishio_string_join(knishio_string_t **parts, size_t count, const char *delimiter);
-
-/**
  * @brief Trim whitespace from beginning and end
  * @param str String object
  */
@@ -301,14 +281,6 @@ int knishio_string_compare(const knishio_string_t *str1, const knishio_string_t 
  * @return 0 if equal, <0 if str < cstr, >0 if str > cstr
  */
 int knishio_string_compare_cstr(const knishio_string_t *str, const char *cstr);
-
-/**
- * @brief Case-insensitive comparison
- * @param str1 First string
- * @param str2 Second string
- * @return 0 if equal, <0 if str1 < str2, >0 if str1 > str2
- */
-int knishio_string_compare_nocase(const knishio_string_t *str1, const knishio_string_t *str2);
 
 /**
  * @brief Check if strings are equal
@@ -378,24 +350,6 @@ bool knishio_string_is_hex(const knishio_string_t *str);
 bool knishio_string_is_numeric(const knishio_string_t *str);
 
 /**
- * @brief Check if string is valid Base64
- * @param str String object
- * @return True if valid Base64, false otherwise
- */
-bool knishio_string_is_base64(const knishio_string_t *str);
-
-/**
- * @brief Chunk string into smaller pieces
- * @param str String object
- * @param chunk_size Size of each chunk
- * @param chunks Array of chunk strings (output)
- * @param count Number of chunks (output)
- * @return True on success, false on failure
- */
-bool knishio_string_chunk(const knishio_string_t *str, size_t chunk_size,
-                         knishio_string_t ***chunks, size_t *count);
-
-/**
  * @brief Free array of strings (from split or chunk operations)
  * @param strings Array of strings
  * @param count Number of strings
@@ -410,13 +364,6 @@ void knishio_string_array_free(knishio_string_t **strings, size_t count);
  * @return Allocated copy or NULL on failure
  */
 char* knishio_strdup(const char *str);
-
-/**
- * @brief Check if C string contains only hexadecimal characters
- * @param str C string to check
- * @return True if hex, false otherwise
- */
-bool knishio_is_hex_string(const char *str);
 
 /**
  * @brief Secure zero memory (prevents compiler optimization)

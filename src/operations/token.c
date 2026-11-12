@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <inttypes.h>
 
+#include <cjson/cJSON.h>
+
 /* GraphQL mutation templates */
 
 static const char* CREATE_TOKEN_MUTATION =
@@ -117,8 +119,9 @@ knishio_error_t knishio_client_create_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&recipient, source->secret, params->token, remainder_position,
-                                                   knishio_client_get_ots_version(client))
+    error = knishio_wallet_create_with_mlkem_param(&recipient, source->secret, params->token, remainder_position,
+                                                   knishio_client_get_ots_version(client),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     knishio_free(remainder_position);
     remainder_position = NULL;
@@ -131,8 +134,9 @@ knishio_error_t knishio_client_create_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", remainder_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, source->secret, "USER", remainder_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -281,36 +285,34 @@ knishio_error_t knishio_client_request_tokens(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     
-    /* Build variables JSON */
-    char variables[1024];
-    strcpy(variables, "{");
-    
-    /* Add token */
-    strcat(variables, "\"token\":\"");
-    strcat(variables, params->token);
-    strcat(variables, "\"");
-    
-    /* Add amount if provided */
-    if (params->requested_amount) {
-        strcat(variables, ",\"amount\":\"");
-        strcat(variables, params->requested_amount);
-        strcat(variables, "\"");
+    /* Build variables JSON (cJSON escapes every value and sizes the text) */
+    cJSON* vars = cJSON_CreateObject();
+    if (!vars || !cJSON_AddStringToObject(vars, "token", params->token)) {
+        cJSON_Delete(vars);
+        return KNISHIO_ERROR_MEMORY;
     }
-    
-    /* Add units if provided */
+    if (params->requested_amount && !cJSON_AddStringToObject(vars, "amount", params->requested_amount)) {
+        cJSON_Delete(vars);
+        return KNISHIO_ERROR_MEMORY;
+    }
     if (params->requested_units && params->unit_count > 0) {
-        strcat(variables, ",\"units\":[");
-        for (size_t i = 0; i < params->unit_count; i++) {
-            if (i > 0) strcat(variables, ",");
-            strcat(variables, "\"");
-            strcat(variables, params->requested_units[i]);
-            strcat(variables, "\"");
+        cJSON* units = cJSON_AddArrayToObject(vars, "units");
+        for (size_t i = 0; units && i < params->unit_count; i++) {
+            if (!cJSON_AddItemToArray(units, cJSON_CreateString(params->requested_units[i] ? params->requested_units[i] : ""))) {
+                units = NULL;
+            }
         }
-        strcat(variables, "]");
+        if (!units) {
+            cJSON_Delete(vars);
+            return KNISHIO_ERROR_MEMORY;
+        }
     }
-    
-    strcat(variables, "}");
-    
+    char* variables = cJSON_PrintUnformatted(vars);
+    cJSON_Delete(vars);
+    if (!variables) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+
     /* Execute mutation */
     knishio_graphql_response_t* response = NULL;
     knishio_graphql_operation_t operation = {
@@ -320,10 +322,10 @@ knishio_error_t knishio_client_request_tokens(
         .requires_auth = true,
         .is_mutation = true
     };
-    
-    knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
-    knishio_error_t error = knishio_graphql_execute(graphql_client, &operation, &response);
-    
+
+    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
+    cJSON_free(variables);
+
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
@@ -422,8 +424,9 @@ knishio_error_t knishio_client_replenish_token(
     } else if (!knishio_generate_position(&position)) {
         error = KNISHIO_ERROR_CRYPTO;
     } else {
-        error = knishio_wallet_create_with_ots_version(&credited, source->secret, token, position,
-                                                       knishio_client_get_ots_version(client))
+        error = knishio_wallet_create_with_mlkem_param(&credited, source->secret, token, position,
+                                                       knishio_client_get_ots_version(client),
+                                                       knishio_client_mlkem_param(client))
             ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     }
     if (error != KNISHIO_SUCCESS) {
@@ -437,8 +440,9 @@ knishio_error_t knishio_client_replenish_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, source->secret, "USER", position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -510,8 +514,9 @@ knishio_error_t knishio_client_fuse_token(
             error = KNISHIO_ERROR_CRYPTO;
             goto cleanup;
         }
-        error = knishio_wallet_create_with_ots_version(&recipient, user->secret, token_slug, position,
-                                                       knishio_client_get_ots_version(client))
+        error = knishio_wallet_create_with_mlkem_param(&recipient, user->secret, token_slug, position,
+                                                       knishio_client_get_ots_version(client),
+                                                       knishio_client_mlkem_param(client))
             ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
         knishio_free(position);
         position = NULL;
@@ -535,8 +540,9 @@ knishio_error_t knishio_client_fuse_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, user->secret, token_slug, position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, user->secret, token_slug, position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;

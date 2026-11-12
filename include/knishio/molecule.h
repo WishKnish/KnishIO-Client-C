@@ -599,6 +599,71 @@ knishio_error_t knishio_molecule_init_shadow_wallet_claim(
 );
 
 /**
+ * @brief Identifier creation (JS Molecule.initIdentifierCreation)
+ *
+ * A C-atom signed by the source wallet (metaType "identifier", metaId = type, meta
+ * [code, hash = SHAKE256-256 hex of contact with JavaScript trim() whitespace removed]) and a
+ * ContinuID I-atom. The contact itself is not stored in the molecule.
+ *
+ * @param molecule Molecule with source and remainder wallets
+ * @param type Identifier type ("email", "phone")
+ * @param contact Contact (hashed after trimming)
+ * @param code Verification code (omitted from meta when NULL or empty)
+ */
+knishio_error_t knishio_molecule_init_identifier_creation(
+    knishio_molecule_t* molecule,
+    const char* type,
+    const char* contact,
+    const char* code
+);
+
+/**
+ * @brief Policy atom (JS Molecule.addPolicyAtom)
+ *
+ * An R-atom signed by the source wallet with meta = the given pairs followed by "policy" =
+ * JSON of new PolicyMeta(policy, indexes of the given pairs). Add the ContinuID atom with
+ * knishio_molecule_add_continuid_atom (JS createPolicy does both).
+ *
+ * @param policy_json Policy object as JSON ({"read": {...}, "write": {...}}); NULL = {}
+ * @return KNISHIO_ERROR_POLICY_INVALID when policy_json does not parse
+ */
+knishio_error_t knishio_molecule_add_policy_atom(
+    knishio_molecule_t* molecule,
+    const char* meta_type,
+    const char* meta_id,
+    const char** meta_keys,
+    const char** meta_values,
+    size_t meta_count,
+    const char* policy_json
+);
+
+/**
+ * @brief Append the ContinuID I-atom (JS Molecule.addContinuIdAtom) from the remainder wallet
+ */
+knishio_error_t knishio_molecule_add_continuid_atom(knishio_molecule_t* molecule);
+
+/**
+ * @brief Rule creation (JS Molecule.createRule)
+ *
+ * An R-atom signed by the source wallet with meta [rule, policy] and a ContinuID I-atom.
+ * rule = JSON of the rules as JS Rule.toObject() rebuilds them (condition members key, value,
+ * comparison; callback members action then the truthy ones of metaType, metaId, meta, address,
+ * token, amount, comparison); policy = JSON of new PolicyMeta(policy, ["0"]).
+ *
+ * @param rule_json JSON array of rules
+ * @param policy_json Policy object as JSON; NULL = {}
+ * @return KNISHIO_ERROR_RULE_INVALID / KNISHIO_ERROR_META_MISSING for malformed rules,
+ *         KNISHIO_ERROR_POLICY_INVALID when policy_json does not parse
+ */
+knishio_error_t knishio_molecule_create_rule(
+    knishio_molecule_t* molecule,
+    const char* meta_type,
+    const char* meta_id,
+    const char* rule_json,
+    const char* policy_json
+);
+
+/**
  * @brief Initialize an authorization molecule (matches JavaScript SDK initAuthorization)
  * Adds a U-isotope atom (signed by molecule->source_wallet; no metaType/metaId; meta =
  * [encrypt, walletPubkey] as KnishIOClient.requestAuthToken sends it, walletPubkey only when the

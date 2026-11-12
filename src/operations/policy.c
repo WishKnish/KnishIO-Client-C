@@ -5,11 +5,14 @@
 
 #include "knishio/knishio.h"
 #include "knishio/operations/policy.h"
-#include "knishio/policy/engine.h"
-#include "knishio/policy/rule.h"
+#include "knishio/client_ops.h"
 #include "knishio/graphql.h"
-#include "knishio/json/builder.h"
 #include "knishio/molecule.h"
+#include "knishio/wallet.h"
+#include "knishio/utils/memory.h"
+#include "operations_internal.h"
+
+#include <cjson/cJSON.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -19,7 +22,7 @@
 static const char* CREATE_POLICY_MUTATION = 
     "mutation CreatePolicy($molecule: MoleculeInput!) {"
     "  ProposeMolecule(molecule: $molecule) {"
-    "    molecular_hash"
+    "    molecularHash"
     "    status"
     "    reason"
     "    payload"
@@ -46,7 +49,7 @@ static const char* QUERY_POLICY =
 static const char* CREATE_RULE_MUTATION = 
     "mutation CreateRule($molecule: MoleculeInput!) {"
     "  ProposeMolecule(molecule: $molecule) {"
-    "    molecular_hash"
+    "    molecularHash"
     "    status"
     "    reason"
     "    payload"
@@ -54,114 +57,29 @@ static const char* CREATE_RULE_MUTATION =
     "  }"
     "}";
 
-/* Helper function to create policy molecule */
-static knishio_error_t create_policy_molecule(
-    knishio_client_t* client,
-    const char* meta_type,
-    const char* meta_id,
-    const char* policy_json,
-    knishio_molecule_t** molecule
+/* The outcome of a submitted policy or rule molecule (both result structs have these fields). */
+static void molecule_outcome(
+    const knishio_graphql_response_t* response,
+    const knishio_molecule_t* molecule,
+    const char* failure_text,
+    bool* success,
+    char** molecular_hash,
+    char** response_text,
+    char** error_message
 ) {
-    if (!client || !meta_type || !meta_id || !molecule) {
-        return KNISHIO_ERROR_INVALID_ARGS;
-    }
-    
-    /* Create molecule */
-    knishio_molecule_t* mol = NULL;
-    knishio_error_t err = knishio_molecule_create(&mol, "placeholder_secret", NULL, NULL, NULL, NULL, "2.0");
-    if (err != KNISHIO_SUCCESS || !mol) {
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    /* Create meta atom */
-    knishio_atom_t* atom = NULL;
-    err = knishio_atom_create(&atom, 
-        "0000000000000000000000000000000000000000000000000000000000000000",
-        "0000000000000000000000000000000000000000000000000000000000000000",
-        KNISHIO_ISOTOPE_M,
-        "USER",
-        NULL,
-        NULL);
-    if (err != KNISHIO_SUCCESS || !atom) {
-        knishio_molecule_free(mol);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    /* Set atom fields */
-    /* Set atom metadata */
-    atom->meta_type = knishio_strdup(meta_type);
-    atom->meta_id = knishio_strdup(meta_id);
-    /* TODO: Convert policy_json to meta array if needed */
-    
-    if (!atom->meta_type || !atom->meta_id) {
-        knishio_atom_free(atom);
-        knishio_molecule_free(mol);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    /* Add atom to molecule */
-    knishio_error_t error = knishio_molecule_add_atom(mol, atom);
-    if (error != KNISHIO_SUCCESS) {
-        knishio_atom_free(atom);
-        knishio_molecule_free(mol);
-        return error;
-    }
-    
-    *molecule = mol;
-    return KNISHIO_SUCCESS;
-}
-
-/* Helper function to create rule molecule */
-static knishio_error_t create_rule_molecule(
-    knishio_client_t* client,
-    const char* meta_type,
-    const char* meta_id,
-    const char* rule_json,
-    const char* policy_json,
-    knishio_molecule_t** molecule
-) {
-    if (!client || !meta_type || !meta_id || !rule_json || !molecule) {
-        return KNISHIO_ERROR_INVALID_ARGS;
-    }
-    
-    /* Build combined meta JSON */
-    cJSON* meta_obj = cJSON_CreateObject();
-    if (!meta_obj) {
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    /* Parse rule JSON */
-    cJSON* rule_obj = cJSON_Parse(rule_json);
-    if (rule_obj) {
-        cJSON_AddItemToObject(meta_obj, "rule", rule_obj);
+    if (response->data && response->success) {
+        *success = true;
+        *response_text = knishio_strdup(response->data);
+        *molecular_hash = knishio_strdup(response->molecular_hash ? response->molecular_hash : molecule->molecular_hash);
     } else {
-        cJSON_Delete(meta_obj);
-        return KNISHIO_ERROR_POLICY_INVALID;
+        *success = false;
+        *error_message = knishio_strdup(response->errors ? response->errors : failure_text);
     }
-    
-    /* Parse policy JSON if provided */
-    if (policy_json) {
-        cJSON* policy_obj = cJSON_Parse(policy_json);
-        if (policy_obj) {
-            cJSON_AddItemToObject(meta_obj, "policy", policy_obj);
-        }
-    }
-    
-    char* combined_meta = cJSON_PrintUnformatted(meta_obj);
-    cJSON_Delete(meta_obj);
-    
-    if (!combined_meta) {
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    /* Create molecule with combined meta */
-    knishio_error_t error = create_policy_molecule(client, meta_type, meta_id, combined_meta, molecule);
-    free(combined_meta);
-    
-    return error;
 }
 
-/* Create access control policy */
+/* Create access control policy: an R-atom (meta [policy]) + ContinuID I-atom signed from the
+ * USER ContinuID wallet (JS createPolicy: addPolicyAtom({meta: {}}), addContinuIdAtom), checked
+ * before it is sent. */
 knishio_error_t knishio_client_create_policy(
     knishio_client_t* client,
     const knishio_create_policy_params_t* params,
@@ -174,63 +92,40 @@ knishio_error_t knishio_client_create_policy(
     if (!params->meta_type || !params->meta_id) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Create policy molecule */
+
+    knishio_wallet_t* source = NULL;
+    knishio_wallet_t* remainder = NULL;
     knishio_molecule_t* molecule = NULL;
-    knishio_error_t error = create_policy_molecule(
-        client, params->meta_type, params->meta_id, params->policy_json, &molecule);
-    
-    if (error != KNISHIO_SUCCESS) {
-        return error;
-    }
-    
-    /* Sign, then check (contract 9.7) + submit. */
-    error = knishio_molecule_sign(molecule, NULL, false, false);
     knishio_graphql_response_t* response = NULL;
+
+    knishio_error_t error = knishio_client_continuid_molecule(client, &source, &remainder, &molecule);
     if (error == KNISHIO_SUCCESS) {
-        error = knishio_client_submit_molecule(client, molecule, "CreatePolicy", CREATE_POLICY_MUTATION, &response);
+        error = knishio_molecule_add_policy_atom(molecule, params->meta_type, params->meta_id,
+                                                 NULL, NULL, 0, params->policy_json);
     }
-    knishio_molecule_free(molecule);
-    if (error != KNISHIO_SUCCESS) {
-        return error;
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_molecule_add_continuid_atom(molecule);
     }
-    
-    /* Create result structure */
-    knishio_create_policy_result_t* policy_result = calloc(1, sizeof(knishio_create_policy_result_t));
-    if (!policy_result) {
-        knishio_graphql_response_free(response);
-        return KNISHIO_ERROR_MEMORY;
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_client_sign_and_submit(client, molecule, source, "CreatePolicy",
+                                               CREATE_POLICY_MUTATION, &response);
     }
-    
-    if (response->data && response->success) {
-        policy_result->success = true;
-        policy_result->response = knishio_strdup(response->data);
-        
-        /* Parse molecular hash from response */
-        cJSON* response_obj = cJSON_Parse(response->data);
-        if (response_obj) {
-            cJSON* data_obj = cJSON_GetObjectItem(response_obj, "data");
-            cJSON* propose_obj = cJSON_GetObjectItem(data_obj, "ProposeMolecule");
-            cJSON* hash_obj = cJSON_GetObjectItem(propose_obj, "molecular_hash");
-            
-            if (hash_obj && cJSON_IsString(hash_obj)) {
-                policy_result->molecular_hash = knishio_strdup(cJSON_GetStringValue(hash_obj));
-            }
-            
-            cJSON_Delete(response_obj);
+    if (error == KNISHIO_SUCCESS) {
+        knishio_create_policy_result_t* policy_result = calloc(1, sizeof(knishio_create_policy_result_t));
+        if (policy_result) {
+            molecule_outcome(response, molecule, "Policy creation failed", &policy_result->success,
+                             &policy_result->molecular_hash, &policy_result->response, &policy_result->error_message);
+            *result = policy_result;
+        } else {
+            error = KNISHIO_ERROR_MEMORY;
         }
-        
-        if (!policy_result->molecular_hash) {
-            policy_result->molecular_hash = knishio_strdup("unknown_hash");
-        }
-    } else {
-        policy_result->success = false;
-        policy_result->error_message = knishio_strdup(response->errors ? response->errors : "Policy creation failed");
     }
-    
-    knishio_graphql_response_free(response);
-    *result = policy_result;
-    return KNISHIO_SUCCESS;
+
+    if (response) knishio_graphql_response_free(response);
+    knishio_molecule_free_deep(molecule);
+    knishio_wallet_free(source);
+    knishio_wallet_free(remainder);
+    return error;
 }
 
 /* Query existing policies */
@@ -273,18 +168,13 @@ knishio_error_t knishio_client_query_policy(
         .is_mutation = false
     };
     
-    knishio_error_t error = knishio_graphql_execute(
-        (knishio_graphql_client_t*)client,
-        &operation,
-        &response
-    );
+    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
     
     free(variables_json);
     
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
-    
     /* Create result structure */
     knishio_query_policy_result_t* policy_result = calloc(1, sizeof(knishio_query_policy_result_t));
     if (!policy_result) {
@@ -325,7 +215,8 @@ knishio_error_t knishio_client_query_policy(
     return KNISHIO_SUCCESS;
 }
 
-/* Create policy rule */
+/* Create policy rule: an R-atom (meta [rule, policy]) + ContinuID I-atom signed from the USER
+ * ContinuID wallet (JS createRule -> Molecule.createRule), checked before it is sent. */
 knishio_error_t knishio_client_create_rule(
     knishio_client_t* client,
     const knishio_create_rule_params_t* params,
@@ -338,79 +229,37 @@ knishio_error_t knishio_client_create_rule(
     if (!params->meta_type || !params->meta_id || !params->rule_json) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Validate rule JSON format */
-    cJSON* rule_obj = cJSON_Parse(params->rule_json);
-    if (!rule_obj) {
-        return KNISHIO_ERROR_POLICY_INVALID;
-    }
-    
-    /* Validate rule structure */
-    knishio_rule_t* rule = knishio_rule_from_json(rule_obj);
-    cJSON_Delete(rule_obj);
-    
-    if (!rule) {
-        return KNISHIO_ERROR_POLICY_INVALID;
-    }
-    knishio_rule_free(rule);
-    
-    /* Create rule molecule */
+
+    knishio_wallet_t* source = NULL;
+    knishio_wallet_t* remainder = NULL;
     knishio_molecule_t* molecule = NULL;
-    knishio_error_t error = create_rule_molecule(
-        client, params->meta_type, params->meta_id, 
-        params->rule_json, params->policy_json, &molecule);
-    
-    if (error != KNISHIO_SUCCESS) {
-        return error;
-    }
-    
-    /* Sign, then check (contract 9.7) + submit. */
-    error = knishio_molecule_sign(molecule, NULL, false, false);
     knishio_graphql_response_t* response = NULL;
+
+    knishio_error_t error = knishio_client_continuid_molecule(client, &source, &remainder, &molecule);
     if (error == KNISHIO_SUCCESS) {
-        error = knishio_client_submit_molecule(client, molecule, "CreateRule", CREATE_RULE_MUTATION, &response);
+        error = knishio_molecule_create_rule(molecule, params->meta_type, params->meta_id,
+                                             params->rule_json, params->policy_json);
     }
-    knishio_molecule_free(molecule);
-    if (error != KNISHIO_SUCCESS) {
-        return error;
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_client_sign_and_submit(client, molecule, source, "CreateRule",
+                                               CREATE_RULE_MUTATION, &response);
     }
-    
-    /* Create result structure */
-    knishio_create_rule_result_t* rule_result = calloc(1, sizeof(knishio_create_rule_result_t));
-    if (!rule_result) {
-        knishio_graphql_response_free(response);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    if (response->data && response->success) {
-        rule_result->success = true;
-        rule_result->response = knishio_strdup(response->data);
-        
-        /* Parse molecular hash from response */
-        cJSON* response_obj = cJSON_Parse(response->data);
-        if (response_obj) {
-            cJSON* data_obj = cJSON_GetObjectItem(response_obj, "data");
-            cJSON* propose_obj = cJSON_GetObjectItem(data_obj, "ProposeMolecule");
-            cJSON* hash_obj = cJSON_GetObjectItem(propose_obj, "molecular_hash");
-            
-            if (hash_obj && cJSON_IsString(hash_obj)) {
-                rule_result->molecular_hash = knishio_strdup(cJSON_GetStringValue(hash_obj));
-            }
-            
-            cJSON_Delete(response_obj);
+    if (error == KNISHIO_SUCCESS) {
+        knishio_create_rule_result_t* rule_result = calloc(1, sizeof(knishio_create_rule_result_t));
+        if (rule_result) {
+            molecule_outcome(response, molecule, "Rule creation failed", &rule_result->success,
+                             &rule_result->molecular_hash, &rule_result->response, &rule_result->error_message);
+            *result = rule_result;
+        } else {
+            error = KNISHIO_ERROR_MEMORY;
         }
-        
-        if (!rule_result->molecular_hash) {
-            rule_result->molecular_hash = knishio_strdup("unknown_hash");
-        }
-    } else {
-        rule_result->success = false;
-        rule_result->error_message = knishio_strdup(response->errors ? response->errors : "Rule creation failed");
     }
-    
-    knishio_graphql_response_free(response);
-    *result = rule_result;
-    return KNISHIO_SUCCESS;
+
+    if (response) knishio_graphql_response_free(response);
+    knishio_molecule_free_deep(molecule);
+    knishio_wallet_free(source);
+    knishio_wallet_free(remainder);
+    return error;
 }
 
 /* Client-side policy enforcement (knishio_client_enforce_policy /

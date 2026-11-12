@@ -22,7 +22,7 @@
 static const char* CREATE_IDENTIFIER_MUTATION = 
     "mutation CreateIdentifier($molecule: MoleculeInput!) {"
     "  ProposeMolecule(molecule: $molecule) {"
-    "    molecular_hash"
+    "    molecularHash"
     "    status"
     "    reason"
     "    payload"
@@ -42,7 +42,9 @@ static const char* CLAIM_SHADOW_WALLET_MUTATION =
     "  }"
     "}";
 
-/* Create identity identifier */
+/* Create identity identifier: a C-atom (metaType "identifier", meta [code, hash of the trimmed
+ * contact]) + ContinuID I-atom signed from the USER ContinuID wallet (JS createIdentifier ->
+ * initIdentifierCreation), checked before it is sent. */
 knishio_error_t knishio_client_create_identifier(
     knishio_client_t* client,
     const knishio_create_identifier_params_t* params,
@@ -55,89 +57,46 @@ knishio_error_t knishio_client_create_identifier(
     if (!params->type || !params->contact || !params->code) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Build molecule JSON for identifier creation */
-    char molecule_json[2048];
-    snprintf(molecule_json, sizeof(molecule_json),
-        "{"
-        "\"secret\":\"%s\","
-        "\"cellSlug\":null,"
-        "\"atoms\":["
-        "{"
-        "\"position\":\"0000000000000000000000000000000000000000000000000000000000000000\","
-        "\"walletAddress\":\"0000000000000000000000000000000000000000000000000000000000000000\","
-        "\"isotope\":\"I\","
-        "\"token\":\"USER\","
-        "\"value\":null,"
-        "\"metaType\":\"identifier\","
-        "\"metaId\":\"%s\","
-        "\"meta\":{\"type\":\"%s\",\"contact\":\"%s\",\"code\":\"%s\"}"
-        "}"
-        "]"
-        "}",
-        "placeholder_secret", /* TODO: Get from client */
-        params->contact,
-        params->type,
-        params->contact,
-        params->code
-    );
-    
-    /* Build variables JSON */
-    char variables[4096];
-    snprintf(variables, sizeof(variables), "{\"molecule\":%s}", molecule_json);
-    
-    /* Execute GraphQL mutation */
+
+    knishio_wallet_t* source = NULL;
+    knishio_wallet_t* remainder = NULL;
+    knishio_molecule_t* molecule = NULL;
     knishio_graphql_response_t* response = NULL;
-    knishio_graphql_operation_t operation = {
-        .name = "CreateIdentifier",
-        .query = CREATE_IDENTIFIER_MUTATION,
-        .variables_json = variables,
-        .requires_auth = true,
-        .is_mutation = true
-    };
-    
-    knishio_error_t error = knishio_graphql_execute(
-        (knishio_graphql_client_t*)client,
-        &operation,
-        &response
-    );
-    
-    if (error != KNISHIO_SUCCESS) {
-        return error;
+
+    knishio_error_t error = knishio_client_continuid_molecule(client, &source, &remainder, &molecule);
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_molecule_init_identifier_creation(molecule, params->type, params->contact, params->code);
     }
-    
-    /* Create result structure */
-    knishio_create_identifier_result_t* identifier_result = calloc(1, sizeof(knishio_create_identifier_result_t));
-    if (!identifier_result) {
-        knishio_graphql_response_free(response);
-        return KNISHIO_ERROR_MEMORY;
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_client_sign_and_submit(client, molecule, source, "CreateIdentifier",
+                                               CREATE_IDENTIFIER_MUTATION, &response);
     }
-    
-    if (response->data && response->success) {
-        identifier_result->success = true;
-        identifier_result->response = knishio_strdup(response->data);
-        
-        /* Parse molecular hash from GraphQL response following 2025 C17 best practices */
-        knishio_json_t* json_root = knishio_json_parse(response->data, NULL);
-        if (json_root) {
-            const char* molecular_hash = knishio_json_get_string_path(json_root, "data.ProposeMolecule.molecular_hash");
-            if (molecular_hash && strlen(molecular_hash) > 0) {
-                identifier_result->molecular_hash = knishio_strdup(molecular_hash);
-            } else {
-                identifier_result->molecular_hash = knishio_strdup("placeholder_hash");
-            }
-            knishio_json_free(json_root);
-        } else {
-            identifier_result->molecular_hash = knishio_strdup("placeholder_hash");
+
+    knishio_create_identifier_result_t* identifier_result = NULL;
+    if (error == KNISHIO_SUCCESS) {
+        identifier_result = knishio_calloc(1, sizeof(knishio_create_identifier_result_t));
+        if (!identifier_result) {
+            error = KNISHIO_ERROR_MEMORY;
         }
-    } else {
-        identifier_result->success = false;
-        identifier_result->error_message = knishio_strdup(response->errors ? response->errors : "Identifier creation failed");
     }
-    
-    knishio_graphql_response_free(response);
-    *result = identifier_result;
-    return KNISHIO_SUCCESS;
+    if (error == KNISHIO_SUCCESS) {
+        if (response->data && response->success) {
+            identifier_result->success = true;
+            identifier_result->response = knishio_strdup(response->data);
+            identifier_result->molecular_hash = knishio_strdup(
+                response->molecular_hash ? response->molecular_hash : molecule->molecular_hash);
+        } else {
+            identifier_result->success = false;
+            identifier_result->error_message = knishio_strdup(response->errors ? response->errors : "Identifier creation failed");
+        }
+        *result = identifier_result;
+    }
+
+    if (response) knishio_graphql_response_free(response);
+    knishio_molecule_free_deep(molecule);
+    knishio_wallet_free(source);
+    knishio_wallet_free(remainder);
+    return error;
 }
 
 /* Claim individual shadow wallet */
@@ -206,8 +165,9 @@ knishio_error_t knishio_client_claim_shadow_wallet(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&claim_wallet, source->secret, params->token, remainder_position,
-                                                   knishio_client_get_ots_version(client))
+    error = knishio_wallet_create_with_mlkem_param(&claim_wallet, source->secret, params->token, remainder_position,
+                                                   knishio_client_get_ots_version(client),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     knishio_free(remainder_position);
     remainder_position = NULL;
@@ -223,8 +183,9 @@ knishio_error_t knishio_client_claim_shadow_wallet(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", remainder_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, source->secret, "USER", remainder_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;

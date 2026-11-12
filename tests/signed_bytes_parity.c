@@ -14,9 +14,11 @@
  *   burn_batched    burnToken with a batched source and remainder (batchId on both, not the burn)
  *   transfer_large  initValue of 2^53-1: the values are "-9007199254740991", "9007199254740991",
  *                   "0" (canonical-patent-vectors atom_value_format.large_i64)
- *   identifier      initIdentifierCreation: C meta [code, hash = SHAKE256(contact.trim())]
- *   policy          addPolicyAtom + addContinuIdAtom: R meta [policy]
- *   rule            createRule: R meta [rule, policy] with the JS PolicyMeta defaults
+ *   identifier      initIdentifierCreation(email, "  alice@example.com ", 1234): C meta
+ *                   [code, hash = SHAKE256(contact.trim())] + I
+ *   policy          addPolicyAtom({write:{name:[self]},read:{name:[all]}}) + addContinuIdAtom: R meta [policy]
+ *   rule            createRule with members out of JS order and policy {read:{name:[all]}}: R meta
+ *                   [rule (Rule.toObject member order), policy (PolicyMeta defaults for key "0")] + I
  * Then P (peering) and A (append request) molecules signed by the JS SDK
  * (tests/fixtures/peering-append-molecules.json) parse and pass knishio_molecule_check().
  */
@@ -127,6 +129,39 @@ static void test_digests(void) {
             && strcmp(b.m->atoms[2]->value, "0") == 0;
         check(values, "transfer of 2^53-1 writes -9007199254740991 / 9007199254740991 / 0", NULL);
         expect_digest("transfer_large", &b, e, "029bcca23006d7cg31db77b15caef18616ffdfbgbfa76700304gf8efe5b2ccaf");
+    }
+    {
+        built_t b = begin("USER", "USER", NULL);
+        knishio_error_t e = b.m
+            ? knishio_molecule_init_identifier_creation(b.m, "email", "  alice@example.com ", "1234")
+            : KNISHIO_ERROR_MEMORY;
+        expect_digest("identifier", &b, e, "022559ce35109823a9affg1d4c832e1gg78g8g749dd4d37g3f9ae05c4fbgg2a6");
+    }
+    {
+        built_t b = begin("USER", "USER", NULL);
+        knishio_error_t e = b.m
+            ? knishio_molecule_add_policy_atom(b.m, "profile", "p1", NULL, NULL, 0,
+                                               "{\"write\":{\"name\":[\"self\"]},\"read\":{\"name\":[\"all\"]}}")
+            : KNISHIO_ERROR_MEMORY;
+        if (e == KNISHIO_SUCCESS) e = knishio_molecule_add_continuid_atom(b.m);
+        expect_digest("policy", &b, e, "021469e4d3a17db8ae98820eee268a51970g85b5498267483a27dgde1df3291a");
+    }
+    {
+        built_t b = begin("USER", "USER", NULL);
+        knishio_error_t e = b.m
+            ? knishio_molecule_create_rule(b.m, "profile", "p1",
+                  "[{\"callback\":[{\"amount\":\"5\",\"action\":\"reject\",\"token\":\"TEST\"}],"
+                  "\"condition\":[{\"comparison\":\">=\",\"key\":\"amount\",\"value\":\"100\"}]}]",
+                  "{\"read\":{\"name\":[\"all\"]}}")
+            : KNISHIO_ERROR_MEMORY;
+        bool meta = e == KNISHIO_SUCCESS && b.m->atom_count == 2 && b.m->atoms[0]->meta_count == 2
+            && strcmp(b.m->atoms[0]->meta[0]->value,
+                      "[{\"condition\":[{\"key\":\"amount\",\"value\":\"100\",\"comparison\":\">=\"}],"
+                      "\"callback\":[{\"action\":\"reject\",\"token\":\"TEST\",\"amount\":\"5\"}]}]") == 0
+            && strcmp(b.m->atoms[0]->meta[1]->value,
+                      "{\"read\":{\"0\":[\"all\"],\"name\":[\"all\"]},\"write\":{\"0\":[\"self\"]}}") == 0;
+        check(meta, "rule meta equals the JS rule and policy strings", NULL);
+        expect_digest("rule", &b, e, "0428d20gcgg8c36e2g87e5920d7c8b7fd7234765b3936b0822a264fabbfg8831");
     }
 }
 

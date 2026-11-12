@@ -185,14 +185,6 @@ bool knishio_shake256_test_vector(const char *input, size_t output_bits, const c
  */
 bool knishio_shake256_js_compatible(const char *input, size_t output_length, char **hex_output);
 
-/**
- * @brief Verify this implementation produces same output as JavaScript SDK
- * @param js_test_vectors Array of test vectors from JS SDK
- * @param vector_count Number of test vectors
- * @return True if all vectors match, false if any differ
- */
-bool knishio_shake256_verify_js_compatibility(const char **js_test_vectors, size_t vector_count);
-
 #ifdef __cplusplus
 }
 #endif

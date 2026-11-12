@@ -17,6 +17,7 @@
 // #include "knishio/crypto/signatures.h" - removed (dead code)
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
+#include "knishio/policy_meta.h"
 #include "atom_internal.h"
 #include "kcore_bridge.h"
 
@@ -35,6 +36,7 @@ static knishio_error_t resize_atoms_array(knishio_molecule_t* molecule);
 static knishio_error_t copy_string_field(char** dest, const char* src);
 static void free_string_field(char** field);
 static int compare_atoms_by_index(const void* a, const void* b);
+static knishio_error_t set_atom_meta_pairs(knishio_atom_t* atom, const char** keys, const char** vals, size_t n);
 
 /* Atom values are integer strings as JS String(n) renders them ("-0" never appears). Amounts are
  * int64_t and a wallet balance is a double holding a whole number, exact within ±(2^53-1). */
@@ -44,6 +46,20 @@ static void format_amount(char out[KNISHIO_AMOUNT_BUF], int64_t value) {
 }
 static int64_t wallet_balance(const knishio_wallet_t* w) {
     return (int64_t)w->balance;
+}
+
+/* Free a string that held key material, zeroing it first. */
+static void wipe_free_string(char* s) {
+    if (!s) return;
+    knishio_secure_zero(s, strlen(s));
+    knishio_free(s);
+}
+static void wipe_free_chunks(char** chunks, size_t count) {
+    if (!chunks) return;
+    for (size_t i = 0; i < count; i++) {
+        wipe_free_string(chunks[i]);
+    }
+    knishio_free(chunks);
 }
 
 /* Molecule lifecycle functions */
@@ -131,6 +147,9 @@ void knishio_molecule_free(knishio_molecule_t* molecule) {
     }
 
     /* Free string fields */
+    if (molecule->secret) {
+        knishio_secure_zero(molecule->secret, strlen(molecule->secret));
+    }
     free_string_field(&molecule->secret);
     free_string_field(&molecule->bundle);
     free_string_field(&molecule->molecular_hash);
@@ -409,17 +428,14 @@ knishio_error_t knishio_molecule_sign(
     char** key_chunks = NULL;
     size_t chunk_count = 0;
     if (!knishio_chunk_string(private_key, 128, &key_chunks, &chunk_count)) {
-        knishio_free(private_key);
+        wipe_free_string(private_key);
         return KNISHIO_ERROR_MEMORY;
     }
     
     if (chunk_count != KNISHIO_PRIVKEY_LENGTH / 128 && chunk_count != KNISHIO_PRIVKEY_LENGTH_V2 / 128) {
         /* Key should be 2048 chars = 16 chunks or 8192 chars = 64 chunks */
-        for (size_t i = 0; i < chunk_count; i++) {
-            knishio_free(key_chunks[i]);
-        }
-        knishio_free(key_chunks);
-        knishio_free(private_key);
+        wipe_free_chunks(key_chunks, chunk_count);
+        wipe_free_string(private_key);
         return KNISHIO_ERROR_CRYPTO;
     }
 
@@ -428,11 +444,8 @@ knishio_error_t knishio_molecule_sign(
     size_t enum_len = 0;
     error = knishio_molecule_enumerate_hash(molecule->molecular_hash, &enumerated, &enum_len);
     if (error != KNISHIO_SUCCESS) {
-        for (size_t i = 0; i < chunk_count; i++) {
-            knishio_free(key_chunks[i]);
-        }
-        knishio_free(key_chunks);
-        knishio_free(private_key);
+        wipe_free_chunks(key_chunks, chunk_count);
+        wipe_free_string(private_key);
         return error;
     }
 
@@ -440,11 +453,8 @@ knishio_error_t knishio_molecule_sign(
     error = knishio_molecule_normalize_hash(enumerated, enum_len, &normalized);
     knishio_free(enumerated);
     if (error != KNISHIO_SUCCESS) {
-        for (size_t i = 0; i < chunk_count; i++) {
-            knishio_free(key_chunks[i]);
-        }
-        knishio_free(key_chunks);
-        knishio_free(private_key);
+        wipe_free_chunks(key_chunks, chunk_count);
+        wipe_free_string(private_key);
         return error;
     }
 
@@ -453,11 +463,8 @@ knishio_error_t knishio_molecule_sign(
     char* signature_fragments = knishio_malloc(chunk_count * 128 + 1);
     if (!signature_fragments) {
         knishio_free(normalized);
-        for (size_t i = 0; i < chunk_count; i++) {
-            knishio_free(key_chunks[i]);
-        }
-        knishio_free(key_chunks);
-        knishio_free(private_key);
+        wipe_free_chunks(key_chunks, chunk_count);
+        wipe_free_string(private_key);
         return KNISHIO_ERROR_MEMORY;
     }
     signature_fragments[0] = '\0';
@@ -477,58 +484,53 @@ knishio_error_t knishio_molecule_sign(
         }
     }
 #endif
+    error = KNISHIO_SUCCESS;
     for (size_t i = 0; !chains_done && i < chunk_count && i < enum_len; i++) {
         char* working_chunk = knishio_strdup(key_chunks[i]);
         if (!working_chunk) {
-            knishio_free(signature_fragments);
-            knishio_free(normalized);
-            for (size_t j = 0; j < chunk_count; j++) {
-                knishio_free(key_chunks[j]);
-            }
-            knishio_free(key_chunks);
-            knishio_free(private_key);
-            return KNISHIO_ERROR_MEMORY;
+            error = KNISHIO_ERROR_MEMORY;
+            break;
         }
 
         /* Apply SHAKE256 iterations based on normalized hash */
         int iterations = 8 - normalized[i];
         for (int iter = 0; iter < iterations; iter++) {
             uint8_t hash_output[64];  /* 512 bits = 64 bytes */
-            if (!knishio_shake256_hash_raw((uint8_t*)working_chunk, strlen(working_chunk), hash_output, 64)) {
-                knishio_free(working_chunk);
-                knishio_free(signature_fragments);
-                knishio_free(normalized);
-                for (size_t j = 0; j < chunk_count; j++) {
-                    knishio_free(key_chunks[j]);
-                }
-                knishio_free(key_chunks);
-                knishio_free(private_key);
-                return KNISHIO_ERROR_CRYPTO;
-            }
-            
-            /* Convert hash to hex string for next iteration */
             char hex_hash[129];
-            for (int h = 0; h < 64; h++) {
-                sprintf(hex_hash + (h * 2), "%02x", hash_output[h]);
+            if (!knishio_shake256_hash_raw((uint8_t*)working_chunk, strlen(working_chunk), hash_output, 64)) {
+                error = KNISHIO_ERROR_CRYPTO;
+            } else {
+                /* Convert hash to hex string for next iteration */
+                for (int h = 0; h < 64; h++) {
+                    sprintf(hex_hash + (h * 2), "%02x", hash_output[h]);
+                }
+                hex_hash[128] = '\0';
+                wipe_free_string(working_chunk);
+                working_chunk = knishio_strdup(hex_hash);
+                if (!working_chunk) error = KNISHIO_ERROR_MEMORY;
             }
-            hex_hash[128] = '\0';
-            
-            knishio_free(working_chunk);
-            working_chunk = knishio_strdup(hex_hash);
+            knishio_secure_zero(hash_output, sizeof(hash_output));
+            knishio_secure_zero(hex_hash, sizeof(hex_hash));
+            if (error != KNISHIO_SUCCESS) break;
+        }
+        if (error != KNISHIO_SUCCESS) {
+            wipe_free_string(working_chunk);
+            break;
         }
 
         /* Append to signature fragments */
         strcat(signature_fragments, working_chunk);
         total_fragment_len += strlen(working_chunk);
-        knishio_free(working_chunk);
+        wipe_free_string(working_chunk);
     }
 
     knishio_free(normalized);
-    for (size_t i = 0; i < chunk_count; i++) {
-        knishio_free(key_chunks[i]);
+    wipe_free_chunks(key_chunks, chunk_count);
+    wipe_free_string(private_key);
+    if (error != KNISHIO_SUCCESS) {
+        knishio_free(signature_fragments);
+        return error;
     }
-    knishio_free(key_chunks);
-    knishio_free(private_key);
 
     /* Optionally compress OTS using base64 */
     char* final_signature = NULL;
@@ -888,6 +890,26 @@ knishio_error_t knishio_molecule_generate_hash(knishio_molecule_t* molecule) {
 
 /* Utility functions */
 
+/* Append a JSON member "key":"<escaped value>" (or "key":null) followed by `tail`. */
+static bool append_json_string_member(knishio_string_t* out, const char* key, const char* value, const char* tail) {
+    if (!value) {
+        return knishio_string_append_sprintf(out, "\"%s\":null%s", key, tail);
+    }
+    char* escaped = knishio_json_escape_string(value);
+    bool ok = escaped && knishio_string_append_sprintf(out, "\"%s\":\"%s\"%s", key, escaped, tail);
+    knishio_free(escaped);
+    return ok;
+}
+
+/* Append ,"name":{"address":…,"position":…,"token":…,"balance":…} for a wallet. */
+static bool append_json_wallet(knishio_string_t* out, const char* name, const knishio_wallet_t* w) {
+    return knishio_string_append_sprintf(out, ",\"%s\":{", name)
+        && append_json_string_member(out, "address", w->address ? w->address : "", ",")
+        && append_json_string_member(out, "position", w->position ? w->position : "", ",")
+        && append_json_string_member(out, "token", w->token ? w->token : "", ",")
+        && knishio_string_append_sprintf(out, "\"balance\":%.1f}", w->balance);
+}
+
 knishio_error_t knishio_molecule_to_json(
     const knishio_molecule_t* molecule,
     char** json_output
@@ -896,130 +918,51 @@ knishio_error_t knishio_molecule_to_json(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
-    /* KISS approach: Use string concatenation for now */
-    /* This is simpler and more reliable than complex JSON builder API */
-    
-    /* Size the buffer to the content: each atom carries an otsFragment (~1100 chars) plus
-     * meta that can include a base64 ML-KEM pubkey (~1580 chars). A fixed 8192 truncated
-     * any molecule with a pubkey I-atom, producing malformed JSON — scale per atom. */
-    size_t buf_size = 16384 + molecule->atom_count * 8192;
-    char* buffer = knishio_malloc(buf_size);
-    if (!buffer) {
+    /* The text grows with its content (atoms with OTS fragments, ML-KEM keys and arbitrary
+     * meta); nothing is truncated. String values are JSON-escaped. */
+    knishio_string_t* out = knishio_string_create();
+    if (!out) {
         return KNISHIO_ERROR_MEMORY;
     }
-    
-    /* Start JSON object */
-    strcpy(buffer, "{");
-    
-    /* Add status field (null for unsigned molecules) */
-    strcat(buffer, "\"status\":null,");
-    
-    /* Add molecular hash */
-    /* String VALUES are JSON-escaped (knishio_json_escape_string) so any value
-     * with " / \ / control chars stays well-formed (mirrors knishio_atom_to_json). */
-    if (molecule->molecular_hash) {
-        char* eh = knishio_json_escape_string(molecule->molecular_hash);
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"molecularHash\":\"%s\",", eh ? eh : "");
-        knishio_free(eh);
-    } else {
-        strcat(buffer, "\"molecularHash\":null,");
-    }
+    knishio_error_t error = KNISHIO_SUCCESS;
 
-    /* Add creation timestamp (JS SDK compatible - milliseconds) */
-    snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-        "\"createdAt\":\"%ld\",", (long)molecule->created_at * 1000);
+    bool ok = knishio_string_append_sprintf(out, "{\"status\":null,")
+        && append_json_string_member(out, "molecularHash", molecule->molecular_hash, ",")
+        /* createdAt in milliseconds, as the JS SDK writes it */
+        && knishio_string_append_sprintf(out, "\"createdAt\":\"%ld\",", (long)molecule->created_at * 1000)
+        && append_json_string_member(out, "cellSlug",
+                                     (molecule->cell_slug && molecule->cell_slug[0]) ? molecule->cell_slug : NULL, ",")
+        && append_json_string_member(out, "bundle",
+                                     (molecule->bundle && molecule->bundle[0]) ? molecule->bundle : NULL, ",")
+        && (!molecule->version || append_json_string_member(out, "version", molecule->version, ","))
+        && knishio_string_append_sprintf(out, "\"atoms\":[");
 
-    /* Add cell slug if present */
-    if (molecule->cell_slug && strlen(molecule->cell_slug) > 0) {
-        char* ec = knishio_json_escape_string(molecule->cell_slug);
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"cellSlug\":\"%s\",", ec ? ec : "");
-        knishio_free(ec);
-    } else {
-        strcat(buffer, "\"cellSlug\":null,");
-    }
-
-    /* Add bundle hash */
-    if (molecule->bundle && strlen(molecule->bundle) > 0) {
-        char* eb = knishio_json_escape_string(molecule->bundle);
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"bundle\":\"%s\",", eb ? eb : "");
-        knishio_free(eb);
-    } else {
-        strcat(buffer, "\"bundle\":null,");
-    }
-
-    /* Add version if present */
-    if (molecule->version) {
-        char* ev = knishio_json_escape_string(molecule->version);
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            "\"version\":\"%s\",", ev ? ev : "");
-        knishio_free(ev);
-    }
-    
-    /* Add atoms array */
-    strcat(buffer, "\"atoms\":[");
-    
-    for (size_t i = 0; i < molecule->atom_count; i++) {
-        if (i > 0) {
-            strcat(buffer, ",");
-        }
-        
-        /* Get atom JSON */
+    for (size_t i = 0; ok && i < molecule->atom_count; i++) {
         char* atom_json = NULL;
-        knishio_error_t error = knishio_atom_to_json(molecule->atoms[i], &atom_json);
+        error = knishio_atom_to_json(molecule->atoms[i], &atom_json);
         if (error != KNISHIO_SUCCESS) {
-            knishio_free(buffer);
+            knishio_string_destroy(out);
             return error;
         }
-        
-        /* Add atom JSON to buffer */
-        strncat(buffer, atom_json, buf_size - strlen(buffer) - 1);
+        ok = knishio_string_append_sprintf(out, "%s%s", i > 0 ? "," : "", atom_json);
         knishio_free(atom_json);
     }
-    
-    /* Close atoms array */
-    strcat(buffer, "]");
-    
-    /* Add sourceWallet data for cross-SDK validation (matches Python/TypeScript pattern) */
-    if (molecule->source_wallet) {
-        char* sa = knishio_json_escape_string(molecule->source_wallet->address ? molecule->source_wallet->address : "");
-        char* sp = knishio_json_escape_string(molecule->source_wallet->position ? molecule->source_wallet->position : "");
-        char* st = knishio_json_escape_string(molecule->source_wallet->token ? molecule->source_wallet->token : "");
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            ",\"sourceWallet\":{\"address\":\"%s\",\"position\":\"%s\",\"token\":\"%s\",\"balance\":%.1f}",
-            sa ? sa : "", sp ? sp : "", st ? st : "",
-            molecule->source_wallet->balance);
-        knishio_free(sa); knishio_free(sp); knishio_free(st);
-    }
+    ok = ok && knishio_string_append_sprintf(out, "]");
 
-    /* Add remainderWallet data for cross-SDK validation (matches Python/TypeScript pattern) */
-    if (molecule->remainder_wallet) {
-        char* ra = knishio_json_escape_string(molecule->remainder_wallet->address ? molecule->remainder_wallet->address : "");
-        char* rp = knishio_json_escape_string(molecule->remainder_wallet->position ? molecule->remainder_wallet->position : "");
-        char* rt = knishio_json_escape_string(molecule->remainder_wallet->token ? molecule->remainder_wallet->token : "");
-        snprintf(buffer + strlen(buffer), buf_size - strlen(buffer),
-            ",\"remainderWallet\":{\"address\":\"%s\",\"position\":\"%s\",\"token\":\"%s\",\"balance\":%.1f}",
-            ra ? ra : "", rp ? rp : "", rt ? rt : "",
-            molecule->remainder_wallet->balance);
-        knishio_free(ra); knishio_free(rp); knishio_free(rt);
+    /* sourceWallet / remainderWallet for cross-SDK validation (Python/TypeScript pattern) */
+    if (ok && molecule->source_wallet) {
+        ok = append_json_wallet(out, "sourceWallet", molecule->source_wallet);
     }
-    
-    /* Close main JSON object */
-    strcat(buffer, "}");
-    
-    /* Create final output string */
-    size_t final_len = strlen(buffer);
-    char* final_json = knishio_malloc(final_len + 1);
+    if (ok && molecule->remainder_wallet) {
+        ok = append_json_wallet(out, "remainderWallet", molecule->remainder_wallet);
+    }
+    ok = ok && knishio_string_append_sprintf(out, "}");
+
+    char* final_json = ok ? knishio_strdup(knishio_string_cstr(out)) : NULL;
+    knishio_string_destroy(out);
     if (!final_json) {
-        knishio_free(buffer);
         return KNISHIO_ERROR_MEMORY;
     }
-    
-    strcpy(final_json, buffer);
-    knishio_free(buffer);
-    
     *json_output = final_json;
     return KNISHIO_SUCCESS;
 }
@@ -1820,6 +1763,384 @@ knishio_error_t knishio_molecule_init_shadow_wallet_claim(
     const char* keys[] = { "shadowWalletClaim" };
     const char* vals[] = { "1" };
     return knishio_molecule_init_wallet_creation(molecule, wallet, keys, vals, 1);
+}
+
+/* --- Identifier, policy and rule molecules (JS initIdentifierCreation, addPolicyAtom, createRule) --- */
+
+/* A meta-only atom (no value) signed by the source wallet, appended to the molecule. */
+static knishio_error_t add_source_meta_atom(
+    knishio_molecule_t* molecule,
+    knishio_isotope_t isotope,
+    const char* meta_type,
+    const char* meta_id,
+    const char** keys,
+    const char** vals,
+    size_t n
+) {
+    const knishio_wallet_t* src = molecule->source_wallet;
+    knishio_atom_t* atom = NULL;
+    knishio_error_t result = knishio_atom_create(&atom, src->position, src->address, isotope, src->token, NULL, NULL);
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+    knishio_free(atom->meta_type);
+    knishio_free(atom->meta_id);
+    atom->meta_type = meta_type ? knishio_strdup(meta_type) : NULL;
+    atom->meta_id = meta_id ? knishio_strdup(meta_id) : NULL;
+    if ((meta_type && !atom->meta_type) || (meta_id && !atom->meta_id)) {
+        result = KNISHIO_ERROR_MEMORY;
+    }
+    if (result == KNISHIO_SUCCESS) {
+        result = set_atom_meta_pairs(atom, keys, vals, n);
+    }
+    if (result == KNISHIO_SUCCESS) {
+        result = knishio_molecule_add_atom(molecule, atom);
+    }
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free_deep(atom);
+    }
+    return result;
+}
+
+/* Byte length of the JavaScript String.prototype.trim whitespace character (UTF-8) at p, 0 if
+ * there is none: ASCII TAB LF VT FF CR SPACE, U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029,
+ * U+202F, U+205F, U+3000 and U+FEFF. */
+static size_t js_space_at(const unsigned char* p) {
+    if (*p == ' ' || (*p >= '\t' && *p <= '\r')) return 1;
+    if (p[0] == 0xC2 && p[1] == 0xA0) return 2;
+    if (p[0] == 0xE1 && p[1] == 0x9A && p[2] == 0x80) return 3;
+    if (p[0] == 0xE2 && p[1] == 0x80 && ((p[2] >= 0x80 && p[2] <= 0x8A) || p[2] == 0xA8 || p[2] == 0xA9 || p[2] == 0xAF)) return 3;
+    if (p[0] == 0xE2 && p[1] == 0x81 && p[2] == 0x9F) return 3;
+    if (p[0] == 0xE3 && p[1] == 0x80 && p[2] == 0x80) return 3;
+    if (p[0] == 0xEF && p[1] == 0xBB && p[2] == 0xBF) return 3;
+    return 0;
+}
+
+/* contact.trim() as a new string (caller frees with knishio_free) */
+static char* js_trim_copy(const char* s) {
+    const unsigned char* p = (const unsigned char*)s;
+    size_t skip;
+    while ((skip = js_space_at(p)) > 0) {
+        p += skip;
+    }
+    const unsigned char* end = p;
+    for (const unsigned char* q = p; *q;) {
+        skip = js_space_at(q);
+        if (skip == 0) {
+            q++;
+            end = q;
+        } else {
+            q += skip;
+        }
+    }
+    size_t len = (size_t)(end - p);
+    char* out = knishio_malloc(len + 1);
+    if (out) {
+        memcpy(out, p, len);
+        out[len] = '\0';
+    }
+    return out;
+}
+
+/* JSON.stringify(new PolicyMeta(policy, keys).get()) where keys are the indexes "0".."n-1" of
+ * an AtomMeta with n entries (AtomMeta.addPolicy passes Object.keys of its meta array). */
+static knishio_error_t policy_meta_text(const char* policy_json, size_t meta_entry_count, char** out) {
+    *out = NULL;
+    cJSON* policy = NULL;
+    if (policy_json) {
+        policy = cJSON_Parse(policy_json);
+        if (!policy) {
+            return KNISHIO_ERROR_POLICY_INVALID;
+        }
+    }
+    char (*index_keys)[24] = meta_entry_count ? knishio_calloc(meta_entry_count, sizeof *index_keys) : NULL;
+    const char** keys = meta_entry_count ? knishio_calloc(meta_entry_count, sizeof *keys) : NULL;
+    knishio_error_t result = KNISHIO_SUCCESS;
+    if (meta_entry_count && (!index_keys || !keys)) {
+        result = KNISHIO_ERROR_MEMORY;
+    }
+    for (size_t i = 0; result == KNISHIO_SUCCESS && i < meta_entry_count; i++) {
+        snprintf(index_keys[i], sizeof index_keys[i], "%zu", i);
+        keys[i] = index_keys[i];
+    }
+    knishio_policy_meta_t* meta = result == KNISHIO_SUCCESS ? knishio_policy_meta_create(policy, keys, meta_entry_count) : NULL;
+    char* printed = meta ? knishio_policy_meta_to_json(meta) : NULL;
+    if (result == KNISHIO_SUCCESS && !printed) {
+        result = KNISHIO_ERROR_MEMORY;
+    }
+    if (printed) {
+        *out = knishio_strdup(printed);
+        cJSON_free(printed);
+        if (!*out) result = KNISHIO_ERROR_MEMORY;
+    }
+    knishio_policy_meta_free(meta);
+    knishio_free(keys);
+    knishio_free(index_keys);
+    cJSON_Delete(policy);
+    return result;
+}
+
+knishio_error_t knishio_molecule_init_identifier_creation(
+    knishio_molecule_t* molecule,
+    const char* type,
+    const char* contact,
+    const char* code
+) {
+    if (!molecule || !type || !contact) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!molecule->source_wallet || !molecule->remainder_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    /* meta { code, hash: generateBundleHash(contact.trim()) }: the contact itself is never sent */
+    char* trimmed = js_trim_copy(contact);
+    if (!trimmed) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+    char* hash = NULL;
+    const bool hashed = knishio_generate_bundle_hash(trimmed, NULL, NULL, &hash);
+    knishio_free(trimmed);
+    if (!hashed || !hash) {
+        return KNISHIO_ERROR_CRYPTO;
+    }
+
+    const char* keys[] = { "code", "hash" };
+    const char* vals[] = { code, hash };
+    knishio_error_t result = add_source_meta_atom(molecule, KNISHIO_ISOTOPE_C, "identifier", type, keys, vals, 2);
+    knishio_free(hash);
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+    return add_continuid_atom(molecule);
+}
+
+knishio_error_t knishio_molecule_add_policy_atom(
+    knishio_molecule_t* molecule,
+    const char* meta_type,
+    const char* meta_id,
+    const char** meta_keys,
+    const char** meta_values,
+    size_t meta_count,
+    const char* policy_json
+) {
+    if (!molecule || (meta_count > 0 && (!meta_keys || !meta_values))) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!molecule->source_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    char* policy_text = NULL;
+    knishio_error_t result = policy_meta_text(policy_json, meta_count, &policy_text);
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+    const char** keys = knishio_calloc(meta_count + 1, sizeof *keys);
+    const char** vals = knishio_calloc(meta_count + 1, sizeof *vals);
+    if (!keys || !vals) {
+        result = KNISHIO_ERROR_MEMORY;
+    } else {
+        for (size_t i = 0; i < meta_count; i++) {
+            keys[i] = meta_keys[i];
+            vals[i] = meta_values[i];
+        }
+        keys[meta_count] = "policy";
+        vals[meta_count] = policy_text;
+        /* R-atom signed by the source (ContinuID) wallet, as JS addPolicyAtom does */
+        result = add_source_meta_atom(molecule, KNISHIO_ISOTOPE_R, meta_type, meta_id, keys, vals, meta_count + 1);
+    }
+    knishio_free(keys);
+    knishio_free(vals);
+    knishio_free(policy_text);
+    return result;
+}
+
+knishio_error_t knishio_molecule_add_continuid_atom(knishio_molecule_t* molecule) {
+    if (!molecule || !molecule->source_wallet) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    return add_continuid_atom(molecule);
+}
+
+static bool rule_js_truthy(const cJSON* v) {
+    if (!v || cJSON_IsNull(v) || cJSON_IsFalse(v)) return false;
+    if (cJSON_IsNumber(v)) return v->valuedouble != 0;
+    if (cJSON_IsString(v)) return v->valuestring && v->valuestring[0];
+    return true;
+}
+
+/* new Meta(meta).toJSON(): the for...in members of `meta` (an array gives its indexes, an ASCII
+ * string its characters, a number or boolean nothing). A non-ASCII string is refused rather
+ * than split differently from JavaScript's UTF-16 indexes. */
+static cJSON* rule_callback_meta(const cJSON* meta) {
+    if (cJSON_IsObject(meta)) {
+        return cJSON_Duplicate(meta, true);
+    }
+    cJSON* out = cJSON_CreateObject();
+    if (!out) return NULL;
+    char key[24];
+    if (cJSON_IsArray(meta)) {
+        size_t i = 0;
+        const cJSON* el = NULL;
+        cJSON_ArrayForEach(el, meta) {
+            snprintf(key, sizeof key, "%zu", i++);
+            if (!cJSON_AddItemToObject(out, key, cJSON_Duplicate(el, true))) {
+                cJSON_Delete(out);
+                return NULL;
+            }
+        }
+    } else if (cJSON_IsString(meta)) {
+        for (size_t i = 0; meta->valuestring[i]; i++) {
+            const char ch[2] = { meta->valuestring[i], '\0' };
+            snprintf(key, sizeof key, "%zu", i);
+            if ((unsigned char)ch[0] >= 0x80 || !cJSON_AddStringToObject(out, key, ch)) {
+                cJSON_Delete(out);
+                return NULL;
+            }
+        }
+    }
+    return out;
+}
+
+/* Rule.toObject(item).toJSON(): {condition: [{key, value, comparison}], callback: [{action,
+ * metaType?, metaId?, meta?, address?, token?, amount?, comparison?}]} with the optional
+ * callback members present only when truthy. Missing condition/callback lists are
+ * KNISHIO_ERROR_META_MISSING; a malformed condition or callback is KNISHIO_ERROR_RULE_INVALID. */
+static knishio_error_t rule_to_js(const cJSON* item, cJSON** out) {
+    *out = NULL;
+    const cJSON* condition = cJSON_IsObject(item) ? cJSON_GetObjectItemCaseSensitive(item, "condition") : NULL;
+    const cJSON* callback = cJSON_IsObject(item) ? cJSON_GetObjectItemCaseSensitive(item, "callback") : NULL;
+    if (!rule_js_truthy(condition) || !rule_js_truthy(callback)) {
+        return KNISHIO_ERROR_META_MISSING;
+    }
+    if (!cJSON_IsArray(condition) || !cJSON_IsArray(callback)) {
+        return KNISHIO_ERROR_RULE_INVALID;
+    }
+    cJSON* rule = cJSON_CreateObject();
+    cJSON* conditions = rule ? cJSON_AddArrayToObject(rule, "condition") : NULL;
+    cJSON* callbacks = rule ? cJSON_AddArrayToObject(rule, "callback") : NULL;
+    if (!conditions || !callbacks) {
+        cJSON_Delete(rule);
+        return KNISHIO_ERROR_MEMORY;
+    }
+
+    static const char* const condition_keys[] = { "key", "value", "comparison" };
+    const cJSON* c = NULL;
+    cJSON_ArrayForEach(c, condition) {
+        cJSON* entry = cJSON_CreateObject();
+        if (!entry || !cJSON_AddItemToArray(conditions, entry)) {
+            cJSON_Delete(entry);
+            cJSON_Delete(rule);
+            return KNISHIO_ERROR_MEMORY;
+        }
+        for (size_t k = 0; k < 3; k++) {
+            const cJSON* v = cJSON_IsObject(c) ? cJSON_GetObjectItemCaseSensitive(c, condition_keys[k]) : NULL;
+            if (!rule_js_truthy(v)) {
+                cJSON_Delete(rule);
+                return KNISHIO_ERROR_RULE_INVALID;
+            }
+            if (!cJSON_AddItemToObject(entry, condition_keys[k], cJSON_Duplicate(v, true))) {
+                cJSON_Delete(rule);
+                return KNISHIO_ERROR_MEMORY;
+            }
+        }
+    }
+
+    static const char* const callback_keys[] = {
+        "action", "metaType", "metaId", "meta", "address", "token", "amount", "comparison"
+    };
+    cJSON_ArrayForEach(c, callback) {
+        const cJSON* action = cJSON_IsObject(c) ? cJSON_GetObjectItemCaseSensitive(c, "action") : NULL;
+        cJSON* entry = cJSON_CreateObject();
+        if (!entry || !cJSON_AddItemToArray(callbacks, entry)) {
+            cJSON_Delete(entry);
+            cJSON_Delete(rule);
+            return KNISHIO_ERROR_MEMORY;
+        }
+        if (!rule_js_truthy(action)) {
+            cJSON_Delete(rule);
+            return KNISHIO_ERROR_RULE_INVALID;
+        }
+        for (size_t k = 0; k < sizeof callback_keys / sizeof callback_keys[0]; k++) {
+            const cJSON* v = cJSON_GetObjectItemCaseSensitive(c, callback_keys[k]);
+            if (!rule_js_truthy(v)) {
+                continue;
+            }
+            cJSON* copy = (k == 3) ? rule_callback_meta(v) : cJSON_Duplicate(v, true);
+            if (!copy) {
+                cJSON_Delete(rule);
+                return k == 3 ? KNISHIO_ERROR_RULE_INVALID : KNISHIO_ERROR_MEMORY;
+            }
+            if (!cJSON_AddItemToObject(entry, callback_keys[k], copy)) {
+                cJSON_Delete(copy);
+                cJSON_Delete(rule);
+                return KNISHIO_ERROR_MEMORY;
+            }
+        }
+    }
+    *out = rule;
+    return KNISHIO_SUCCESS;
+}
+
+knishio_error_t knishio_molecule_create_rule(
+    knishio_molecule_t* molecule,
+    const char* meta_type,
+    const char* meta_id,
+    const char* rule_json,
+    const char* policy_json
+) {
+    if (!molecule || !rule_json) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    if (!molecule->source_wallet || !molecule->remainder_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    /* meta.rule = JSON.stringify(rules.map(Rule.toObject)) */
+    cJSON* rules = cJSON_Parse(rule_json);
+    if (!cJSON_IsArray(rules)) {
+        cJSON_Delete(rules);
+        return KNISHIO_ERROR_RULE_INVALID;
+    }
+    cJSON* canonical = cJSON_CreateArray();
+    knishio_error_t result = canonical ? KNISHIO_SUCCESS : KNISHIO_ERROR_MEMORY;
+    const cJSON* item = NULL;
+    cJSON_ArrayForEach(item, rules) {
+        cJSON* rule = NULL;
+        if (result == KNISHIO_SUCCESS) {
+            result = rule_to_js(item, &rule);
+        }
+        if (result == KNISHIO_SUCCESS && !cJSON_AddItemToArray(canonical, rule)) {
+            cJSON_Delete(rule);
+            result = KNISHIO_ERROR_MEMORY;
+        }
+    }
+    cJSON_Delete(rules);
+    char* rule_text = NULL;
+    if (result == KNISHIO_SUCCESS) {
+        knishio_json_js_order(canonical);
+        rule_text = cJSON_PrintUnformatted(canonical);
+        if (!rule_text) result = KNISHIO_ERROR_MEMORY;
+    }
+    cJSON_Delete(canonical);
+
+    /* meta.policy: the AtomMeta holds one entry (rule) when addPolicy runs, so key "0" */
+    char* policy_text = NULL;
+    if (result == KNISHIO_SUCCESS) {
+        result = policy_meta_text(policy_json, 1, &policy_text);
+    }
+    if (result == KNISHIO_SUCCESS) {
+        const char* keys[] = { "rule", "policy" };
+        const char* vals[] = { rule_text, policy_text };
+        result = add_source_meta_atom(molecule, KNISHIO_ISOTOPE_R, meta_type, meta_id, keys, vals, 2);
+    }
+    cJSON_free(rule_text);
+    knishio_free(policy_text);
+    if (result != KNISHIO_SUCCESS) {
+        return result;
+    }
+    return add_continuid_atom(molecule);
 }
 
 /**

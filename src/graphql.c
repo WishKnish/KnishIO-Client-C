@@ -7,7 +7,6 @@
  */
 
 #include "knishio/graphql.h"
-#include "knishio/http/client.h"
 #include "knishio/auth_token.h"
 #include "knishio/utils/memory.h"
 #include "knishio/utils/string.h"

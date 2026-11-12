@@ -16,6 +16,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <cjson/cJSON.h>
+
 /* QueryBalance GraphQL query template. Selects tokenUnits { id name metas } so
  * query_balance_wallet reads stackable units back (validator's Wallet.tokenUnits
  * resolver, gap SDK-001 Phase 1). `type` selects buffer rows ("buffer") or regular rows
@@ -169,8 +171,9 @@ knishio_error_t knishio_client_transfer_tokens(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, user->secret, params->token, remainder_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, user->secret, params->token, remainder_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -389,8 +392,9 @@ knishio_error_t knishio_client_transfer_tokens_multi(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, user->secret, params->token, remainder_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, user->secret, params->token, remainder_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -491,26 +495,19 @@ knishio_error_t knishio_client_query_balance(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     
-    /* Build variables JSON - simple string concatenation for now */
-    char variables[512] = "{";
-    bool first = true;
-    
-    if (bundle_hash) {
-        strcat(variables, "\"bundleHash\":\"");
-        strcat(variables, bundle_hash);
-        strcat(variables, "\"");
-        first = false;
+    /* Build variables JSON (cJSON escapes the values and sizes the text) */
+    cJSON* vars = cJSON_CreateObject();
+    bool built = vars
+        && (!bundle_hash || cJSON_AddStringToObject(vars, "bundleHash", bundle_hash))
+        && (!token || cJSON_AddStringToObject(vars, "token", token));
+    char* variables = built ? cJSON_PrintUnformatted(vars) : NULL;
+    cJSON_Delete(vars);
+    if (!variables) {
+        return KNISHIO_ERROR_MEMORY;
     }
-    if (token) {
-        if (!first) strcat(variables, ",");
-        strcat(variables, "\"token\":\"");
-        strcat(variables, token);
-        strcat(variables, "\"");
-    }
-    strcat(variables, "}");
-    
-    /* Execute through a proper graphql client (auth token propagates as X-Auth-Token; Balance
-     * reads are auth-gated). Was the old (knishio_graphql_client_t*)client cast (cycle-40 bug). */
+
+    /* Execute through the client transport (auth token as X-Auth-Token; Balance reads are
+     * auth-gated). */
     knishio_graphql_response_t* response = NULL;
     knishio_graphql_operation_t operation = {
         .name = "QueryBalance",
@@ -521,6 +518,7 @@ knishio_error_t knishio_client_query_balance(
     };
 
     knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
+    cJSON_free(variables);
 
     if (error != KNISHIO_SUCCESS) {
         return error;
@@ -766,8 +764,9 @@ knishio_error_t knishio_client_burn_tokens(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, user->secret, token, remainder_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, user->secret, token, remainder_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -1000,8 +999,9 @@ knishio_error_t knishio_client_deposit_buffer_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&buffer, user->secret, token, buffer_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&buffer, user->secret, token, buffer_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -1015,8 +1015,9 @@ knishio_error_t knishio_client_deposit_buffer_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, user->secret, token, remainder_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, user->secret, token, remainder_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -1106,8 +1107,9 @@ knishio_error_t knishio_client_withdraw_buffer_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, user->secret, token, remainder_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, user->secret, token, remainder_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;

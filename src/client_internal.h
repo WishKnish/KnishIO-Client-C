@@ -9,7 +9,6 @@
  * but not exposed in the public API.
  */
 
-#include "knishio/client_auth.h"
 #include "knishio/auth_token.h"
 #include "knishio/wallet.h"
 #include "knishio/http.h"
@@ -32,8 +31,6 @@ typedef struct {
     bool encrypt;                            /**< Encryption flag */
     bool auto_refresh;                       /**< Auto-refresh enabled */
     int64_t refresh_threshold_ms;            /**< Refresh threshold */
-    knishio_auth_event_callback_t callback;  /**< Auth event callback */
-    void* callback_user_data;                /**< Callback user data */
     knishio_secret_storage_provider_t *secret_storage;  /**< Attached provider, NOT owned */
     char *bundle_hash;                                  /**< Bundle hash of the active secret (owned) or NULL */
     char *storage_label;                                /**< Owned copy of label */

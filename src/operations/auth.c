@@ -17,13 +17,18 @@
 #include "knishio/molecule.h"
 #include "knishio/operations/wallet.h"
 #include "knishio/utils/logging.h"
+#include "knishio/utils/memory.h"
 #include "operations_internal.h"
 
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
+#include <time.h>
 
-/* Authentication GraphQL mutation templates */
+#include <cjson/cJSON.h>
+
+/* Guest authorization (JS MutationRequestAuthorizationGuest, plus encrypt as the response reads it) */
 static const char* ACCESS_TOKEN_MUTATION = 
     "mutation AccessToken($cellSlug: String, $pubkey: String, $encrypt: Boolean) {"
     "  AccessToken(cellSlug: $cellSlug, pubkey: $pubkey, encrypt: $encrypt) {"
@@ -31,7 +36,6 @@ static const char* ACCESS_TOKEN_MUTATION =
     "    pubkey"
     "    expiresAt"
     "    encrypt"
-    "    reason"
     "  }"
     "}";
 
@@ -71,11 +75,6 @@ static const char* ACTIVE_SESSION_MUTATION =
     "}";
 
 /* Internal helper functions */
-static knishio_error_t knishio_parse_guest_auth_response(
-    const char* response_data,
-    knishio_request_guest_auth_token_result_t* result
-);
-
 static knishio_error_t knishio_parse_profile_auth_response(
     const char* response_data,
     knishio_request_profile_auth_token_result_t* result
@@ -85,7 +84,54 @@ static knishio_error_t knishio_parse_profile_auth_response(
  * (data.ProposeMolecule.payload.key) from the profile-auth response. Malloc'd (caller frees), or NULL. */
 static char* knishio_extract_server_pubkey(const char* response_data);
 
-/* Request guest authentication token */
+/* A JSON number, or a string Number() reads whole; false otherwise. */
+static bool auth_json_number(const cJSON* v, double* out) {
+    if (cJSON_IsNumber(v)) {
+        *out = v->valuedouble;
+        return true;
+    }
+    if (cJSON_IsString(v) && v->valuestring[0]) {
+        char* end = NULL;
+        *out = strtod(v->valuestring, &end);
+        return end && *end == '\0';
+    }
+    return false;
+}
+
+/* ResponseRequestAuthorization(Guest).expiresAt(): a truthy expiresAt; otherwise time, as is
+ * when it is a Unix time in seconds (>= 2020-01-01), else a lifetime in milliseconds from now.
+ * 0 (an expired token) when the payload has neither. */
+static int64_t auth_expires_at(const cJSON* payload) {
+    double v = 0;
+    if (auth_json_number(cJSON_GetObjectItemCaseSensitive(payload, "expiresAt"), &v) && v != 0) {
+        return (int64_t)v;
+    }
+    if (!auth_json_number(cJSON_GetObjectItemCaseSensitive(payload, "time"), &v)) {
+        return 0;
+    }
+    if (v >= 1577836800.0) {
+        return (int64_t)v;
+    }
+    return (int64_t)time(NULL) + (int64_t)floor(v / 1000.0);
+}
+
+/* The profile token's expiry (Unix seconds) from data.ProposeMolecule.payload, a JSON string
+ * (ResponseRequestAuthorization.expiresAt()); 0 when it carries neither expiresAt nor time. */
+static int64_t knishio_extract_profile_expires_at(const char* response_data) {
+    cJSON* root = response_data ? cJSON_Parse(response_data) : NULL;
+    const cJSON* propose = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(root, "data"), "ProposeMolecule");
+    const cJSON* payload_text = cJSON_GetObjectItemCaseSensitive(propose, "payload");
+    cJSON* payload = cJSON_IsString(payload_text) ? cJSON_Parse(payload_text->valuestring) : NULL;
+    const int64_t expires_at = payload ? auth_expires_at(payload) : 0;
+    cJSON_Delete(payload);
+    cJSON_Delete(root);
+    return expires_at;
+}
+
+/* Request guest authentication token (JS requestGuestAuthToken): an AUTH wallet from
+ * generateSecret(fingerprint) at the client's OTS version and ML-KEM set sends its ML-KEM public
+ * key; the returned token (with its expiry and the validator's key) becomes the client's auth
+ * token, and the guest wallet plus that key become the CipherHash context. */
 knishio_error_t knishio_client_request_guest_auth_token(
     knishio_client_t* client,
     const knishio_request_guest_auth_token_params_t* params,
@@ -98,121 +144,106 @@ knishio_error_t knishio_client_request_guest_auth_token(
     if (!params->cell_slug) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Generate device fingerprint */
+
     char* fingerprint = NULL;
-    knishio_error_t error = knishio_get_fingerprint(&fingerprint);
-    if (error != KNISHIO_SUCCESS) {
-        return error;
-    }
-    
-    /* Create guest wallet from fingerprint */
+    char* guest_secret = NULL;
+    char* position = NULL;
     knishio_wallet_t* guest_wallet = NULL;
-    error = knishio_create_guest_wallet_from_fingerprint(fingerprint, &guest_wallet);
-    if (error != KNISHIO_SUCCESS) {
-        free(fingerprint);
-        return error;
-    }
-    
-    /* Get wallet public key */
-    const char* pubkey = knishio_wallet_get_address(guest_wallet);
-    if (!pubkey) {
-        knishio_wallet_cleanup(guest_wallet);
-        free(fingerprint);
-        return KNISHIO_ERROR_WALLET_MISMATCH;
-    }
-    
-    /* Build variables JSON for AccessToken mutation */
-    knishio_json_builder_t* builder = knishio_json_builder_create();
-    if (!builder) {
-        knishio_wallet_cleanup(guest_wallet);
-        free(fingerprint);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    error = knishio_json_builder_start_object(builder);
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_add_string(builder, "cellSlug", params->cell_slug);
-    }
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_add_string(builder, "pubkey", pubkey);
-    }
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_add_boolean(builder, "encrypt", params->encrypt);
-    }
-    if (error == KNISHIO_SUCCESS) {
-        error = knishio_json_builder_end_object(builder);
-    }
-    
     char* variables_json = NULL;
+    knishio_graphql_response_t* response = NULL;
+    cJSON* root = NULL;
+    knishio_request_guest_auth_token_result_t* auth_result = NULL;
+
+    knishio_error_t error = knishio_get_fingerprint(&fingerprint);
+    if (error == KNISHIO_SUCCESS && !knishio_generate_secret(fingerprint, KNISHIO_SECRET_LENGTH, &guest_secret)) {
+        error = KNISHIO_ERROR_CRYPTO;
+    }
+    if (error == KNISHIO_SUCCESS && !knishio_generate_position(&position)) {
+        error = KNISHIO_ERROR_CRYPTO;
+    }
+    if (error == KNISHIO_SUCCESS
+        && (!knishio_wallet_create_with_mlkem_param(&guest_wallet, guest_secret, "AUTH", position,
+                                                    knishio_client_get_ots_version(client),
+                                                    knishio_client_mlkem_param(client))
+            || !guest_wallet->pubkey || !guest_wallet->pubkey[0])) {
+        error = KNISHIO_ERROR_CRYPTO;
+    }
+
+    /* Variables { cellSlug, pubkey: the guest wallet's base64 ML-KEM key, encrypt } */
     if (error == KNISHIO_SUCCESS) {
-        knishio_json_t* json_obj = knishio_json_builder_build(builder);
-        if (json_obj) {
-            error = knishio_json_to_string(json_obj, &variables_json);
-            knishio_json_free(json_obj);
-        } else {
+        cJSON* vars = cJSON_CreateObject();
+        bool built = vars
+            && cJSON_AddStringToObject(vars, "cellSlug", params->cell_slug)
+            && cJSON_AddStringToObject(vars, "pubkey", guest_wallet->pubkey)
+            && cJSON_AddBoolToObject(vars, "encrypt", params->encrypt);
+        variables_json = built ? cJSON_PrintUnformatted(vars) : NULL;
+        cJSON_Delete(vars);
+        if (!variables_json) {
             error = KNISHIO_ERROR_MEMORY;
         }
     }
-    
-    knishio_json_builder_free(builder);
-    
-    if (error != KNISHIO_SUCCESS) {
-        knishio_wallet_cleanup(guest_wallet);
-        free(fingerprint);
-        return error;
+    if (error == KNISHIO_SUCCESS) {
+        knishio_graphql_operation_t operation = {
+            .name = "AccessToken",
+            .query = ACCESS_TOKEN_MUTATION,
+            .variables_json = variables_json,
+            .requires_auth = false,
+            .is_mutation = true
+        };
+        error = knishio_client_execute_graphql(client, &operation, &response);
     }
-    
-    /* Execute GraphQL mutation */
-    knishio_graphql_response_t* response = NULL;
-    knishio_graphql_operation_t operation = {
-        .name = "AccessToken",
-        .query = ACCESS_TOKEN_MUTATION,
-        .variables_json = variables_json,
-        .requires_auth = false,
-        .is_mutation = true
-    };
-    
-    error = knishio_graphql_execute(
-        (knishio_graphql_client_t*)client,
-        &operation,
-        &response
-    );
-    
-    free(variables_json);
-    
-    if (error != KNISHIO_SUCCESS) {
-        knishio_wallet_cleanup(guest_wallet);
-        free(fingerprint);
-        return error;
+    if (error == KNISHIO_SUCCESS) {
+        auth_result = calloc(1, sizeof(knishio_request_guest_auth_token_result_t));
+        if (!auth_result) {
+            error = KNISHIO_ERROR_MEMORY;
+        }
     }
-    
-    /* Create result structure */
-    knishio_request_guest_auth_token_result_t* auth_result = calloc(1, sizeof(knishio_request_guest_auth_token_result_t));
-    if (!auth_result) {
-        knishio_graphql_response_free(response);
-        knishio_wallet_cleanup(guest_wallet);
-        free(fingerprint);
-        return KNISHIO_ERROR_MEMORY;
+
+    if (error == KNISHIO_SUCCESS) {
+        root = (response->success && response->data) ? cJSON_Parse(response->data) : NULL;
+        const cJSON* payload = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(root, "data"), "AccessToken");
+        const cJSON* token = cJSON_GetObjectItemCaseSensitive(payload, "token");
+        if (cJSON_IsString(token) && token->valuestring[0]) {
+            const cJSON* key = cJSON_GetObjectItemCaseSensitive(payload, "key");
+            if (!cJSON_IsString(key)) {
+                key = cJSON_GetObjectItemCaseSensitive(payload, "pubkey");
+            }
+            const char* server_pubkey = cJSON_IsString(key) ? key->valuestring : NULL;
+
+            auth_result->success = true;
+            auth_result->response = knishio_strdup(response->data);
+            auth_result->token = knishio_strdup(token->valuestring);
+
+            /* AuthToken.create({ token, expiresAt, pubkey, encrypt }, wallet) + setAuthToken */
+            knishio_auth_token_config_t token_config = {
+                .token = token->valuestring,
+                .expires_at = auth_expires_at(payload),
+                .encrypt = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "encrypt")),
+                .pubkey = server_pubkey ? server_pubkey : ""
+            };
+            knishio_auth_token_t* auth_token = NULL;
+            if (knishio_auth_token_create(&auth_token, &token_config) == KNISHIO_SUCCESS && auth_token) {
+                knishio_client_set_auth_token(client, auth_token);
+            }
+            if (server_pubkey && server_pubkey[0]) {
+                knishio_client_set_cipher_context(client, server_pubkey, guest_wallet);
+            }
+        } else {
+            auth_result->success = false;
+            auth_result->error_message = knishio_strdup(
+                response->errors ? response->errors : "Guest authorization rejected: the response carries no token");
+        }
+        *result = auth_result;
     }
-    
-    if (response->data && response->success) {
-        auth_result->success = true;
-        auth_result->response = knishio_strdup(response->data);
-        
-        /* Parse authentication token from response */
-        error = knishio_parse_guest_auth_response(response->data, auth_result);
-    } else {
-        auth_result->success = false;
-        auth_result->error_message = knishio_strdup(response->errors ? response->errors : "Guest auth token request failed");
-    }
-    
-    knishio_graphql_response_free(response);
-    knishio_wallet_cleanup(guest_wallet);
+
+    cJSON_Delete(root);
+    if (response) knishio_graphql_response_free(response);
+    if (variables_json) cJSON_free(variables_json);
+    if (guest_wallet) knishio_wallet_free(guest_wallet);
+    if (guest_secret) knishio_secure_free(guest_secret, strlen(guest_secret));
+    knishio_free(position);
     free(fingerprint);
-    
-    *result = auth_result;
-    return KNISHIO_SUCCESS;
+    return error;
 }
 
 /* Validator reason for a ProposeMolecule outcome (data.ProposeMolecule.reason), else the GraphQL
@@ -257,8 +288,9 @@ static knishio_error_t knishio_propose_profile_auth(
     if (!knishio_generate_position(&remainder_position)) {
         return KNISHIO_ERROR_CRYPTO;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", remainder_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, source->secret, "USER", remainder_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -432,7 +464,7 @@ static void knishio_bind_profile_auth(
     if (auth_result->token) {
         knishio_auth_token_config_t token_config = {
             .token = auth_result->token,
-            .expires_at = 0,
+            .expires_at = knishio_extract_profile_expires_at(response->data),
             .encrypt = params->encrypt,
             .pubkey = source->address
         };
@@ -524,8 +556,9 @@ knishio_error_t knishio_client_request_profile_auth_token(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&source, params->secret, "AUTH", source_position,
-                                                   knishio_client_get_ots_version(client))
+    error = knishio_wallet_create_with_mlkem_param(&source, params->secret, "AUTH", source_position,
+                                                   knishio_client_get_ots_version(client),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -635,11 +668,7 @@ knishio_error_t knishio_client_active_session(
         .is_mutation = true
     };
     
-    error = knishio_graphql_execute(
-        (knishio_graphql_client_t*)client,
-        &operation,
-        &response
-    );
+    error = knishio_client_execute_graphql(client, &operation, &response);
     
     free(variables_json);
     
@@ -695,34 +724,6 @@ knishio_error_t knishio_client_unsubscribe_all(
 }
 
 /* Internal helper functions */
-
-static knishio_error_t knishio_parse_guest_auth_response(
-    const char* response_data,
-    knishio_request_guest_auth_token_result_t* result
-) {
-    if (!response_data || !result) {
-        return KNISHIO_ERROR_NULL_POINTER;
-    }
-    
-    /* Parse JSON response */
-    char* error_msg = NULL;
-    knishio_json_t* json = knishio_json_parse(response_data, &error_msg);
-    if (!json) {
-        if (error_msg) {
-            knishio_free(error_msg);
-        }
-        return KNISHIO_ERROR_JSON_PARSE;
-    }
-    
-    /* Extract token from response */
-    const char* token = knishio_json_get_string_path(json, "data.AccessToken.token");
-    if (token) {
-        result->token = knishio_strdup(token);
-    }
-    
-    knishio_json_free(json);
-    return KNISHIO_SUCCESS;
-}
 
 static knishio_error_t knishio_parse_profile_auth_response(
     const char* response_data,

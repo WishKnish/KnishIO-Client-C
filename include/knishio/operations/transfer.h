@@ -268,13 +268,6 @@ bool knishio_transfer_result_is_success(const knishio_transfer_result_t* result)
  */
 const char* knishio_transfer_result_get_hash(const knishio_transfer_result_t* result);
 
-/**
- * @brief Get transfer error message
- * @param result Transfer result
- * @return Error message or NULL if successful (do not free)
- */
-const char* knishio_transfer_result_get_error(const knishio_transfer_result_t* result);
-
 #ifdef __cplusplus
 }
 #endif

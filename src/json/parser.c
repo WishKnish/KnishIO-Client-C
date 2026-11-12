@@ -471,7 +471,8 @@ knishio_json_t* knishio_json_get_path(const knishio_json_t *json, const char *pa
     if (!path_copy) return NULL;
     
     knishio_json_t *current = (knishio_json_t*)json;
-    char *token = strtok(path_copy, ".");
+    char *save_ptr = NULL;
+    char *token = strtok_r(path_copy, ".", &save_ptr);
     
     while (token && current) {
         if (current->type == KNISHIO_JSON_OBJECT) {
@@ -494,7 +495,7 @@ knishio_json_t* knishio_json_get_path(const knishio_json_t *json, const char *pa
             current = NULL;
             break;
         }
-        token = strtok(NULL, ".");
+        token = strtok_r(NULL, ".", &save_ptr);
     }
     
     knishio_free(path_copy);

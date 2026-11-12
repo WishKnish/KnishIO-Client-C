@@ -14,6 +14,8 @@
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
 
+#include <cjson/cJSON.h>
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -285,37 +287,35 @@ knishio_error_t knishio_meta_array_to_json(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
 
-    /* Simple implementation using string concatenation (KISS approach) */
-    char json_buffer[4096];  /* Reasonable buffer for most cases */
-    strcpy(json_buffer, "[");
-    
-    for (size_t i = 0; i < array->count; i++) {
-        if (i > 0) {
-            strcat(json_buffer, ",");
-        }
-        
-        knishio_meta_t* meta = array->items[i];
-        if (meta && meta->key && meta->value) {
-            char item_buffer[512];
-            snprintf(item_buffer, sizeof(item_buffer),
-                "{\"key\":\"%s\",\"value\":\"%s\"}",
-                meta->key, meta->value);
-            strcat(json_buffer, item_buffer);
-        }
-    }
-    
-    strcat(json_buffer, "]");
-    
-    size_t json_len = strlen(json_buffer);
-    char* json_copy = knishio_malloc(json_len + 1);
-    if (!json_copy) {
+    /* cJSON escapes keys and values and sizes the text; an item without key or value is
+     * skipped (it used to leave an empty slot, "[,…]"). */
+    cJSON* json = cJSON_CreateArray();
+    if (!json) {
         return KNISHIO_ERROR_MEMORY;
     }
-    
-    strcpy(json_copy, json_buffer);
-    *output_json = json_copy;
-    
-    return KNISHIO_SUCCESS;
+    for (size_t i = 0; i < array->count; i++) {
+        const knishio_meta_t* meta = array->items[i];
+        if (!meta || !meta->key || !meta->value) {
+            continue;
+        }
+        cJSON* item = cJSON_CreateObject();
+        if (!item || !cJSON_AddStringToObject(item, "key", meta->key)
+            || !cJSON_AddStringToObject(item, "value", meta->value)
+            || !cJSON_AddItemToArray(json, item)) {
+            cJSON_Delete(item);
+            cJSON_Delete(json);
+            return KNISHIO_ERROR_MEMORY;
+        }
+    }
+
+    char* printed = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+    if (!printed) {
+        return KNISHIO_ERROR_MEMORY;
+    }
+    *output_json = knishio_strdup(printed);
+    cJSON_free(printed);
+    return *output_json ? KNISHIO_SUCCESS : KNISHIO_ERROR_MEMORY;
 }
 
 /* Validation functions */

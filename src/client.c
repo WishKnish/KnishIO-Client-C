@@ -1,6 +1,5 @@
 #include "knishio/knishio.h"
 #include "knishio/auth_token.h"
-#include "knishio/client_auth.h"
 #include "knishio/client_ops.h"
 #include "knishio/wallet.h"
 #include "knishio/http.h"
@@ -9,8 +8,10 @@
 #include "knishio/json/parser.h"
 #include "knishio/crypto/cipher_hash.h"
 #include "knishio/utils/memory.h"
+#include "knishio/utils/encoding.h"
 #include "client_internal.h"
 #include "graphql_internal.h"
+#include "operations/operations_internal.h"
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -92,7 +93,8 @@ knishio_error_t knishio_client_create(knishio_client_t **client, const knishio_c
     new_client->cipher_wallet = NULL;
     new_client->mlkem_parameter_set = (config->mlkem_parameter_set == 768) ? 768 : 1024;
     new_client->ots_version = config->ots_version == 0 ? KNISHIO_OTS_V2 : config->ots_version;
-    knishio_wallet_set_default_mlkem_param(new_client->mlkem_parameter_set == 768 ? KNISHIO_MLKEM_768 : KNISHIO_MLKEM_1024);
+    /* The ML-KEM set stays on this client (wallets it builds get it via knishio_client_new_wallet);
+     * the process-wide wallet default is not touched, so other clients are unaffected. */
     // Initialize authentication state
     memset(&new_client->auth_state, 0, sizeof(knishio_client_auth_state_t));
     new_client->auth_state.refresh_threshold_ms = 300000; // 5 minutes default
@@ -171,29 +173,6 @@ void knishio_client_destroy(knishio_client_t *client) {
 
 /* Authentication function implementations */
 
-/* 
- * Legacy authentication function - DEPRECATED
- * Use knishio_client_authenticate() or knishio_client_authenticate_guest() instead
- */
-knishio_error_t knishio_client_request_auth_token(knishio_client_t *client,
-                                                  knishio_wallet_t *wallet,
-                                                  knishio_auth_token_t **auth_token) {
-    if (!client || !wallet || !auth_token) {
-        return KNISHIO_ERROR_NULL_POINTER;
-    }
-    
-    if (!client->initialized || !client->http_client) {
-        return KNISHIO_ERROR_INVALID_STATE; // Client not properly initialized
-    }
-    
-    /* This function is deprecated and should not be used.
-     * Use the new authentication system:
-     * - knishio_client_authenticate() for profile authentication
-     * - knishio_client_authenticate_guest() for guest authentication
-     */
-    return KNISHIO_ERROR_NOT_IMPLEMENTED;
-}
-
 knishio_error_t knishio_client_set_auth_token(knishio_client_t *client,
                                               knishio_auth_token_t *auth_token) {
     if (!client) {
@@ -271,9 +250,9 @@ knishio_error_t knishio_client_clear_auth(knishio_client_t *client) {
 
 /* Borrow client->http_client in a stack knishio_graphql_client_t so every operation shares the
  * client's idle libcurl handle pool and keep-alive connections (and inherits insecure_tls and
- * X-Auth-Token set on client->http_client). Replaces both the old (knishio_graphql_client_t*)client
- * cast (different struct layouts) and the 1.6.1 per-operation knishio_graphql_client_create/free
- * pair, which allocated and destroyed a fresh http_client on every request. */
+ * X-Auth-Token set on client->http_client). Every client operation goes through here: the two
+ * structs have different layouts, so a client must never be passed to knishio_graphql_execute
+ * directly. */
 knishio_error_t knishio_client_execute_graphql(
     knishio_client_t* client,
     const knishio_graphql_operation_t* operation,
@@ -316,6 +295,18 @@ knishio_error_t knishio_client_execute_graphql(
             /* Authorized wallet / server public key missing — never send this in the clear.
              * An empty advertised key counts as missing (parity with JS/TS `!serverPubkey`). */
             return KNISHIO_ERROR_INVALID_STATE;
+        }
+        /* The server key must be the client's own ML-KEM parameter set (JS Wallet.encryptMessage,
+         * Wallet.js:684-686): never encapsulate a 1024 client's traffic at 768, or vice versa. */
+        {
+            unsigned char* raw = NULL;
+            size_t raw_len = 0;
+            const bool decoded = knishio_base64_decode(client->cipher_server_pubkey, &raw, &raw_len);
+            free(raw);
+            const size_t expected = (client->mlkem_parameter_set == 768) ? 1184 : 1568;
+            if (!decoded || raw_len != expected) {
+                return KNISHIO_ERROR_CRYPTO;
+            }
         }
         cJSON* body_json = cJSON_CreateObject();
         if (body_json) {
@@ -472,4 +463,8 @@ knishio_error_t knishio_client_set_ots_version(knishio_client_t* client, int ots
     }
     client->ots_version = ots_version;
     return KNISHIO_SUCCESS;
+}
+
+knishio_mlkem_param_t knishio_client_mlkem_param(const knishio_client_t* client) {
+    return (client && client->mlkem_parameter_set == 768) ? KNISHIO_MLKEM_768 : KNISHIO_MLKEM_1024;
 }

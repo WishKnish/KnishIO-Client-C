@@ -34,8 +34,59 @@ substantiate a detail, the entry says so instead of guessing.
   unparsable file now fails `OtsV2Vectors`, and missing fixtures fail `ServedMolecules`; neither test
   can exit as skipped (code 77) any more.
 
+### Removed
+
+- Headers whose functions the library never compiled or defined: `client_auth.h`,
+  `js_equivalent_constructors.h`, `operations/graphql_operations.h`, `policy/engine.h`,
+  `http/client.h`, `query/queries.h`, `mutation/mutations.h`, `subscribe/subscriptions.h`, and 21
+  `response/response_*.h` headers (their uncompiled sources, the unbuilt tests that used them and the
+  never-linked `examples/` with the `KNISHIO_BUILD_EXAMPLES` option are removed too); the 66
+  declarations without a definition left in `wallet.h`, `token_unit.h`, `utils/string.h`,
+  `json/serializers.h`, `response/response_wallet_list.h`, `crypto/shake256.h` and
+  `operations/transfer.h`; and `knishio_client_request_auth_token`, which only returned
+  `KNISHIO_ERROR_NOT_IMPLEMENTED`. `knishio_client_authenticate` and `knishio_client_configure_auth`
+  are now declared in `client_ops.h`. `knishio_get_fingerprint_data` and the platform getters that
+  returned fixed mock data are removed from `fingerprint.h`. New ctest `HeaderSymbols`
+  (`packaging/check-header-symbols.sh`) fails when an installed header declares a function the
+  static library does not define; `packaging/header-check-exclusions.txt` is empty.
+
 ### Fixed
 
+- **Security:** `knishio_secure_random` and `knishio_random_bytes` use OpenSSL `RAND_bytes` only;
+  the `/dev/urandom`, `/dev/random` and `rand()` fallbacks are gone.
+- **Security:** signing wipes the WOTS+ private key, its chunks and every intermediate chain value
+  before freeing them, and `knishio_molecule_free` wipes the molecule secret.
+- GraphQL variables are built with cJSON (escaped, sized to the content) in `request_tokens`,
+  `query_atom`, `query_active_session`, `query_meta`, `query_batch`, `query_batch_history`,
+  `query_balance` and `query_bundle`; a token longer than about 1000 characters overflowed a stack
+  buffer in `knishio_client_request_tokens`. `knishio_meta_array_to_json` and
+  `knishio_molecule_to_json` grow their output with the content instead of truncating it.
+  `json_get_path` uses `strtok_r`; the storage backends copy a value before freeing the old one.
+  Test: `ClientOperationsLoopback_s2` (ASan/UBSan build).
+- Client operations (`execute_query`, `execute_mutation`, `query_meta`, `query_batch`,
+  `query_batch_history`, `query_atom`, `query_active_session`, `query_policy`, `query_bundle`,
+  `active_session`, `request_tokens`, `create_identifier`, `create_policy`, `create_rule`, guest auth)
+  passed the client to `knishio_graphql_execute` cast to a different struct and crashed; they now go
+  through `knishio_client_execute_graphql` (auth token, TLS settings, CipherHash). Test:
+  `ClientOperationsLoopback_o1`.
+- `knishio_client_create_identifier`, `create_policy` and `create_rule` sent hand-written molecules
+  signed with the literal secret `"placeholder_secret"` (identifier: the cleartext contact, isotope I).
+  They now build, sign and check real molecules with the new
+  `knishio_molecule_init_identifier_creation`, `knishio_molecule_add_policy_atom`,
+  `knishio_molecule_add_continuid_atom` and `knishio_molecule_create_rule` (JS
+  `initIdentifierCreation`, `addPolicyAtom`, `createRule`): signed bytes change, and no other SDK
+  reproduced the old ones. The policy JSON follows JS `PolicyMeta` (defaults keyed by meta index,
+  JavaScript key order) and the rule JSON JS `Rule.toObject`. Tests: `SignedBytesParity` (digests
+  pinned from the JS SDK), `ClientOperationsLoopback_o2`.
+- Guest authorization used a hardcoded fingerprint shared by every C process, sent the wallet
+  address as `pubkey`, asked for a `reason` field the validator does not have and kept nothing it
+  returned. The fingerprint is now SHAKE256-256 of 32 CSPRNG bytes, one per process; the AUTH wallet
+  (from `generateSecret(fingerprint)`, at the client's OTS version and ML-KEM set) sends its ML-KEM
+  public key; the token, its expiry and the validator key are bound to the client. Profile auth tokens
+  now carry the expiry from the response (`expires_at` was 0, so every token read as expired). Test:
+  `ClientOperationsLoopback_o3`.
+- `knishio_error_message`, `knishio_query_atom_result_free` and
+  `knishio_query_active_session_result_free` were declared but not defined; they are now.
 - `knishio_molecule_check()` follows the JS reference verifier (`CheckMolecule.js`). It accepted
   correctly signed molecules that every other SDK rejects: a negative V value after the first atom,
   a V atom paying back to the signing address, a V value that is not a number (`atof` read it as
@@ -71,6 +122,19 @@ substantiate a detail, the entry says so instead of guessing.
 - `knishio_generate_bundle_hash()` hashes any secret string, as JS `generateBundleHash` does; it
   refused anything that was not 2048 hex characters, leaving wallets made from a passphrase
   without a bundle.
+
+### Security
+
+- Encrypted transport refuses a server ML-KEM key that is not the client's own parameter set (JS
+  `Wallet.encryptMessage`): a 1024 client given a 1184-byte key now fails with
+  `KNISHIO_ERROR_CRYPTO` instead of encapsulating at ML-KEM-768. `knishio_client_create` no longer
+  changes the process-wide wallet default (`knishio_wallet_set_default_mlkem_param`), so creating a
+  768 client no longer turned another client's new wallets into 768 wallets; client operations
+  build wallets with the new `knishio_wallet_create_with_mlkem_param` at the client's own set.
+- Overflow guards: `knishio_base64_encode`, `knishio_base64_to_hex` and the ML-KEM hex helper refuse
+  lengths whose output size would wrap `size_t`; the AES-256-GCM functions refuse lengths beyond
+  `INT_MAX` (OpenSSL takes an `int`) instead of truncating them, and wipe the plaintext buffer
+  before freeing it when the tag check fails.
 
 ## [1.6.2] — 2026-10-31
 

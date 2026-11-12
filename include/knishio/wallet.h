@@ -187,37 +187,6 @@ struct knishio_continu_id {
 bool knishio_generate_bundle_hash(const char *secret, const char *token, 
                                   const char *position, char **bundle_hash);
 
-/**
- * @brief Generate next position in sequence
- * @param current_position Current position
- * @param wallet_address Wallet address for entropy
- * @param next_position Output next position (allocated)
- * @return True on success, false on failure
- */
-bool knishio_generate_next_position(const char *current_position, 
-                                    const char *wallet_address,
-                                    char **next_position);
-
-/**
- * @brief Generate deterministic position sequence
- * @param secret Master secret
- * @param count Number of positions to generate
- * @param positions Output position array (allocated)
- * @return True on success, false on failure
- */
-bool knishio_generate_position_sequence(const char *secret, size_t count,
-                                        char ***positions);
-
-/**
- * @brief Validate position sequence continuity
- * @param positions Array of positions
- * @param count Number of positions
- * @param secret Master secret for validation
- * @return True if sequence is valid, false otherwise
- */
-bool knishio_validate_position_sequence(char **positions, size_t count,
-                                        const char *secret);
-
 /* Wallet Creation and Management */
 
 /**
@@ -266,6 +235,23 @@ bool knishio_wallet_create_with_ots_version(knishio_wallet_t **wallet,
                                             int ots_version);
 
 /**
+ * @brief knishio_wallet_create_with_ots_version with an explicit ML-KEM parameter set
+ *
+ * The wallet's ML-KEM keypair is derived once, at mlkem_param, instead of at the process-wide
+ * default (knishio_wallet_set_default_mlkem_param). Client operations use it with the client's
+ * own parameter set.
+ * @param ots_version KNISHIO_OTS_V1 or KNISHIO_OTS_V2
+ * @param mlkem_param KNISHIO_MLKEM_1024 or KNISHIO_MLKEM_768
+ * @return True on success, false on failure (including an unsupported version or set)
+ */
+bool knishio_wallet_create_with_mlkem_param(knishio_wallet_t **wallet,
+                                            const char *secret,
+                                            const char *token,
+                                            const char *position,
+                                            int ots_version,
+                                            knishio_mlkem_param_t mlkem_param);
+
+/**
  * @brief knishio_wallet_create_from_params with an explicit OTS key version
  * @param ots_version KNISHIO_OTS_V1 or KNISHIO_OTS_V2; anything else fails
  * @return True on success, false on failure (including an unsupported version)
@@ -279,22 +265,6 @@ bool knishio_wallet_create_from_params_with_ots_version(knishio_wallet_t **walle
                                                         const char *batch_id,
                                                         const char *characters,
                                                         int ots_version);
-
-/**
- * @brief Create remainder wallet for transfers
- * @param source_wallet Source wallet
- * @param remainder_wallet Output remainder wallet (allocated)
- * @return True on success, false on failure
- */
-bool knishio_wallet_create_remainder(knishio_wallet_t *source_wallet,
-                                     knishio_wallet_t **remainder_wallet);
-
-/**
- * @brief Check if wallet is shadow wallet
- * @param wallet Wallet to check
- * @return True if shadow wallet, false otherwise
- */
-bool knishio_wallet_is_shadow(knishio_wallet_t *wallet);
 
 /**
  * @brief Initialize the wallet's ML-KEM keypair at its configured parameter set
@@ -311,161 +281,9 @@ knishio_mlkem_param_t knishio_wallet_get_default_mlkem_param(void);
 
 /* Wallet Bundle Management */
 
-/**
- * @brief Create wallet bundle
- * @param bundle Output bundle (allocated)
- * @param secret Master secret
- * @param token Default token
- * @return True on success, false on failure
- */
-bool knishio_wallet_bundle_create(knishio_wallet_bundle_t **bundle,
-                                  const char *secret,
-                                  const char *token);
-
-/**
- * @brief Add wallet to bundle
- * @param bundle Wallet bundle
- * @param position Position for new wallet (optional)
- * @param wallet Output wallet (allocated)
- * @return True on success, false on failure
- */
-bool knishio_wallet_bundle_add_wallet(knishio_wallet_bundle_t *bundle,
-                                      const char *position,
-                                      knishio_wallet_t **wallet);
-
-/**
- * @brief Get next position in bundle sequence
- * @param bundle Wallet bundle
- * @param next_position Output next position (allocated)
- * @return True on success, false on failure
- */
-bool knishio_wallet_bundle_get_next_position(knishio_wallet_bundle_t *bundle,
-                                             char **next_position);
-
-/**
- * @brief Find wallet by position in bundle
- * @param bundle Wallet bundle
- * @param position Position to find
- * @return Wallet if found, NULL otherwise
- */
-knishio_wallet_t *knishio_wallet_bundle_find_by_position(knishio_wallet_bundle_t *bundle,
-                                                         const char *position);
-
-/**
- * @brief Free wallet bundle
- * @param bundle Bundle to free
- */
-void knishio_wallet_bundle_free(knishio_wallet_bundle_t *bundle);
-
 /* ContinuID Management */
 
-/**
- * @brief Create ContinuID identity system
- * @param continu_id Output ContinuID (allocated)
- * @param secret Master secret
- * @return True on success, false on failure
- */
-bool knishio_continu_id_create(knishio_continu_id_t **continu_id,
-                               const char *secret);
-
-/**
- * @brief Add device to ContinuID
- * @param continu_id ContinuID system
- * @param device_id Device identifier
- * @param device_name Device name
- * @param device_bundle Output device bundle (allocated)
- * @return True on success, false on failure
- */
-bool knishio_continu_id_add_device(knishio_continu_id_t *continu_id,
-                                   const char *device_id,
-                                   const char *device_name,
-                                   knishio_wallet_bundle_t **device_bundle);
-
-/**
- * @brief Start identity relay race
- * @param continu_id ContinuID system
- * @param initial_position Starting position
- * @param wallet Output initial wallet (allocated)
- * @return True on success, false on failure
- */
-bool knishio_continu_id_start_relay_race(knishio_continu_id_t *continu_id,
-                                         const char *initial_position,
-                                         knishio_wallet_t **wallet);
-
-/**
- * @brief Handoff position in relay race
- * @param continu_id ContinuID system
- * @param reason Handoff reason
- * @param new_wallet Output new wallet (allocated)
- * @param handoff_molecule Output handoff molecule (allocated)
- * @return True on success, false on failure
- */
-bool knishio_continu_id_handoff_position(knishio_continu_id_t *continu_id,
-                                         const char *reason,
-                                         knishio_wallet_t **new_wallet,
-                                         void **handoff_molecule);
-
-/**
- * @brief Verify relay race continuity
- * @param continu_id ContinuID system
- * @param valid Output validity flag
- * @param error_reason Output error reason (allocated if invalid)
- * @return True on success, false on failure
- */
-bool knishio_continu_id_verify_race_continuity(knishio_continu_id_t *continu_id,
-                                               bool *valid,
-                                               char **error_reason);
-
-/**
- * @brief Free ContinuID system
- * @param continu_id ContinuID to free
- */
-void knishio_continu_id_free(knishio_continu_id_t *continu_id);
-
 /* Position Sequence Management */
-
-/**
- * @brief Create position sequence
- * @param sequence Output sequence (allocated)
- * @param initial_capacity Initial capacity
- * @return True on success, false on failure
- */
-bool knishio_position_sequence_create(knishio_position_sequence_t **sequence,
-                                      size_t initial_capacity);
-
-/**
- * @brief Add position to sequence
- * @param sequence Position sequence
- * @param position Position to add
- * @return True on success, false on failure
- */
-bool knishio_position_sequence_add(knishio_position_sequence_t *sequence,
-                                   const char *position);
-
-/**
- * @brief Get current position from sequence
- * @param sequence Position sequence
- * @return Current position or NULL
- */
-const char *knishio_position_sequence_get_current(knishio_position_sequence_t *sequence);
-
-/**
- * @brief Move to next position in sequence
- * @param sequence Position sequence
- * @param next_position Output next position (allocated)
- * @return True on success, false on failure
- */
-bool knishio_position_sequence_next(knishio_position_sequence_t *sequence,
-                                    char **next_position);
-
-/**
- * @brief Validate sequence integrity
- * @param sequence Position sequence
- * @param secret Master secret
- * @return True if valid, false otherwise
- */
-bool knishio_position_sequence_validate(knishio_position_sequence_t *sequence,
-                                        const char *secret);
 
 /**
  * @brief Free position sequence
@@ -513,68 +331,9 @@ bool knishio_wallet_split_units_multi(knishio_wallet_t *source_wallet,
                                       size_t recipient_count,
                                       knishio_wallet_t *remainder_wallet);
 
-/**
- * @brief Get token units data
- * @param wallet Wallet
- * @param units_data Output units data (allocated)
- * @param count Output unit count
- * @return True on success, false on failure
- */
-bool knishio_wallet_get_token_units_data(knishio_wallet_t *wallet,
-                                         void **units_data,
-                                         size_t *count);
-
 /* Recovery and Verification */
 
-/**
- * @brief Reconstruct bundle from secret
- * @param secret Master secret
- * @param token Token slug
- * @param bundle Output bundle (allocated)
- * @param bundle_hash Output bundle hash (allocated)
- * @param initial_wallet Output initial wallet (allocated)
- * @return True on success, false on failure
- */
-bool knishio_bundle_reconstruct_from_secret(const char *secret,
-                                            const char *token,
-                                            knishio_wallet_bundle_t **bundle,
-                                            char **bundle_hash,
-                                            knishio_wallet_t **initial_wallet);
-
-/**
- * @brief Verify bundle ownership
- * @param claimed_secret Claimed secret
- * @param bundle_hash Bundle hash to verify
- * @param position Position to check (optional)
- * @return True if secret generates bundle, false otherwise
- */
-bool knishio_bundle_verify_ownership(const char *claimed_secret,
-                                     const char *bundle_hash,
-                                     const char *position);
-
-/**
- * @brief Reconstruct identity from molecules
- * @param molecules Array of molecule data
- * @param molecule_count Number of molecules
- * @param positions Output positions array (allocated)
- * @param position_count Output position count
- * @param bundle_hash Output bundle hash (allocated)
- * @return True on success, false on failure
- */
-bool knishio_bundle_reconstruct_from_molecules(void **molecules,
-                                               size_t molecule_count,
-                                               char ***positions,
-                                               size_t *position_count,
-                                               char **bundle_hash);
-
 /* Utility Functions */
-
-/**
- * @brief Check if string is bundle hash
- * @param maybe_bundle_hash String to check
- * @return True if bundle hash format, false otherwise
- */
-bool knishio_wallet_is_bundle_hash(const char *maybe_bundle_hash);
 
 /**
  * @brief Generate random position
@@ -586,16 +345,6 @@ bool knishio_wallet_is_bundle_hash(const char *maybe_bundle_hash);
 bool knishio_generate_random_position(size_t salt_length,
                                       const char *charset,
                                       char **position);
-
-/**
- * @brief Generate deterministic salt for position
- * @param token Token slug
- * @param position Position identifier
- * @param salt Output salt (allocated)
- * @return True on success, false on failure
- */
-bool knishio_generate_salt(const char *token, const char *position,
-                           char **salt);
 
 /* Legacy support functions */
 bool knishio_generate_secret(const char *seed, size_t length, char **secret);
@@ -677,9 +426,6 @@ bool knishio_wallet_self_test(void);
 bool knishio_wallet_test_vector(const char *seed, const char *expected_bundle,
                                const char *expected_address, const char *token,
                                const char *position);
-bool knishio_continu_id_test_relay_race(void);
-bool knishio_continu_id_test_position_sequence(void);
-
 #ifdef __cplusplus
 }
 #endif

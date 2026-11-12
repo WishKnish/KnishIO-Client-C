@@ -109,14 +109,16 @@ knishio_error_t knishio_client_create_wallet(
     /* The new wallet being defined: the caller's token + position, else a FRESH position (JS
      * Wallet.create; a fixed fallback collided with every other wallet created the same way). */
     if (params->position && strlen(params->position) == 64) {
-        error = knishio_wallet_create_with_ots_version(&new_wallet, source->secret, params->token, params->position,
-                                                       knishio_client_get_ots_version(client))
+        error = knishio_wallet_create_with_mlkem_param(&new_wallet, source->secret, params->token, params->position,
+                                                       knishio_client_get_ots_version(client),
+                                                       knishio_client_mlkem_param(client))
             ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     } else if (!knishio_generate_position(&remainder_position)) {
         error = KNISHIO_ERROR_CRYPTO;
     } else {
-        error = knishio_wallet_create_with_ots_version(&new_wallet, source->secret, params->token, remainder_position,
-                                                       knishio_client_get_ots_version(client))
+        error = knishio_wallet_create_with_mlkem_param(&new_wallet, source->secret, params->token, remainder_position,
+                                                       knishio_client_get_ots_version(client),
+                                                       knishio_client_mlkem_param(client))
             ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
         knishio_free(remainder_position);
         remainder_position = NULL;
@@ -130,8 +132,9 @@ knishio_error_t knishio_client_create_wallet(
         error = KNISHIO_ERROR_CRYPTO;
         goto cleanup;
     }
-    error = knishio_wallet_create_with_ots_version(&remainder, source->secret, "USER", remainder_position,
-                                                   knishio_client_successor_ots_version(client, source->ots_version))
+    error = knishio_wallet_create_with_mlkem_param(&remainder, source->secret, "USER", remainder_position,
+                                                   knishio_client_successor_ots_version(client, source->ots_version),
+                                                   knishio_client_mlkem_param(client))
         ? KNISHIO_SUCCESS : KNISHIO_ERROR_CRYPTO;
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
@@ -307,12 +310,15 @@ knishio_error_t knishio_client_query_bundle(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     
-    /* Build variables */
-    char variables[256] = "{}";
-    if (bundle) {
-        snprintf(variables, sizeof(variables), "{\"bundle\":\"%s\"}", bundle);
+    /* Build variables (cJSON escapes the bundle; {} when it is absent) */
+    cJSON* vars = cJSON_CreateObject();
+    bool built = vars && (!bundle || cJSON_AddStringToObject(vars, "bundle", bundle));
+    char* variables = built ? cJSON_PrintUnformatted(vars) : NULL;
+    cJSON_Delete(vars);
+    if (!variables) {
+        return KNISHIO_ERROR_MEMORY;
     }
-    
+
     /* Execute query */
     knishio_graphql_response_t* response = NULL;
     knishio_graphql_operation_t operation = {
@@ -322,10 +328,10 @@ knishio_error_t knishio_client_query_bundle(
         .requires_auth = false,
         .is_mutation = false
     };
-    
-    knishio_graphql_client_t* graphql_client = (knishio_graphql_client_t*)client;
-    knishio_error_t error = knishio_graphql_execute(graphql_client, &operation, &response);
-    
+
+    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
+    cJSON_free(variables);
+
     if (error != KNISHIO_SUCCESS) {
         return error;
     }
@@ -444,8 +450,8 @@ knishio_error_t knishio_client_query_continuId(
                  "{\"bundle\":\"%s\",\"token\":\"USER\"}", bundle);
     }
 
-    /* Execute query through a proper graphql client (slice 2a/2b transport: TLS + auth header +
-     * the valid-body serialization). Was the old (knishio_graphql_client_t*)client cast. */
+    /* Execute through the client transport (TLS settings, auth header, the valid-body
+     * serialization). */
     knishio_graphql_response_t* response = NULL;
     knishio_graphql_operation_t operation = {
         .name = "QueryContinuId",

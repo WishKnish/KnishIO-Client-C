@@ -6,6 +6,7 @@
 #define KNISHIO_OPERATIONS_INTERNAL_H
 
 #include "knishio/error.h"
+#include "knishio/crypto/mlkem.h"
 
 typedef struct knishio_client knishio_client_t;
 typedef struct knishio_wallet knishio_wallet_t;
@@ -70,5 +71,40 @@ int knishio_client_successor_ots_version(const knishio_client_t* client, int sou
  *        the caller frees *bundle
  */
 knishio_error_t knishio_client_own_bundle(knishio_client_t* client, char** bundle);
+
+/**
+ * @brief The client's ML-KEM parameter set, for every wallet the client builds
+ *        (knishio_wallet_create_with_mlkem_param); 1024 for a NULL client
+ */
+knishio_mlkem_param_t knishio_client_mlkem_param(const knishio_client_t* client);
+
+typedef struct knishio_molecule knishio_molecule_t;
+typedef struct knishio_graphql_response knishio_graphql_response_t;
+
+/**
+ * @brief JS createMolecule(): the USER source wallet at the bundle's ContinuID head, a USER
+ *        remainder at a fresh position (successor OTS version) and a molecule on them with the
+ *        client's cell slug. On success the caller frees *molecule (knishio_molecule_free_deep,
+ *        which leaves the wallets) and both wallets; on failure all three are NULL.
+ */
+knishio_error_t knishio_client_continuid_molecule(
+    knishio_client_t* client,
+    knishio_wallet_t** source,
+    knishio_wallet_t** remainder,
+    knishio_molecule_t** molecule
+);
+
+/**
+ * @brief Hash, sign (compressed OTS, the source's bundle) and submit a built molecule through
+ *        knishio_client_submit_molecule (which runs knishio_molecule_check first)
+ */
+knishio_error_t knishio_client_sign_and_submit(
+    knishio_client_t* client,
+    knishio_molecule_t* molecule,
+    const knishio_wallet_t* source,
+    const char* operation_name,
+    const char* mutation,
+    knishio_graphql_response_t** response
+);
 
 #endif /* KNISHIO_OPERATIONS_INTERNAL_H */
