@@ -33,6 +33,12 @@ substantiate a detail, the entry says so instead of guessing.
   master) instead of `../shared-test-results/`, so a standalone checkout and CI run it. A missing or
   unparsable file now fails `OtsV2Vectors`, and missing fixtures fail `ServedMolecules`; neither test
   can exit as skipped (code 77) any more.
+- `README.md` is rewritten against the installed headers and library: every C example compiles and
+  links (the guide's DIY example signs and checks a molecule offline), with the real function names
+  and signatures, the parameter-struct operations, `int64_t` amounts, prerequisites
+  (`git clone --recursive`, OpenSSL, libcurl, cJSON, GMP), pkg-config/CMake linking, and a
+  "Not implemented (compared with the JavaScript SDK)" section. References to removed headers,
+  `examples/` and `KNISHIO_BUILD_EXAMPLES` are gone.
 
 ### Removed
 
