@@ -10,8 +10,8 @@
  *              AuthToken snapshot field.
  *   vectors    (OtsV2Vectors)   — the shared OTS v2 vectors (key derivation, address, normalized
  *              hash, ML-KEM identities, molecule verdicts, re-signing, malformed declared hash).
- *              The file is read from $KNISHIO_OTS_V2_VECTORS; when it is absent (a standalone
- *              checkout of this SDK) the binary prints SKIP and exits 77.
+ *              The file is the vendored tests/fixtures/ots-v2-vectors.json (path baked in by
+ *              CMake); a missing or unparsable file fails the test.
  */
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -41,12 +41,10 @@
 #include "knishio/utils/memory.h"
 #include "operations/operations_internal.h"
 
-#define SKIP_EXIT_CODE 77
-
 static int g_failures = 0;
 
 #ifndef KNISHIO_OTS_V2_VECTORS_PATH
-#define KNISHIO_OTS_V2_VECTORS_PATH "../shared-test-results/ots-v2-vectors.json"
+#define KNISHIO_OTS_V2_VECTORS_PATH "tests/fixtures/ots-v2-vectors.json"
 #endif
 
 static void check(bool ok, const char *name, const char *detail) {
@@ -1017,12 +1015,11 @@ static void test_malformed_hash(const cJSON *vectors) {
 }
 
 static int run_vectors(void) {
-    const char *env_path = getenv("KNISHIO_OTS_V2_VECTORS");
-    const char *path = env_path ? env_path : KNISHIO_OTS_V2_VECTORS_PATH;
+    const char *path = KNISHIO_OTS_V2_VECTORS_PATH;
     char *text = slurp(path);
     if (!text) {
-        printf("SKIP: ots-v2-vectors.json not found (standalone checkout)\n");
-        return SKIP_EXIT_CODE;
+        fprintf(stderr, "FAIL: %s not found (vendored OTS v2 vectors are required)\n", path);
+        return 1;
     }
     cJSON *root = cJSON_Parse(text);
     free(text);

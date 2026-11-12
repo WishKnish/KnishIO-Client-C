@@ -667,8 +667,8 @@ if(KNISHIO_BUILD_TESTS)
     # OTS v2 (64-chain keys): OtsV2RoundTrip always runs (a v2 wallet signs, verifies, and a
     # changed signature character is rejected); OtsV2Client always runs (the client OTS version
     # option, own-wallet version detection against a loopback stub, AuthToken snapshots);
-    # OtsV2Vectors checks the shared OTS v2 vectors and
-    # exits 77 (skipped) when they are absent, as in a standalone checkout of this SDK.
+    # OtsV2Vectors checks the shared OTS v2 vectors vendored at tests/fixtures/ots-v2-vectors.json;
+    # a missing or unparsable file fails the test.
     add_executable(ots_v2_vectors tests/ots_v2_vectors.c)
     target_link_libraries(ots_v2_vectors PRIVATE
         knishio-client-static
@@ -678,7 +678,7 @@ if(KNISHIO_BUILD_TESTS)
     target_include_directories(ots_v2_vectors PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(ots_v2_vectors PRIVATE
         _GNU_SOURCE
-        KNISHIO_OTS_V2_VECTORS_PATH="${CMAKE_SOURCE_DIR}/../shared-test-results/ots-v2-vectors.json"
+        KNISHIO_OTS_V2_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ots-v2-vectors.json"
     )
     add_test(NAME OtsV2RoundTrip COMMAND ots_v2_vectors roundtrip)
     set_tests_properties(OtsV2RoundTrip PROPERTIES LABELS "ots;signature")
@@ -686,9 +686,7 @@ if(KNISHIO_BUILD_TESTS)
     set_tests_properties(OtsV2Client PROPERTIES LABELS "ots;client" TIMEOUT 120)
     add_test(NAME OtsV2Vectors COMMAND ots_v2_vectors vectors)
     set_tests_properties(OtsV2Vectors PROPERTIES
-        LABELS "ots;vectors;parity;signature"
-        SKIP_RETURN_CODE 77
-        ENVIRONMENT "KNISHIO_OTS_V2_VECTORS=${CMAKE_SOURCE_DIR}/../shared-test-results/ots-v2-vectors.json")
+        LABELS "ots;vectors;parity;signature")
 
     # kcore parity: the 16 shared full-molecule vectors (vendored from the cross-SDK master)
     # verify and re-sign byte for byte on this build's backend, so the gate-kcore lane proves
@@ -713,7 +711,7 @@ if(KNISHIO_BUILD_TESTS)
     set_tests_properties(KcoreParityVectors PROPERTIES LABELS "kcore;vectors;parity;signature")
 
     # Served molecules (knishio_verify_from_server_data) and the Version4 hash vectors, both
-    # vendored from the shared cross-SDK masters; exits 77 (skipped) when either is absent.
+    # vendored from the shared cross-SDK masters; a missing fixture fails the test.
     add_executable(served_molecules tests/served_molecules.c)
     target_link_libraries(served_molecules PRIVATE
         knishio-client-static
@@ -728,8 +726,7 @@ if(KNISHIO_BUILD_TESTS)
     )
     add_test(NAME ServedMolecules COMMAND served_molecules)
     set_tests_properties(ServedMolecules PROPERTIES
-        LABELS "vectors;parity;signature"
-        SKIP_RETURN_CODE 77)
+        LABELS "vectors;parity;signature")
 
     # The cross-SDK signingWallet forgery fixture (built with JS 1.2.1): knishio_molecule_check()
     # accepts B's normally signed molecule and rejects B's signature under victim A's address even

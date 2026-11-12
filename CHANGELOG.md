@@ -27,6 +27,13 @@ substantiate a detail, the entry says so instead of guessing.
   the `KNISHIO_USE_KCORE=ON` build are each held to the same bytes; with kcore linked it also checks
   that kcore answers at run time. A missing fixture fails the test.
 
+### Changed
+
+- `OtsV2Vectors` reads the vendored `tests/fixtures/ots-v2-vectors.json` (synced from the monorepo
+  master) instead of `../shared-test-results/`, so a standalone checkout and CI run it. A missing or
+  unparsable file now fails `OtsV2Vectors`, and missing fixtures fail `ServedMolecules`; neither test
+  can exit as skipped (code 77) any more.
+
 ## [1.6.2] — 2026-10-31
 
 ### Fixed

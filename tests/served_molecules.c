@@ -9,7 +9,7 @@
  *                                v3rust (signed and served with version "3").
  *   version4-hash-vectors.json — client-format atoms, the exact Version4 view string and the
  *                                expected molecular hash for each case.
- * When either file is missing the binary prints SKIP and exits 77.
+ * When either file is missing the test fails.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,8 +21,6 @@
 #include "knishio/atom.h"
 #include "knishio/molecule.h"
 #include "knishio/utils/memory.h"
-
-#define SKIP_EXIT_CODE 77
 
 #ifndef KNISHIO_SERVED_MOLECULES_PATH
 #define KNISHIO_SERVED_MOLECULES_PATH "tests/fixtures/served-molecules.json"
@@ -300,11 +298,11 @@ int main(void) {
     char *served_text = slurp(KNISHIO_SERVED_MOLECULES_PATH);
     char *vectors_text = slurp(KNISHIO_VERSION4_VECTORS_PATH);
     if (!served_text || !vectors_text) {
-        printf("SKIP: fixtures not found (%s, %s)\n", KNISHIO_SERVED_MOLECULES_PATH,
+        printf("FAIL: fixtures not found (%s, %s)\n", KNISHIO_SERVED_MOLECULES_PATH,
                KNISHIO_VERSION4_VECTORS_PATH);
         free(served_text);
         free(vectors_text);
-        return SKIP_EXIT_CODE;
+        return 1;
     }
     cJSON *served = cJSON_Parse(served_text);
     cJSON *vectors = cJSON_Parse(vectors_text);

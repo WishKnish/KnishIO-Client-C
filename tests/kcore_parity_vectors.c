@@ -3,8 +3,8 @@
  * @brief kcore parity: the shared full-molecule vectors reproduce byte for byte on this build's
  *        backend (KNISHIO_USE_KCORE=ON or OFF).
  *
- * The vectors (tests/fixtures/kcore-parity-vectors.json, vendored from
- * sdks/shared-test-results/kcore-parity-vectors.json) are 16 signed molecules: metadata, value
+ * The vectors (tests/fixtures/kcore-parity-vectors.json, vendored from the monorepo's shared
+ * cross-SDK master of the same name) are 16 signed molecules: metadata, value
  * transfer, token creation and wallet creation, at OTS v1 and v2, with unique and with colliding
  * createdAt values (whole seconds by construction; knishio_atom_from_json keeps the exact
  * millisecond value either way). For every case:
