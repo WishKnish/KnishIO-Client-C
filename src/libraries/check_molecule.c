@@ -32,10 +32,10 @@
  * "the first atom" and "a non-primary atom" mean index order, never the order a peer's JSON
  * happened to list them in.
  *
- * One JS rule is deliberately not ported: isotopeV() with no sender wallet throws
- * TransferRemainderException when the last V atom's value is non-zero. The validator does not
- * apply it and knishio_verify_from_server_data() checks served transfers with no sender wallet,
- * so porting it would reject every served transfer that has a remainder.
+ * Without a sender wallet, isotopeV() applies V-only conservation and nothing more, as in every
+ * SDK: the validator and knishio_verify_from_server_data() check served transfers with no sender
+ * wallet, and a transfer's last V atom is its remainder, which is normally non-zero. (Older JS
+ * releases threw TransferRemainderException for that remainder; the JS SDK no longer does.)
  */
 
 #include "knishio/molecule.h"
