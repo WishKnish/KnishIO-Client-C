@@ -39,6 +39,10 @@ substantiate a detail, the entry says so instead of guessing.
   (`git clone --recursive`, OpenSSL, libcurl, cJSON, GMP), pkg-config/CMake linking, and a
   "Not implemented (compared with the JavaScript SDK)" section. References to removed headers,
   `examples/` and `KNISHIO_BUILD_EXAMPLES` are gone.
+- `-DKNISHIO_USE_KCORE=ON` requires KnishIO-Crypto-Core 0.2.1 or a later 0.x release (`find_package`
+  minimum was 0.2.0); CI and the release builds link the sha256-pinned 0.2.1 packages. Crypto-Core
+  0.2.1 zeroes ML-KEM secrets, WOTS+ chain preimages and Keccak state on the stack before each call
+  returns. Outputs and the ABI are unchanged.
 
 ### Removed
 
