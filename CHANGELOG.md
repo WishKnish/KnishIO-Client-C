@@ -16,6 +16,13 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-11-12
+
+### Upgrade notes
+
+- Headers whose functions the library never compiled or defined are removed (see Removed).
+- Amounts are 64-bit: `knishio_molecule_init_value` and `init_values` take `int64_t` (see Fixed).
+
 ### Added
 
 - `KcoreParityVectors` ctest (`tests/kcore_parity_vectors.c`): the 16 shared kcore parity vectors
@@ -909,7 +916,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.6.2...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.7.0...HEAD
+[1.7.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.7.0
 [1.6.2]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.2
 [1.6.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.1
 [1.6.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.0
