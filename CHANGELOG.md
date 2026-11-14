@@ -16,6 +16,14 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+## [1.7.1] — 2026-11-13
+
+### Upgrade notes
+
+- `knishio_client_request_tokens` needs a client secret and proposes a signed T molecule instead of
+  a mutation the validator does not have (see Fixed).
+- Guest authorization sets the client's cell slug (see Fixed).
+
 ### Added
 
 - `knishio_molecule_init_token_request` (JS `Molecule.initTokenRequest`): a T atom signed by the
@@ -946,7 +954,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.7.0...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.7.1...HEAD
+[1.7.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.7.1
 [1.7.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.7.0
 [1.6.2]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.2
 [1.6.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.1
