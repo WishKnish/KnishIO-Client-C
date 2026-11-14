@@ -615,14 +615,9 @@ These JavaScript SDK features have no C equivalent yet. Use `knishio_client_exec
 
 - **Client operations:** `queryMetaVerified`, `hasQueryField`, `queryEmbeddingStatus`, `registerPeer`, `appendRequest`, `linkIdentifier`, `cancelQuery` / `cancelAllQueries`, `defaultRequestPolicy` (not needed: there is no response cache), and the multi-URI node pool (one `uri` per client).
 - **Subscriptions:** no WebSocket `subscribe*` API. `knishio_client_unsubscribe` and `knishio_client_unsubscribe_all` exist but do nothing and return `KNISHIO_SUCCESS`.
-- **Molecule builders:** `withParentHashes`, `initPeering`, `initAppendRequest`, `initTokenRequest`, `cellSlugBase`, `fill`, and `continuIdPosition`. (`initIdentifierCreation`, `addPolicyAtom` and `createRule` are available as `knishio_molecule_init_identifier_creation`, `knishio_molecule_add_policy_atom` and `knishio_molecule_create_rule`.)
+- **Molecule builders:** `withParentHashes`, `initPeering`, `initAppendRequest`, `cellSlugBase`, `fill`, and `continuIdPosition`. (`initIdentifierCreation`, `addPolicyAtom`, `createRule` and `initTokenRequest` are available as `knishio_molecule_init_identifier_creation`, `knishio_molecule_add_policy_atom`, `knishio_molecule_create_rule` and `knishio_molecule_init_token_request`.)
 - **Query and mutation classes:** `QueryToken`, `QueryEmbeddingStatus`, `QueryMetaTypeViaAtom`, `QueryMetaTypeViaMolecule`, `MutationPeering`, `MutationAppendRequest`, `MutationLinkIdentifier`. C exposes functions rather than the JavaScript query, mutation and subscription classes.
 - **Secret storage providers:** only the AES-256-GCM software provider (over the memory or file backend). There is no `MemorySecretStorageProvider`, `WebAuthnPrf*` or `NonExtractableKey*` provider.
-
-Known differences in operations that exist:
-
-- `knishio_client_request_tokens` sends a bare `RequestTokens` mutation; JavaScript `requestTokens` builds and signs a T-isotope molecule.
-- `knishio_client_request_guest_auth_token` sends `cell_slug` to the node but does not make it the client's cell slug, which JavaScript `requestGuestAuthToken` does (`setCellSlug`). Set the slug in `knishio_client_config_t` instead.
 
 ## Getting Help
 

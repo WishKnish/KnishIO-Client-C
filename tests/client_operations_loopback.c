@@ -342,27 +342,41 @@ static void section_s2(void) {
     memset(long_token, 'T', 5000);
     long_token[5000] = '\0';
 
-    knishio_client_t* client = stub_client(NULL, true);
+    char* secret = NULL;
+    knishio_generate_secret("fleet-audit-2026-11-s2", 2048, &secret);
+    knishio_client_t* client = stub_client(secret, true);
     check(client != NULL, "client created");
     if (client) {
-        const char* units[] = { "unit-1", "unit\"2" };
+        /* The Token lookup carries the 5000-character slug intact. */
         knishio_request_tokens_params_t rt = { 0 };
         rt.token = long_token;
         rt.requested_amount = "10";
-        rt.requested_units = units;
-        rt.unit_count = 2;
         knishio_request_tokens_result_t* rt_result = NULL;
-        knishio_error_t e = knishio_client_request_tokens(client, &rt, &rt_result);
-        const char* body = last_body_with("RequestTokens");
+        (void)knishio_client_request_tokens(client, &rt, &rt_result);  /* its meta exceeds the value cap */
+        const char* body = last_body_with("QueryToken");
         cJSON* root = body ? cJSON_Parse(body) : NULL;
         cJSON* vars = root ? cJSON_GetObjectItem(root, "variables") : NULL;
-        cJSON* tok = vars ? cJSON_GetObjectItem(vars, "token") : NULL;
-        cJSON* us = vars ? cJSON_GetObjectItem(vars, "units") : NULL;
-        check(e == KNISHIO_SUCCESS && cJSON_IsString(tok) && strcmp(tok->valuestring, long_token) == 0
-              && cJSON_GetArraySize(us) == 2
-              && strcmp(cJSON_GetArrayItem(us, 1)->valuestring, "unit\"2") == 0,
-              "request_tokens: 5000-character token and a quoted unit arrive intact");
+        cJSON* tok = vars ? cJSON_GetObjectItem(vars, "slug") : NULL;
+        check(cJSON_IsString(tok) && strcmp(tok->valuestring, long_token) == 0,
+              "request_tokens: the Token lookup carries the 5000-character slug intact");
         cJSON_Delete(root);
+        knishio_request_tokens_result_free(rt_result);
+        rt_result = NULL;
+
+        /* The proposed T atom carries a quoted unit intact in its tokenUnits meta. */
+        const char* units[] = { "unit-1", "unit\"2" };
+        knishio_request_tokens_params_t ru = { 0 };
+        ru.token = "REQ";
+        ru.requested_units = units;
+        ru.unit_count = 2;
+        knishio_error_t e = knishio_client_request_tokens(client, &ru, &rt_result);
+        knishio_molecule_t* m = captured_molecule(last_body_with("ProposeMolecule"));
+        const knishio_atom_t* t = (m && m->atom_count == 2) ? m->atoms[0] : NULL;
+        const char* tu = t ? atom_meta(t, "tokenUnits") : NULL;
+        check(e == KNISHIO_SUCCESS && rt_result && rt_result->success && t && t->isotope == KNISHIO_ISOTOPE_T
+              && tu && strcmp(tu, "[\"unit-1\",\"unit\\\"2\"]") == 0 && knishio_molecule_check(m, NULL) == KNISHIO_SUCCESS,
+              "request_tokens: a quoted unit arrives intact in the signed T atom's tokenUnits");
+        knishio_molecule_free_deep(m);
         knishio_request_tokens_result_free(rt_result);
 
         knishio_query_atom_params_t qa = { 0 };
@@ -393,6 +407,7 @@ static void section_s2(void) {
         knishio_free(out);
         knishio_client_destroy(client);
     }
+    knishio_free(secret);
 
     /* meta array JSON (C meta values are capped at KNISHIO_MAX_META_VALUE_LENGTH) */
     char* long_value = malloc(KNISHIO_MAX_META_VALUE_LENGTH + 1);
@@ -634,6 +649,25 @@ static void section_o3(const char* self) {
     }
 
     knishio_client_destroy(client);
+
+    /* Guest auth sets the client's cell slug (JS setCellSlug), here on a client created without one. */
+    {
+        char url[64];
+        snprintf(url, sizeof url, "http://127.0.0.1:%d/graphql", g_stub.port);
+        knishio_client_config_t config = { 0 };
+        config.uri = url;
+        config.cell_slug = NULL;
+        knishio_client_t* unslugged = NULL;
+        knishio_request_guest_auth_token_params_t sp = { .cell_slug = "guest-cell", .encrypt = false };
+        knishio_request_guest_auth_token_result_t* sr = NULL;
+        e = knishio_client_create(&unslugged, &config) == KNISHIO_SUCCESS
+            ? knishio_client_request_guest_auth_token(unslugged, &sp, &sr) : KNISHIO_ERROR_MEMORY;
+        const char* slug = unslugged ? knishio_client_get_cell_slug(unslugged) : NULL;
+        check(e == KNISHIO_SUCCESS && sr && sr->success && slug && strcmp(slug, "guest-cell") == 0,
+              "guest auth sets the client's cell slug (created without one)");
+        knishio_request_guest_auth_token_result_free(sr);
+        knishio_client_destroy(unslugged);
+    }
     knishio_wallet_free(server);
     knishio_free(server_secret);
 }

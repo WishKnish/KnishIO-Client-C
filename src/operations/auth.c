@@ -154,7 +154,11 @@ knishio_error_t knishio_client_request_guest_auth_token(
     cJSON* root = NULL;
     knishio_request_guest_auth_token_result_t* auth_result = NULL;
 
-    knishio_error_t error = knishio_get_fingerprint(&fingerprint);
+    /* JS requestGuestAuthToken: setCellSlug(cellSlug) before the AccessToken request. */
+    knishio_error_t error = knishio_client_set_cell_slug(client, params->cell_slug);
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_get_fingerprint(&fingerprint);
+    }
     if (error == KNISHIO_SUCCESS && !knishio_generate_secret(fingerprint, KNISHIO_SECRET_LENGTH, &guest_secret)) {
         error = KNISHIO_ERROR_CRYPTO;
     }
@@ -173,7 +177,7 @@ knishio_error_t knishio_client_request_guest_auth_token(
     if (error == KNISHIO_SUCCESS) {
         cJSON* vars = cJSON_CreateObject();
         bool built = vars
-            && cJSON_AddStringToObject(vars, "cellSlug", params->cell_slug)
+            && cJSON_AddStringToObject(vars, "cellSlug", knishio_client_get_cell_slug(client))
             && cJSON_AddStringToObject(vars, "pubkey", guest_wallet->pubkey)
             && cJSON_AddBoolToObject(vars, "encrypt", params->encrypt);
         variables_json = built ? cJSON_PrintUnformatted(vars) : NULL;

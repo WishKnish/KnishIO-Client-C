@@ -19,6 +19,12 @@
  *   policy          addPolicyAtom({write:{name:[self]},read:{name:[all]}}) + addContinuIdAtom: R meta [policy]
  *   rule            createRule with members out of JS order and policy {read:{name:[all]}}: R meta
  *                   [rule (Rule.toObject member order), policy (PolicyMeta defaults for key "0")] + I
+ *   token_request_units   initTokenRequest(REQ, 2, walletBundle, own bundle, {note, tokenUnits},
+ *                   batch "ba"x32) as requestTokens fills it for units u1,u2: T meta
+ *                   [note, tokenUnits, token, amount] + I (JS digest probe 2026-11-13)
+ *   token_request_wallet  initTokenRequest(REQ, 250, wallet, address of REQ@"bb"x32,
+ *                   {amount: "stale", position, bundle}, no batch): the caller's amount key is
+ *                   overwritten in place, token appended + I
  * Then P (peering) and A (append request) molecules signed by the JS SDK
  * (tests/fixtures/peering-append-molecules.json) parse and pass knishio_molecule_check().
  */
@@ -162,6 +168,43 @@ static void test_digests(void) {
                       "{\"read\":{\"0\":[\"all\"],\"name\":[\"all\"]},\"write\":{\"0\":[\"self\"]}}") == 0;
         check(meta, "rule meta equals the JS rule and policy strings", NULL);
         expect_digest("rule", &b, e, "0428d20gcgg8c36e2g87e5920d7c8b7fd7234765b3936b0822a264fabbfg8831");
+    }
+    {
+        built_t b = begin("USER", "USER", NULL);
+        knishio_error_t e = KNISHIO_ERROR_MEMORY;
+        if (b.m) {
+            const char *k[] = { "note", "tokenUnits" };
+            const char *v[] = { "n1", "[\"u1\",\"u2\"]" };
+            e = knishio_molecule_init_token_request(b.m, "REQ", "2", "walletBundle", b.w[0]->bundle_hash,
+                                                    k, v, 2, BATCH);
+        }
+        const knishio_atom_t *t = (e == KNISHIO_SUCCESS && b.m->atom_count == 2) ? b.m->atoms[0] : NULL;
+        bool shape = t && t->isotope == KNISHIO_ISOTOPE_T && b.m->atoms[1]->isotope == KNISHIO_ISOTOPE_I
+            && strcmp(t->token, "USER") == 0 && strcmp(t->value, "2") == 0 && t->batch_id
+            && strcmp(t->batch_id, BATCH) == 0 && strcmp(t->meta_type, "walletBundle") == 0
+            && t->meta_count == 4
+            && strcmp(t->meta[0]->key, "note") == 0 && strcmp(t->meta[1]->key, "tokenUnits") == 0
+            && strcmp(t->meta[1]->value, "[\"u1\",\"u2\"]") == 0
+            && strcmp(t->meta[2]->key, "token") == 0 && strcmp(t->meta[2]->value, "REQ") == 0
+            && strcmp(t->meta[3]->key, "amount") == 0 && strcmp(t->meta[3]->value, "2") == 0;
+        check(shape, "token_request_units: T [note, tokenUnits, token, amount] value 2 + I", NULL);
+        expect_digest("token_request_units", &b, e, "01ac5g19473aaeb1d7072bg8b0acg9b6d40a0619b50ddcc4c1c4414bee735f82");
+    }
+    {
+        built_t b = begin("USER", "USER", NULL);
+        knishio_error_t e = KNISHIO_ERROR_MEMORY;
+        b.w[2] = wallet("REQ", POS_B);
+        if (b.m && b.w[2]) {
+            const char *k[] = { "amount", "position", "bundle" };
+            const char *v[] = { "stale", POS_B, b.w[2]->bundle_hash };
+            e = knishio_molecule_init_token_request(b.m, "REQ", "250", "wallet", b.w[2]->address, k, v, 3, NULL);
+        }
+        const knishio_atom_t *t = (e == KNISHIO_SUCCESS && b.m->atom_count == 2) ? b.m->atoms[0] : NULL;
+        bool shape = t && strcmp(t->value, "250") == 0 && !t->batch_id && t->meta_count == 4
+            && strcmp(t->meta[0]->key, "amount") == 0 && strcmp(t->meta[0]->value, "250") == 0
+            && strcmp(t->meta[3]->key, "token") == 0 && strcmp(t->meta[3]->value, "REQ") == 0;
+        check(shape, "token_request_wallet: amount overwritten in place, token appended", NULL);
+        expect_digest("token_request_wallet", &b, e, "040b5765b3a43317f786a1427c28a46gb7e1958db43564313d5f710e97050cbb");
     }
 }
 

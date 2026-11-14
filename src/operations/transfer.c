@@ -238,7 +238,7 @@ knishio_error_t knishio_client_transfer_tokens(
 
 cleanup:
     if (response) knishio_graphql_response_free(response);
-    if (molecule) knishio_molecule_free(molecule);
+    knishio_molecule_free_deep(molecule);  /* the molecule owns the atoms it built */
     if (remainder_position) knishio_free(remainder_position);
     if (tok_position) knishio_free(tok_position);
     if (tok_amount) knishio_free(tok_amount);
@@ -464,7 +464,7 @@ knishio_error_t knishio_client_transfer_tokens_multi(
 
 cleanup:
     if (response) knishio_graphql_response_free(response);
-    if (molecule) knishio_molecule_free(molecule);
+    knishio_molecule_free_deep(molecule);  /* the molecule owns the atoms it built */
     if (remainder_position) knishio_free(remainder_position);
     if (tok_position) knishio_free(tok_position);
     if (tok_amount) knishio_free(tok_amount);
@@ -832,7 +832,7 @@ knishio_error_t knishio_client_burn_tokens(
 
 cleanup:
     if (response) knishio_graphql_response_free(response);
-    if (molecule) knishio_molecule_free(molecule);
+    knishio_molecule_free_deep(molecule);  /* the molecule owns the atoms it built */
     if (remainder_position) knishio_free(remainder_position);
     if (tok_position) knishio_free(tok_position);
     if (tok_amount) knishio_free(tok_amount);
@@ -1038,7 +1038,7 @@ knishio_error_t knishio_client_deposit_buffer_token(
     error = sign_and_propose(client, molecule, user->bundle_hash, result);
 
 cleanup:
-    if (molecule) knishio_molecule_free(molecule);
+    knishio_molecule_free_deep(molecule);  /* the molecule owns the atoms it built */
     if (buffer_position) knishio_free(buffer_position);
     if (remainder_position) knishio_free(remainder_position);
     if (remainder) knishio_wallet_free(remainder);
@@ -1133,7 +1133,7 @@ knishio_error_t knishio_client_withdraw_buffer_token(
     error = sign_and_propose(client, molecule, user->bundle_hash, result);
 
 cleanup:
-    if (molecule) knishio_molecule_free(molecule);
+    knishio_molecule_free_deep(molecule);  /* the molecule owns the atoms it built */
     if (remainder_position) knishio_free(remainder_position);
     if (remainder) knishio_wallet_free(remainder);
     if (recipient) knishio_wallet_free(recipient);

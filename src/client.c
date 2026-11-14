@@ -229,6 +229,23 @@ const char* knishio_client_get_cell_slug(const knishio_client_t* client) {
     return client ? client->cell_slug : NULL;
 }
 
+knishio_error_t knishio_client_set_cell_slug(knishio_client_t* client, const char* cell_slug) {
+    if (!client) {
+        return KNISHIO_ERROR_NULL_POINTER;
+    }
+    /* Copy first: cell_slug may be the client's own current value. */
+    char* copy = NULL;
+    if (cell_slug) {
+        copy = knishio_strdup(cell_slug);
+        if (!copy) {
+            return KNISHIO_ERROR_MEMORY;
+        }
+    }
+    knishio_free(client->cell_slug);
+    client->cell_slug = copy;
+    return KNISHIO_SUCCESS;
+}
+
 knishio_error_t knishio_client_clear_auth(knishio_client_t *client) {
     if (!client) {
         return KNISHIO_ERROR_NULL_POINTER;

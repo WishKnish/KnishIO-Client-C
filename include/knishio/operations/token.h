@@ -7,7 +7,7 @@
  * 
  * Provides high-level token operations matching JavaScript SDK:
  * - CreateToken mutation
- * - RequestTokens mutation
+ * - Token requests (signed T + I molecule, JS requestTokens)
  * - Token metadata management
  * 
  * Full alignment with JS SDK token creation and management.
@@ -106,8 +106,17 @@ knishio_error_t knishio_client_create_token(
 /**
  * @brief Request tokens (mint new tokens)
  * Equivalent to JavaScript: client.requestTokens({ token, amount, units, to, meta })
- * 
- * @param client KnishIO client instance
+ *
+ * Looks the token up (Token(slug) { fungibility }; a stackable token gets a new batch id), then
+ * proposes a signed T + I molecule (knishio_molecule_init_token_request) from the USER wallet at
+ * the ContinuID pointer. requested_units make the amount their count and travel as the
+ * tokenUnits meta; units with a positive requested_amount return
+ * KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT. `to`: NULL or "" targets the client's own bundle, a
+ * 64-hex bundle hash that bundle, anything else is a secret whose wallet for the token (at a
+ * fresh position) is credited. The validator also requires an "issuer" meta (the issuer's bundle
+ * hash) and a positive integer amount; pass them through meta / requested_amount or units.
+ *
+ * @param client KnishIO client instance (authenticated, secret set)
  * @param params Request parameters
  * @param result Output request result (allocated, must be freed)
  * @return KNISHIO_SUCCESS on success, error code on failure

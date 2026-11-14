@@ -6,6 +6,7 @@
  * AuthToken class behavior for seamless cross-platform authentication.
  */
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -136,8 +137,15 @@ knishio_error_t knishio_auth_token_restore(knishio_auth_token_t** auth_token,
         wallet_token_str = "AUTH";
     }
     
+    /* expiresAt is a JSON number (Unix seconds): read it as a double and keep it only when it is
+     * finite and within 0 .. 2^53-1, where a double holds every integer exactly. */
     int64_t expires_at = 0;
-    knishio_json_get_number_path(json, "expiresAt", (double*)&expires_at);
+    double expires_at_number = 0.0;
+    if (knishio_json_get_number_path(json, "expiresAt", &expires_at_number)
+        && isfinite(expires_at_number) && expires_at_number >= 0.0
+        && expires_at_number <= 9007199254740991.0) {
+        expires_at = (int64_t)expires_at_number;
+    }
     
     bool encrypt = false;
     knishio_json_get_bool_path(json, "encrypt", &encrypt);

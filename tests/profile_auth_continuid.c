@@ -572,7 +572,8 @@ static void case_snapshot_restore(void) {
     printf("auth token snapshot / restore keeps the bound wallet's token\n");
     knishio_wallet_t *w = NULL;
     knishio_wallet_create_simple(&w, g_secret, "USER", POINTER_POSITION);
-    knishio_auth_token_config_t cfg = { .token = "jwt", .expires_at = 0, .encrypt = false,
+    /* A real expiry (2100-01-01): restore must read the JSON number, not its float64 bits. */
+    knishio_auth_token_config_t cfg = { .token = "jwt", .expires_at = 4102444800LL, .encrypt = false,
                                         .pubkey = w->address };
     knishio_auth_token_t *tok = NULL;
     knishio_auth_token_create_with_wallet(&tok, &cfg, w);
@@ -595,6 +596,9 @@ static void case_snapshot_restore(void) {
               && rw->address && strcmp(rw->address, w->address) == 0
               && rw->pubkey && w->pubkey && strcmp(rw->pubkey, w->pubkey) == 0,
           "restore rebuilds the USER wallet with the same address and ML-KEM pubkey", detail);
+    snprintf(detail, sizeof(detail), "expires_at=%lld", restored ? (long long)restored->expires_at : -1LL);
+    check(restored && restored->expires_at == 4102444800LL && !knishio_auth_token_is_expired(restored),
+          "restore keeps expires_at 4102444800 and the token is not expired", detail);
     if (rw) knishio_wallet_free(rw);
     if (restored) knishio_auth_token_cleanup(restored);
 

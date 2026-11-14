@@ -599,6 +599,38 @@ knishio_error_t knishio_molecule_init_shadow_wallet_claim(
 );
 
 /**
+ * @brief Token request molecule (matches JavaScript SDK Molecule.initTokenRequest)
+ * Adds a T-isotope atom signed by molecule->source_wallet (token "USER" for a client request)
+ * + an I-isotope ContinuID atom. The T atom's value is `amount`, its metaType/metaId name the
+ * recipient ("walletBundle" + bundle hash, or "wallet" + address with position/bundle meta),
+ * and its meta is the caller's pairs in order with "token" = token and "amount" = amount
+ * ("null" when amount is NULL) set as JS assigns them: a key already present keeps its place
+ * with the new value, a missing one is appended (token, then amount). NULL or empty values are
+ * skipped, as JS AtomMeta skips them.
+ * @param molecule Molecule (must have source_wallet + remainder_wallet set)
+ * @param token Requested token slug
+ * @param amount Requested amount as an integer string (the T atom value), or NULL
+ * @param meta_type Recipient meta type ("walletBundle" or "wallet")
+ * @param meta_id Recipient bundle hash or wallet address
+ * @param meta_keys Caller meta keys (may be NULL when meta_count is 0)
+ * @param meta_values Caller meta values
+ * @param meta_count Number of caller meta pairs
+ * @param batch_id Batch id of a stackable token (NULL otherwise)
+ * @return KNISHIO_SUCCESS on success, error code on failure
+ */
+knishio_error_t knishio_molecule_init_token_request(
+    knishio_molecule_t* molecule,
+    const char* token,
+    const char* amount,
+    const char* meta_type,
+    const char* meta_id,
+    const char** meta_keys,
+    const char** meta_values,
+    size_t meta_count,
+    const char* batch_id
+);
+
+/**
  * @brief Identifier creation (JS Molecule.initIdentifierCreation)
  *
  * A C-atom signed by the source wallet (metaType "identifier", metaId = type, meta

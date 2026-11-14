@@ -16,6 +16,36 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+### Added
+
+- `knishio_molecule_init_token_request` (JS `Molecule.initTokenRequest`): a T atom signed by the
+  source wallet, with the caller's meta plus `token` and `amount`, then the ContinuID I atom. Test:
+  `SignedBytesParity` (`token_request_units`, `token_request_wallet`; digests pinned from the JS SDK).
+- `knishio_client_set_cell_slug` (JS `setCellSlug`): sets the client's cell slug from a copy. Test:
+  `ClientOperationsLoopback_o3`.
+
+### Fixed
+
+- `knishio_client_request_tokens` sent a `RequestTokens` mutation the validator does not have. It
+  now follows JS `requestTokens`: it looks the token up (`Token(slug) { fungibility }`), gives a
+  stackable token a new batch id, turns `requested_units` into the amount and a `tokenUnits` meta
+  (and refuses units together with a positive amount with `KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT`),
+  targets the client's own bundle, a given bundle hash or the token wallet of a given secret, and
+  proposes a signed T + I molecule. The client needs a secret. Test: `PhaseBClientOps`,
+  `ClientOperationsLoopback_s2`.
+- `knishio_auth_token_restore` read the snapshot's `expiresAt` number into an `int64_t` through a
+  `double*`, so a restored token kept the float64 bit pattern (4102444800 became
+  4750893857938341888). It now reads a `double` and keeps it when finite and within 0 to 2^53-1.
+  Test: `ProfileAuthContinuId`.
+- `knishio_client_claim_shadow_wallet`, `create_wallet`, `transfer_tokens`,
+  `transfer_tokens_multi`, `burn_tokens`, `deposit_buffer_token` and `withdraw_buffer_token` freed
+  their molecule with `knishio_molecule_free`, leaking every atom and its meta; they now use
+  `knishio_molecule_free_deep`. The failure paths of the ContinuID atom and wallet-creation builders
+  free their atom's meta too. Checked with macOS `leaks` and an ASan/LSan build.
+- `knishio_client_request_guest_auth_token` sent the requested cell slug but never stored it; it
+  now sets it on the client (JS `setCellSlug`), so later molecules carry it. Test:
+  `ClientOperationsLoopback_o3`.
+
 ## [1.7.0] — 2026-11-12
 
 ### Upgrade notes

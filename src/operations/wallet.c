@@ -193,7 +193,7 @@ knishio_error_t knishio_client_create_wallet(
 cleanup:
     if (response) knishio_graphql_response_free(response);
     if (remainder_position) knishio_free(remainder_position);
-    if (molecule) knishio_molecule_free(molecule);
+    knishio_molecule_free_deep(molecule);  /* the molecule owns the C and I atoms it built */
     if (source) knishio_wallet_free(source);
     if (new_wallet) knishio_wallet_free(new_wallet);
     if (remainder) knishio_wallet_free(remainder);

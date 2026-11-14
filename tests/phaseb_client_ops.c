@@ -15,7 +15,12 @@
  *     position (contract 9.6);
  *   - a built molecule that fails the SDK's own check (USER-signed, no I atom) is refused with
  *     KNISHIO_ERROR_ATOMS_MISSING and nothing is sent, while the raw propose path sends the same
- *     molecule unchanged; createMeta sends M + I (contract 9.7).
+ *     molecule unchanged; createMeta sends M + I (contract 9.7);
+ *   - requestTokens looks the token up (Token fungibility) and proposes a signed T + I molecule
+ *     (JS requestTokens / initTokenRequest), never the RequestTokens mutation: units become the
+ *     amount and a tokenUnits meta, a stackable token gets a fresh 64-hex batch id, a bundle hash
+ *     recipient is a walletBundle target, a recipient secret credits its own wallet for the token
+ *     (metaType wallet + position/bundle meta), and units with an amount are refused locally.
  */
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -66,6 +71,7 @@ typedef struct {
     const char *balance_reply;         /* Balance without type (regular) */
     const char *buffer_balance_reply;  /* Balance(type: "buffer") */
     const char *wallet_list_reply;
+    const char *token_reply;           /* Token(slug) lookup */
     char *requests[MAX_REQUESTS];
     size_t request_count;
 } stub_server_t;
@@ -148,6 +154,9 @@ static const char *route(const stub_server_t *s, const char *body) {
     if (strstr(body, "QueryBalance")) {
         const char *r = strstr(body, "\"type\":\"buffer\"") ? s->buffer_balance_reply : s->balance_reply;
         return r ? r : NULL_BALANCE_REPLY;
+    }
+    if (strstr(body, "QueryToken")) {
+        return s->token_reply ? s->token_reply : "{\"data\":{\"Token\":[]}}";
     }
     if (strstr(body, "QueryWalletList")) {
         return s->wallet_list_reply ? s->wallet_list_reply : "{\"data\":{\"Wallet\":[]}}";
@@ -586,6 +595,102 @@ static void case_presubmit_check(void) {
     server_stop(&s);
 }
 
+static void case_request_tokens(void) {
+    printf("requestTokens proposes a signed T + I molecule after the Token lookup\n");
+    stub_server_t s;
+    if (!server_start(&s)) { check(false, "stub server starts", NULL); return; }
+    s.token_reply = "{\"data\":{\"Token\":[{\"slug\":\"REQ\",\"fungibility\":\"stackable\"}]}}";
+    knishio_client_t *client = logged_in_client(&s);
+    check(client != NULL, "login through the stub", NULL);
+    if (client) {
+        const char *units[] = { "u1", "u2" };
+        knishio_request_tokens_params_t params = { .token = "REQ", .requested_units = units, .unit_count = 2 };
+        knishio_request_tokens_result_t *res = NULL;
+        knishio_error_t err = knishio_client_request_tokens(client, &params, &res);
+        char detail[160];
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_SUCCESS && res && res->success, "the request is proposed and accepted", detail);
+        check(count_requests(&s, "QueryToken") == 1, "the token is looked up once", NULL);
+        check(count_requests(&s, "RequestTokens(") == 0, "the RequestTokens mutation is not used", NULL);
+        knishio_request_tokens_result_free(res);
+
+        knishio_molecule_t *m = last_proposal(&s);
+        const knishio_atom_t *t = (m && m->atom_count == 2) ? m->atoms[0] : NULL;
+        const knishio_atom_t *i = (m && m->atom_count == 2) ? m->atoms[1] : NULL;
+        check(t && t->isotope == KNISHIO_ISOTOPE_T && i && i->isotope == KNISHIO_ISOTOPE_I, "atoms are [T, I]", NULL);
+        const char *tu = meta_value(t, "tokenUnits");
+        const char *tok = meta_value(t, "token");
+        const char *amt = meta_value(t, "amount");
+        snprintf(detail, sizeof(detail), "value=%s tokenUnits=%s amount=%s", (t && t->value) ? t->value : "(null)",
+                 tu ? tu : "(null)", amt ? amt : "(null)");
+        check(t && t->value && strcmp(t->value, "2") == 0 && tu && strcmp(tu, "[\"u1\",\"u2\"]") == 0
+                  && tok && strcmp(tok, "REQ") == 0 && amt && strcmp(amt, "2") == 0
+                  && t->token && strcmp(t->token, "USER") == 0,
+              "T atom: USER-signed, value 2, tokenUnits [\"u1\",\"u2\"], token REQ, amount 2", detail);
+        bool hex = t && t->batch_id && strlen(t->batch_id) == 64;
+        for (const char *p = hex ? t->batch_id : ""; *p; p++) {
+            hex = hex && ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'));
+        }
+        check(hex, "the stackable token gets a 64-hex batch id", NULL);
+        check(t && t->meta_type && strcmp(t->meta_type, "walletBundle") == 0 && t->meta_id
+                  && strcmp(t->meta_id, g_bundle) == 0,
+              "no recipient: the request targets the identity's own bundle", NULL);
+        check(m && knishio_molecule_check(m, NULL) == KNISHIO_SUCCESS, "the sent molecule passes the SDK check", NULL);
+        knishio_molecule_free_deep(m);
+
+        /* Units together with an amount: refused before anything is proposed. */
+        size_t proposals = count_requests(&s, "ProposeMolecule");
+        params.requested_amount = "5";
+        res = NULL;
+        err = knishio_client_request_tokens(client, &params, &res);
+        check(err == KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT && !res, "units with an amount -> StackableUnitAmount", NULL);
+        check(count_requests(&s, "ProposeMolecule") == proposals, "nothing is proposed for the refused request", NULL);
+
+        /* A fungible token to another bundle: walletBundle target, the amount as value, no batch id. */
+        s.token_reply = "{\"data\":{\"Token\":[{\"slug\":\"REQ\",\"fungibility\":\"fungible\"}]}}";
+        const char *other = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        knishio_request_tokens_params_t fungible = { .token = "REQ", .requested_amount = "250", .to = other };
+        res = NULL;
+        err = knishio_client_request_tokens(client, &fungible, &res);
+        m = last_proposal(&s);
+        t = (m && m->atom_count == 2) ? m->atoms[0] : NULL;
+        check(err == KNISHIO_SUCCESS && res && res->success && t && t->value && strcmp(t->value, "250") == 0
+                  && !t->batch_id && t->meta_id && strcmp(t->meta_id, other) == 0 && !meta_value(t, "tokenUnits"),
+              "fungible token to a bundle hash: value 250, metaId = that bundle, no batch id", NULL);
+        check(m && knishio_molecule_check(m, NULL) == KNISHIO_SUCCESS, "that molecule passes the SDK check", NULL);
+        knishio_molecule_free_deep(m);
+        knishio_request_tokens_result_free(res);
+
+        /* A recipient secret: its wallet for the token is credited (metaType wallet + position/bundle). */
+        char *to_bundle = NULL;
+        knishio_generate_bundle_hash("recipient-secret", NULL, NULL, &to_bundle);
+        knishio_request_tokens_params_t to_secret = { .token = "REQ", .requested_amount = "7", .to = "recipient-secret" };
+        res = NULL;
+        err = knishio_client_request_tokens(client, &to_secret, &res);
+        m = last_proposal(&s);
+        t = (m && m->atom_count == 2) ? m->atoms[0] : NULL;
+        const char *to_pos = meta_value(t, "position");
+        const char *to_bun = meta_value(t, "bundle");
+        const char *to_address = NULL;
+        knishio_wallet_t *expected = NULL;
+        if (to_pos && knishio_wallet_create_with_ots_version(&expected, "recipient-secret", "REQ", to_pos,
+                                                             knishio_client_get_ots_version(client))) {
+            to_address = expected->address;
+        }
+        check(err == KNISHIO_SUCCESS && res && res->success && t && t->meta_type && strcmp(t->meta_type, "wallet") == 0
+                  && to_address && t->meta_id && strcmp(t->meta_id, to_address) == 0
+                  && to_bun && to_bundle && strcmp(to_bun, to_bundle) == 0,
+              "a recipient secret: metaType wallet, metaId its REQ wallet address, position and bundle meta", NULL);
+        check(m && knishio_molecule_check(m, NULL) == KNISHIO_SUCCESS, "that molecule passes the SDK check", NULL);
+        knishio_wallet_free(expected);
+        knishio_free(to_bundle);
+        knishio_molecule_free_deep(m);
+        knishio_request_tokens_result_free(res);
+        knishio_client_destroy(client);
+    }
+    server_stop(&s);
+}
+
 int main(void) {
     printf("Phase B client operations (SDK %s)\n", KNISHIO_VERSION_STRING);
     knishio_init();
@@ -599,6 +704,7 @@ int main(void) {
     case_claim();
     case_withdraw();
     case_presubmit_check();
+    case_request_tokens();
     printf("%s: %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_failures);
     knishio_free(g_secret);
     knishio_free(g_bundle);

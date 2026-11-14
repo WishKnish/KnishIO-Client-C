@@ -72,6 +72,16 @@ knishio_auth_token_t* knishio_client_get_auth_token(const knishio_client_t* clie
 const char* knishio_client_get_cell_slug(const knishio_client_t* client);
 
 /**
+ * @brief Set the client's cell slug (JS setCellSlug); the client keeps its own copy
+ *
+ * @param client KnishIO client instance
+ * @param cell_slug New cell slug, or NULL for none
+ * @return KNISHIO_SUCCESS, KNISHIO_ERROR_NULL_POINTER for a NULL client, KNISHIO_ERROR_MEMORY
+ *         when the copy cannot be allocated (the old value is kept)
+ */
+knishio_error_t knishio_client_set_cell_slug(knishio_client_t* client, const char* cell_slug);
+
+/**
  * @brief Clear authentication from client
  * Removes authentication token and clears auth headers
  * 

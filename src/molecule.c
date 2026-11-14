@@ -1303,7 +1303,7 @@ static knishio_error_t add_continuid_atom(knishio_molecule_t* molecule) {
 
     result = knishio_molecule_add_atom(molecule, continuid_atom);
     if (result != KNISHIO_SUCCESS) {
-        knishio_atom_free(continuid_atom);
+        knishio_atom_free_deep(continuid_atom);
         return result;
     }
 
@@ -1745,7 +1745,7 @@ knishio_error_t knishio_molecule_init_wallet_creation(
 
     result = knishio_molecule_add_atom(molecule, atom);
     if (result != KNISHIO_SUCCESS) {
-        knishio_atom_free(atom);
+        knishio_atom_free_deep(atom);
         return result;
     }
 
@@ -1763,6 +1763,92 @@ knishio_error_t knishio_molecule_init_shadow_wallet_claim(
     const char* keys[] = { "shadowWalletClaim" };
     const char* vals[] = { "1" };
     return knishio_molecule_init_wallet_creation(molecule, wallet, keys, vals, 1);
+}
+
+/**
+ * @brief Token request molecule (JS Molecule.initTokenRequest): a T atom signed by the source
+ * wallet (value = amount, metaType/metaId = the recipient, batchId) whose meta is the caller's
+ * pairs with token = token and amount = String(amount) set as a JS object assignment would (a key
+ * already present keeps its place, a new one is appended), then the ContinuID I atom.
+ */
+knishio_error_t knishio_molecule_init_token_request(
+    knishio_molecule_t* molecule,
+    const char* token,
+    const char* amount,
+    const char* meta_type,
+    const char* meta_id,
+    const char** meta_keys,
+    const char** meta_values,
+    size_t meta_count,
+    const char* batch_id
+) {
+    if (!molecule || !token || !token[0] || (meta_count > 0 && (!meta_keys || !meta_values))) {
+        return KNISHIO_ERROR_INVALID_ARGS;
+    }
+    const knishio_wallet_t* src = molecule->source_wallet;
+    if (!src || !molecule->remainder_wallet) {
+        return KNISHIO_ERROR_INVALID_STATE;
+    }
+
+    /* JS String(null) for a request without an amount. */
+    const char* amount_text = amount ? amount : "null";
+    const char** keys = malloc(sizeof(char*) * (meta_count + 2));
+    const char** vals = malloc(sizeof(char*) * (meta_count + 2));
+    if (!keys || !vals) {
+        free((void*)keys);
+        free((void*)vals);
+        return KNISHIO_ERROR_MEMORY;
+    }
+    size_t n = 0;
+    bool has_token = false;
+    bool has_amount = false;
+    for (size_t i = 0; i < meta_count; i++) {
+        if (!meta_keys[i]) {
+            continue;
+        }
+        keys[n] = meta_keys[i];
+        vals[n] = meta_values[i];
+        if (strcmp(meta_keys[i], "token") == 0) {
+            vals[n] = token;
+            has_token = true;
+        } else if (strcmp(meta_keys[i], "amount") == 0) {
+            vals[n] = amount_text;
+            has_amount = true;
+        }
+        n++;
+    }
+    if (!has_token) {
+        keys[n] = "token";  vals[n] = token;       n++;
+    }
+    if (!has_amount) {
+        keys[n] = "amount"; vals[n] = amount_text; n++;
+    }
+
+    knishio_atom_t* atom = NULL;
+    knishio_error_t result = knishio_atom_create(&atom, src->position, src->address, KNISHIO_ISOTOPE_T,
+                                                 src->token, amount, batch_id);
+    if (result == KNISHIO_SUCCESS) {
+        knishio_free(atom->meta_type);
+        knishio_free(atom->meta_id);
+        atom->meta_type = meta_type ? knishio_strdup(meta_type) : NULL;
+        atom->meta_id = meta_id ? knishio_strdup(meta_id) : NULL;
+        if ((meta_type && !atom->meta_type) || (meta_id && !atom->meta_id)) {
+            result = KNISHIO_ERROR_MEMORY;
+        }
+    }
+    if (result == KNISHIO_SUCCESS) {
+        result = set_atom_meta_pairs(atom, keys, vals, n);
+    }
+    free((void*)keys);
+    free((void*)vals);
+    if (result == KNISHIO_SUCCESS) {
+        result = knishio_molecule_add_atom(molecule, atom);
+    }
+    if (result != KNISHIO_SUCCESS) {
+        knishio_atom_free_deep(atom);
+        return result;
+    }
+    return add_continuid_atom(molecule);
 }
 
 /* --- Identifier, policy and rule molecules (JS initIdentifierCreation, addPolicyAtom, createRule) --- */

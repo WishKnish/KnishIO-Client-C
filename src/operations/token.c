@@ -33,16 +33,12 @@ static const char* CREATE_TOKEN_MUTATION =
     "  }"
     "}";
 
-static const char* REQUEST_TOKENS_MUTATION = 
-    "mutation RequestTokens($token: String!, $amount: String, $units: [String]) {"
-    "  RequestTokens(token: $token, amount: $amount, units: $units) {"
-    "    molecular_hash"
-    "    status"
-    "    wallet {"
-    "      address"
-    "      token"
-    "      amount"
-    "    }"
+/* JS QueryToken, reduced to the field requestTokens reads (data.Token[0].fungibility). */
+static const char* QUERY_TOKEN =
+    "query QueryToken($slug: String) {"
+    "  Token(slug: $slug) {"
+    "    slug"
+    "    fungibility"
     "  }"
     "}";
 
@@ -270,88 +266,199 @@ cleanup:
     return error;
 }
 
-/* Request tokens (mint new tokens) */
+static knishio_error_t token_result_from_response(
+    const knishio_graphql_response_t* response,
+    const char* failure_text,
+    knishio_request_tokens_result_t** result
+);
+
+/* JS Wallet.isBundleHash: 64 characters of [0-9A-Fa-f]. */
+static bool is_bundle_hash(const char* s) {
+    size_t n = 0;
+    for (; s[n]; n++) {
+        const char c = s[n];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+    return n == 64;
+}
+
+/* meta[key] = value as a JS object assignment: an existing key keeps its place. */
+static void meta_assign(const char** keys, const char** vals, size_t* n, const char* key, const char* value) {
+    for (size_t i = 0; i < *n; i++) {
+        if (strcmp(keys[i], key) == 0) {
+            vals[i] = value;
+            return;
+        }
+    }
+    keys[*n] = key;
+    vals[*n] = value;
+    (*n)++;
+}
+
+/* Whether data.Token[0].fungibility of a Token(slug) reply is "stackable". */
+static bool token_is_stackable(const knishio_graphql_response_t* response) {
+    cJSON* root = response->data ? cJSON_Parse(response->data) : NULL;
+    const cJSON* tokens = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(root, "data"), "Token");
+    const cJSON* first = cJSON_IsArray(tokens) ? cJSON_GetArrayItem(tokens, 0) : NULL;
+    const char* fungibility = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(first, "fungibility"));
+    bool stackable = fungibility && strcmp(fungibility, "stackable") == 0;
+    cJSON_Delete(root);
+    return stackable;
+}
+
+/* Request tokens (JS requestTokens): look the token up (a stackable token gets a fresh batch id),
+ * turn units into the amount and a tokenUnits meta, resolve the recipient, then propose a signed
+ * T + I molecule (initTokenRequest) from the USER wallet at the ContinuID pointer. */
 knishio_error_t knishio_client_request_tokens(
     knishio_client_t* client,
     const knishio_request_tokens_params_t* params,
     knishio_request_tokens_result_t** result
 ) {
-    if (!client || !params || !result) {
+    if (!client || !params || !result || !params->token
+        || (params->unit_count > 0 && !params->requested_units)
+        || (params->meta_count > 0 && !params->meta)) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    
-    /* Validate required parameters */
-    if (!params->token) {
-        return KNISHIO_ERROR_INVALID_ARGS;
-    }
-    
-    /* Build variables JSON (cJSON escapes every value and sizes the text) */
-    cJSON* vars = cJSON_CreateObject();
-    if (!vars || !cJSON_AddStringToObject(vars, "token", params->token)) {
+
+    char* batch_id = NULL;
+    char* units_json = NULL;
+    char* position = NULL;
+    const char** keys = NULL;
+    const char** vals = NULL;
+    knishio_wallet_t* source = NULL;
+    knishio_wallet_t* remainder = NULL;
+    knishio_wallet_t* to_wallet = NULL;
+    knishio_molecule_t* molecule = NULL;
+    knishio_graphql_response_t* response = NULL;
+    const char* amount = params->requested_amount;
+    char unit_amount[32];
+    const char* meta_type = "walletBundle";
+    const char* meta_id = NULL;
+    size_t n = 0;
+
+    /* Token lookup: a stackable token gets a new batch id (JS generateBatchId). */
+    knishio_error_t error = KNISHIO_SUCCESS;
+    {
+        cJSON* vars = cJSON_CreateObject();
+        char* variables = (vars && cJSON_AddStringToObject(vars, "slug", params->token))
+            ? cJSON_PrintUnformatted(vars) : NULL;
         cJSON_Delete(vars);
-        return KNISHIO_ERROR_MEMORY;
+        if (!variables) {
+            return KNISHIO_ERROR_MEMORY;
+        }
+        knishio_graphql_operation_t operation = {
+            .name = "QueryToken",
+            .query = QUERY_TOKEN,
+            .variables_json = variables,
+            .requires_auth = false,
+            .is_mutation = false
+        };
+        error = knishio_client_execute_graphql(client, &operation, &response);
+        cJSON_free(variables);
+        if (error != KNISHIO_SUCCESS) {
+            return error;
+        }
+        bool stackable = token_is_stackable(response);
+        knishio_graphql_response_free(response);
+        response = NULL;
+        if (stackable && !knishio_generate_position(&batch_id)) {
+            return KNISHIO_ERROR_CRYPTO;
+        }
     }
-    if (params->requested_amount && !cJSON_AddStringToObject(vars, "amount", params->requested_amount)) {
-        cJSON_Delete(vars);
-        return KNISHIO_ERROR_MEMORY;
+
+    /* Meta: the caller's pairs, then tokenUnits, position and bundle as JS assigns them
+     * (initTokenRequest adds token and amount). */
+    keys = malloc(sizeof(char*) * (params->meta_count + 3));
+    vals = malloc(sizeof(char*) * (params->meta_count + 3));
+    if (!keys || !vals) {
+        error = KNISHIO_ERROR_MEMORY;
+        goto cleanup;
     }
-    if (params->requested_units && params->unit_count > 0) {
-        cJSON* units = cJSON_AddArrayToObject(vars, "units");
+    for (size_t i = 0; i < params->meta_count; i++) {
+        if (params->meta[i] && params->meta[i]->key) {
+            meta_assign(keys, vals, &n, params->meta[i]->key, params->meta[i]->value);
+        }
+    }
+
+    /* Units: the amount is their count and they travel as JSON.stringify(units); an amount given
+     * as well is refused (JS StackableUnitAmountException). */
+    if (params->unit_count > 0) {
+        if (amount) {
+            char* end = NULL;
+            double requested = strtod(amount, &end);
+            if (end != amount && requested > 0) {
+                error = KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT;
+                goto cleanup;
+            }
+        }
+        snprintf(unit_amount, sizeof(unit_amount), "%zu", params->unit_count);
+        amount = unit_amount;
+        cJSON* units = cJSON_CreateArray();
         for (size_t i = 0; units && i < params->unit_count; i++) {
             if (!cJSON_AddItemToArray(units, cJSON_CreateString(params->requested_units[i] ? params->requested_units[i] : ""))) {
+                cJSON_Delete(units);
                 units = NULL;
             }
         }
-        if (!units) {
-            cJSON_Delete(vars);
-            return KNISHIO_ERROR_MEMORY;
+        units_json = units ? cJSON_PrintUnformatted(units) : NULL;
+        cJSON_Delete(units);
+        if (!units_json) {
+            error = KNISHIO_ERROR_MEMORY;
+            goto cleanup;
+        }
+        meta_assign(keys, vals, &n, "tokenUnits", units_json);
+    }
+
+    error = knishio_client_continuid_molecule(client, &source, &remainder, &molecule);
+    if (error != KNISHIO_SUCCESS) {
+        goto cleanup;
+    }
+
+    /* Recipient: none -> our own bundle; a bundle hash -> that bundle; anything else is a secret,
+     * whose wallet for the token at a fresh position is credited (JS Wallet.create). */
+    meta_id = source->bundle_hash;
+    if (params->to && params->to[0]) {
+        if (is_bundle_hash(params->to)) {
+            meta_id = params->to;
+        } else {
+            if (!knishio_generate_position(&position)
+                || !knishio_wallet_create_with_mlkem_param(&to_wallet, params->to, params->token, position,
+                                                           knishio_client_get_ots_version(client),
+                                                           knishio_client_mlkem_param(client))) {
+                error = KNISHIO_ERROR_CRYPTO;
+                goto cleanup;
+            }
+            meta_type = "wallet";
+            meta_id = to_wallet->address;
+            meta_assign(keys, vals, &n, "position", to_wallet->position);
+            meta_assign(keys, vals, &n, "bundle", to_wallet->bundle_hash);
         }
     }
-    char* variables = cJSON_PrintUnformatted(vars);
-    cJSON_Delete(vars);
-    if (!variables) {
-        return KNISHIO_ERROR_MEMORY;
+
+    error = knishio_molecule_init_token_request(molecule, params->token, amount, meta_type, meta_id,
+                                                keys, vals, n, batch_id);
+    if (error == KNISHIO_SUCCESS) {
+        error = knishio_client_sign_and_submit(client, molecule, source, "RequestTokens",
+                                               CREATE_TOKEN_MUTATION, &response);
+    }
+    if (error == KNISHIO_SUCCESS) {
+        error = token_result_from_response(response, "Token request failed", result);
     }
 
-    /* Execute mutation */
-    knishio_graphql_response_t* response = NULL;
-    knishio_graphql_operation_t operation = {
-        .name = "RequestTokens",
-        .query = REQUEST_TOKENS_MUTATION,
-        .variables_json = variables,
-        .requires_auth = true,
-        .is_mutation = true
-    };
-
-    knishio_error_t error = knishio_client_execute_graphql(client, &operation, &response);
-    cJSON_free(variables);
-
-    if (error != KNISHIO_SUCCESS) {
-        return error;
-    }
-    
-    /* Create result */
-    knishio_request_tokens_result_t* res = knishio_calloc(1, sizeof(knishio_request_tokens_result_t));
-    if (!res) {
-        knishio_graphql_response_free(response);
-        return KNISHIO_ERROR_MEMORY;
-    }
-    
-    if (response->success && response->molecular_hash) {
-        res->success = true;
-        res->molecular_hash = knishio_strdup(response->molecular_hash);
-        res->response = response->data ? knishio_strdup(response->data) : NULL;
-    } else {
-        res->success = false;
-        res->error_message = response->errors ? 
-            knishio_strdup(response->errors) : 
-            knishio_strdup("Token request failed");
-    }
-    
-    knishio_graphql_response_free(response);
-    *result = res;
-    
-    return KNISHIO_SUCCESS;
+cleanup:
+    if (response) knishio_graphql_response_free(response);
+    knishio_molecule_free_deep(molecule);
+    knishio_wallet_free(to_wallet);
+    knishio_wallet_free(remainder);
+    knishio_wallet_free(source);
+    knishio_free(position);
+    knishio_free(batch_id);
+    cJSON_free(units_json);
+    free((void*)keys);
+    free((void*)vals);
+    return error;
 }
 
 /* Result of a submitted token molecule (replenish, fuse), from the ProposeMolecule response. */
