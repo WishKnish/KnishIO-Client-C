@@ -417,11 +417,15 @@ endif()
 
 # Sanitizers (optional)
 if(KNISHIO_ENABLE_SANITIZERS)
-    if(CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
-        target_compile_options(knishio-client PRIVATE -fsanitize=address,undefined)
-        target_link_options(knishio-client PRIVATE -fsanitize=address,undefined)
-        target_compile_options(knishio-client-static PRIVATE -fsanitize=address,undefined)
-        target_link_options(knishio-client-static PRIVATE -fsanitize=address,undefined)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(knishio-client PRIVATE -fsanitize=address -fsanitize=undefined)
+        target_link_options(knishio-client PRIVATE -fsanitize=address -fsanitize=undefined)
+        target_compile_options(knishio-client-static PRIVATE -fsanitize=address -fsanitize=undefined)
+        # Consumers of the static library (the test executables) must link the sanitizer runtime.
+        target_link_options(knishio-client-static INTERFACE
+            "$<BUILD_INTERFACE:-fsanitize=address>" "$<BUILD_INTERFACE:-fsanitize=undefined>")
+    else()
+        message(FATAL_ERROR "KNISHIO_ENABLE_SANITIZERS needs GCC or Clang, not ${CMAKE_C_COMPILER_ID}")
     endif()
 endif()
 

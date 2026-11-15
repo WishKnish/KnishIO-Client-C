@@ -272,15 +272,17 @@ knishio_error_t knishio_client_query_wallets(
         for (size_t i = 0; res->wallets && i < n; i++) {
             knishio_json_t* item = knishio_json_array_get(list, i);
             if (!item || knishio_json_get_type(item) != KNISHIO_JSON_OBJECT) {
+                knishio_json_free(item);
                 continue;
             }
             /* Shared Balance/Wallet parser: fields, amount, batchId, tokenUnits. */
             knishio_wallet_t* w = knishio_response_wallet_list_to_client_wallet(item, NULL);
+            bool is_shadow = (w && w->address == NULL);
+            knishio_json_get_bool_path(item, "isShadow", &is_shadow);
+            knishio_json_free(item);
             if (!w) {
                 continue;
             }
-            bool is_shadow = (w->address == NULL);
-            knishio_json_get_bool_path(item, "isShadow", &is_shadow);
             w->is_shadow = is_shadow;
             if (w->is_shadow && params && !params->include_shadow) {
                 knishio_wallet_free(w);

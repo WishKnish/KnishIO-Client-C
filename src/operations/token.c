@@ -308,8 +308,9 @@ static bool token_is_stackable(const knishio_graphql_response_t* response) {
     return stackable;
 }
 
-/* Request tokens (JS requestTokens): look the token up (a stackable token gets a fresh batch id),
- * turn units into the amount and a tokenUnits meta, resolve the recipient, then propose a signed
+/* Request tokens (JS requestTokens): look the token up (a stackable token takes the caller's batch
+ * id or a fresh one; a batch id for any other token is refused), turn units into the amount and a
+ * tokenUnits meta, resolve the recipient, then propose a signed
  * T + I molecule (initTokenRequest) from the USER wallet at the ContinuID pointer. */
 knishio_error_t knishio_client_request_tokens(
     knishio_client_t* client,
@@ -363,8 +364,18 @@ knishio_error_t knishio_client_request_tokens(
         bool stackable = token_is_stackable(response);
         knishio_graphql_response_free(response);
         response = NULL;
-        if (stackable && !knishio_generate_position(&batch_id)) {
-            return KNISHIO_ERROR_CRYPTO;
+        if (!stackable && params->batch_id) {
+            return KNISHIO_ERROR_BATCH_ID;
+        }
+        if (stackable) {
+            if (params->batch_id) {
+                batch_id = knishio_strdup(params->batch_id);
+                if (!batch_id) {
+                    return KNISHIO_ERROR_MEMORY;
+                }
+            } else if (!knishio_generate_position(&batch_id)) {
+                return KNISHIO_ERROR_CRYPTO;
+            }
         }
     }
 

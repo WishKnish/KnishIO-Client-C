@@ -100,9 +100,14 @@ knishio_wallet_t* knishio_response_wallet_list_to_client_wallet(knishio_json_t *
                 }
                 slot->metas_json = metas_json ? metas_json : knishio_strdup("{}");
                 wallet->token_unit_count++;
+                knishio_json_free(metas);
+                knishio_json_free(name);
+                knishio_json_free(id);
+                knishio_json_free(u);
             }
         }
     }
+    knishio_json_free(units);
 
     return wallet;
 }

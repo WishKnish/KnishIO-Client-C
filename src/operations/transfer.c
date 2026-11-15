@@ -116,7 +116,10 @@ knishio_error_t knishio_client_transfer_tokens(
                  * emit no tokenUnits meta, so the validator never routes the units (mirrors
                  * transfer_tokens_multi's source-units fix). */
                 knishio_json_t* bal = knishio_json_get_path(root, "data.Balance");
-                if (bal) bw = knishio_response_wallet_list_to_client_wallet(bal, NULL);
+                if (bal) {
+                    bw = knishio_response_wallet_list_to_client_wallet(bal, NULL);
+                    knishio_json_free(bal);
+                }
                 knishio_json_free(root);
             }
         }
@@ -335,7 +338,10 @@ knishio_error_t knishio_client_transfer_tokens_multi(
                  * stackable units — otherwise split_units_multi has nothing to partition and the
                  * V-atoms emit no tokenUnits meta, so the validator never routes the units. */
                 knishio_json_t* bal = knishio_json_get_path(root, "data.Balance");
-                if (bal) bw = knishio_response_wallet_list_to_client_wallet(bal, NULL);
+                if (bal) {
+                    bw = knishio_response_wallet_list_to_client_wallet(bal, NULL);
+                    knishio_json_free(bal);
+                }
                 knishio_json_free(root);
             }
         }

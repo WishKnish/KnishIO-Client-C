@@ -16,6 +16,31 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- `knishio_request_tokens_params_t` gained a trailing `batch_id` field (see Added). Callers must
+  zero-initialise the struct (designated initialisers do); binaries built against the old header
+  must be rebuilt.
+
+### Added
+
+- `knishio_request_tokens_params_t.batch_id`, the `batchId` argument of JS `requestTokens`: a
+  stackable token uses the caller's batch id (NULL generates one, as before); a batch id for a
+  non-stackable token is refused with `KNISHIO_ERROR_BATCH_ID` before anything is proposed, as JS
+  does (`BatchIdException`). Test: `PhaseBClientOps`.
+
+### Fixed
+
+- `knishio_response_wallet_list_to_client_wallet` leaked the JSON wrappers of `tokenUnits` and of
+  each unit's `id`, `name` and `metas`; `knishio_client_query_wallets` leaked each list item;
+  `knishio_client_transfer_tokens` and `knishio_client_transfer_tokens_multi` leaked the
+  `data.Balance` wrapper.
+  All are freed now (checked with `leaks --atExit` on `PhaseBClientOps` and `OtsV2Client`).
+- `KNISHIO_ENABLE_SANITIZERS=ON` did nothing with AppleClang (the compiler check matched only
+  `GNU` and `Clang`) and did not link the sanitizer runtime into executables that use the static
+  library. It now covers AppleClang, links the runtime through the static library's interface, and
+  stops configuration with an error for any other compiler.
+
 ## [1.7.1] — 2026-11-13
 
 ### Upgrade notes

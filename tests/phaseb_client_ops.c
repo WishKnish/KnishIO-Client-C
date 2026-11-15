@@ -646,6 +646,20 @@ static void case_request_tokens(void) {
         check(err == KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT && !res, "units with an amount -> StackableUnitAmount", NULL);
         check(count_requests(&s, "ProposeMolecule") == proposals, "nothing is proposed for the refused request", NULL);
 
+        /* A caller-supplied batch id for a stackable token is used as given. */
+        params.requested_amount = NULL;
+        params.batch_id = "caller-batch";
+        res = NULL;
+        err = knishio_client_request_tokens(client, &params, &res);
+        m = last_proposal(&s);
+        t = (m && m->atom_count == 2) ? m->atoms[0] : NULL;
+        snprintf(detail, sizeof(detail), "err=%d batch=%s", (int)err, (t && t->batch_id) ? t->batch_id : "(null)");
+        check(err == KNISHIO_SUCCESS && res && res->success && t && t->batch_id
+                  && strcmp(t->batch_id, "caller-batch") == 0,
+              "a caller batch id is kept on the stackable T atom", detail);
+        knishio_molecule_free_deep(m);
+        knishio_request_tokens_result_free(res);
+
         /* A fungible token to another bundle: walletBundle target, the amount as value, no batch id. */
         s.token_reply = "{\"data\":{\"Token\":[{\"slug\":\"REQ\",\"fungibility\":\"fungible\"}]}}";
         const char *other = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -659,6 +673,16 @@ static void case_request_tokens(void) {
               "fungible token to a bundle hash: value 250, metaId = that bundle, no batch id", NULL);
         check(m && knishio_molecule_check(m, NULL) == KNISHIO_SUCCESS, "that molecule passes the SDK check", NULL);
         knishio_molecule_free_deep(m);
+        knishio_request_tokens_result_free(res);
+
+        /* A batch id for a non-stackable token: refused before anything is proposed. */
+        proposals = count_requests(&s, "ProposeMolecule");
+        fungible.batch_id = "caller-batch";
+        res = NULL;
+        err = knishio_client_request_tokens(client, &fungible, &res);
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_ERROR_BATCH_ID && !res, "a batch id on a fungible token -> KNISHIO_ERROR_BATCH_ID", detail);
+        check(count_requests(&s, "ProposeMolecule") == proposals, "nothing is proposed for the batch-id refusal", NULL);
         knishio_request_tokens_result_free(res);
 
         /* A recipient secret: its wallet for the token is credited (metaType wallet + position/bundle). */

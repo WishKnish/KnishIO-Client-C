@@ -76,6 +76,7 @@ typedef struct {
     const char* to;                 /**< Recipient address/bundle (optional) */
     knishio_meta_t** meta;          /**< Request metadata */
     size_t meta_count;              /**< Number of metadata entries */
+    const char* batch_id;           /**< Batch id for a stackable token (optional); NULL generates one. Must be NULL for a non-stackable token (KNISHIO_ERROR_BATCH_ID). */
 } knishio_request_tokens_params_t;
 
 /**
