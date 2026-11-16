@@ -183,8 +183,11 @@ knishio_error_t knishio_client_query_source_wallet(
  * 
  * @param client KnishIO client instance
  * @param token Token slug to burn
- * @param amount Amount to burn (for stackable tokens)
- * @param units Array of unit IDs to burn (for non-fungible)
+ * @param amount Fungible amount to burn; leave 0 with @p units (stackable): the amount is then
+ *               unit_count. A negative amount returns KNISHIO_ERROR_NEGATIVE_AMOUNT and units
+ *               with an amount KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT, before any request (JS
+ *               burnTokens); 0 without units is passed on, as JS does
+ * @param units Array of unit IDs to burn (stackable)
  * @param unit_count Number of units
  * @param result Output burn result (allocated, must be freed)
  * @return KNISHIO_SUCCESS on success, error code on failure

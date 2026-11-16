@@ -21,6 +21,15 @@ substantiate a detail, the entry says so instead of guessing.
 - `knishio_request_tokens_params_t` gained a trailing `batch_id` field (see Added). Callers must
   zero-initialise the struct (designated initialisers do); binaries built against the old header
   must be rebuilt.
+- `knishio_client_transfer_tokens` and `knishio_client_transfer_tokens_multi` now refuse units
+  together with a positive amount with `KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT` instead of
+  `KNISHIO_ERROR_INVALID_ARGS` (see Fixed). Callers that test for the old code must test for the
+  new one.
+- `knishio_client_burn_tokens` no longer returns `KNISHIO_ERROR_INVALID_ARGS` for an amount ≤ 0:
+  units with amount 0 burn the unit count, a negative amount returns
+  `KNISHIO_ERROR_NEGATIVE_AMOUNT`, units with a positive amount return
+  `KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT`, and amount 0 without units is proposed as JS does (see
+  Fixed).
 
 ### Added
 
@@ -40,6 +49,30 @@ substantiate a detail, the entry says so instead of guessing.
   `GNU` and `Clang`) and did not link the sanitizer runtime into executables that use the static
   library. It now covers AppleClang, links the runtime through the static library's interface, and
   stops configuration with an error for any other compiler.
+- `knishio_client_transfer_tokens` and `knishio_client_transfer_tokens_multi` refused stackable
+  units together with an amount with the generic `KNISHIO_ERROR_INVALID_ARGS`; they now return
+  `KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT`, as JS throws `StackableUnitAmountException`, still before
+  any request. `PhaseBClientOps` gains `case_transfer_multi`: one molecule of four V atoms
+  (values -4, +2, +1, +1), each recipient's bundle, batch id and units, and the SDK check.
+- `knishio_json_parse` leaked the parsed tree when the root was a scalar (`null`, a boolean, a
+  number or a string): `knishio_json_free` deletes trees only through array and object wrappers.
+  It showed as one leak per stackable unit with null `metas` in every V atom a stackable transfer
+  built (`build_token_units_json` parses each unit's metas). Scalar roots are now deleted once
+  their value is copied into the wrapper; a string root's bytes live in the wrapper's own block.
+  Checked with `leaks --atExit` on `PhaseBClientOps` (7 leaks before, 0 after).
+- `knishio_client_burn_tokens` did not follow JS `burnTokens` for stackable units: it refused
+  amount 0 (so a units-only burn was impossible), burned the explicit amount when units were also
+  given, and never read the source's units from `Balance`, so the units split did nothing and no
+  atom carried `tokenUnits`. The amount is now the unit count, units with an amount return
+  `KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT` and a negative amount `KNISHIO_ERROR_NEGATIVE_AMOUNT`
+  before any request, and the source carries its `Balance` units, so the source atom lists the
+  burned units and the remainder the kept ones. Test: `PhaseBClientOps` `case_burn_units`.
+- Stackable units whose `Balance` reply carried `"metas": null` were signed as
+  `["u1","u1",null]` in the `tokenUnits` meta, where JS (`TokenUnit.createFromGraphQL`) signs
+  `["u1","u1",{}]`, so every transfer, multi-recipient transfer and burn of such units had a
+  molecular hash different from JS. `knishio_response_wallet_list_to_client_wallet` now reads
+  `metas` as JS does: absent, `null`, `false`, `0`, `""` and a string holding one of those become
+  `{}`. `PhaseBClientOps` compares the `tokenUnits` metas byte for byte with the JS SDK's.
 
 ## [1.7.1] — 2026-11-13
 

@@ -20,7 +20,15 @@
  *     (JS requestTokens / initTokenRequest), never the RequestTokens mutation: units become the
  *     amount and a tokenUnits meta, a stackable token gets a fresh 64-hex batch id, a bundle hash
  *     recipient is a walletBundle target, a recipient secret credits its own wallet for the token
- *     (metaType wallet + position/bundle meta), and units with an amount are refused locally.
+ *     (metaType wallet + position/bundle meta), and units with an amount are refused locally;
+ *   - transferTokens (multi) proposes V source + one V per recipient + V remainder in one
+ *     molecule (unit counts as amounts, each recipient's bundle, batch id and tokenUnits), and
+ *     units with an amount are refused with KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT, nothing sent
+ *     (JS StackableUnitAmountException; the single transferTokens likewise);
+ *   - burnTokens with units takes the amount from the unit count (JS burnTokens): V source -balance
+ *     with the burned units, V +count to the zero bundle, V remainder with the kept units; units
+ *     with an amount return KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT and a negative amount
+ *     KNISHIO_ERROR_NEGATIVE_AMOUNT, nothing sent.
  */
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -715,6 +723,142 @@ static void case_request_tokens(void) {
     server_stop(&s);
 }
 
+static void case_transfer_multi(void) {
+    printf("transferTokens (multi) proposes V source + one V per recipient + V remainder in one molecule\n");
+    stub_server_t s;
+    if (!server_start(&s)) { check(false, "stub server starts", NULL); return; }
+    const char *units[] = { "u1", "u2", "u3", "u4" };
+    char *bal = balance_reply("MTK", POS_REGULAR, "4", units, 4);
+    s.balance_reply = bal;
+    knishio_client_t *client = logged_in_client(&s);
+    check(client != NULL, "login through the stub", NULL);
+    if (client) {
+        const char *b1 = "1111111111111111111111111111111111111111111111111111111111111111";
+        const char *b2 = "2222222222222222222222222222222222222222222222222222222222222222";
+        const char *r1[] = { "u1", "u3" };
+        const char *r2[] = { "u2" };
+        knishio_transfer_recipient_t recipients[] = {
+            { .bundle_hash = b1, .units = r1, .unit_count = 2, .batch_id = "batch-one" },
+            { .bundle_hash = b2, .units = r2, .unit_count = 1, .batch_id = "batch-two" },
+        };
+        knishio_transfer_multi_params_t params = { .token = "MTK", .recipients = recipients, .recipient_count = 2 };
+        size_t before = count_requests(&s, "ProposeMolecule");
+        knishio_transfer_result_t *res = NULL;
+        knishio_error_t err = knishio_client_transfer_tokens_multi(client, &params, &res);
+        char detail[160];
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_SUCCESS && res && res->success, "the transfer is submitted and accepted", detail);
+        check(count_requests(&s, "ProposeMolecule") == before + 1, "exactly one molecule is proposed", NULL);
+        knishio_molecule_t *m = last_proposal(&s);
+        bool shape = m && m->atom_count == 4;
+        for (size_t i = 0; shape && i < 4; i++) shape = m->atoms[i]->isotope == KNISHIO_ISOTOPE_V;
+        check(shape, "atoms are [V, V, V, V] (source, two recipients, remainder; no I atom)", NULL);
+        check(shape && strcmp(m->atoms[0]->value, "-4") == 0 && strcmp(m->atoms[1]->value, "2") == 0
+                  && strcmp(m->atoms[2]->value, "1") == 0 && strcmp(m->atoms[3]->value, "1") == 0
+                  && strcmp(m->atoms[0]->position, POS_REGULAR) == 0 && m->atoms[3]->position
+                  && strcmp(m->atoms[3]->position, POS_REGULAR) != 0,
+              "values -4, +2, +1, +1 (unit counts); source at its position, remainder at a fresh one", NULL);
+        check(shape && m->atoms[1]->meta_type && strcmp(m->atoms[1]->meta_type, "walletBundle") == 0
+                  && m->atoms[2]->meta_type && strcmp(m->atoms[2]->meta_type, "walletBundle") == 0
+                  && m->atoms[1]->meta_id && strcmp(m->atoms[1]->meta_id, b1) == 0
+                  && m->atoms[2]->meta_id && strcmp(m->atoms[2]->meta_id, b2) == 0
+                  && m->atoms[1]->batch_id && strcmp(m->atoms[1]->batch_id, "batch-one") == 0
+                  && m->atoms[2]->batch_id && strcmp(m->atoms[2]->batch_id, "batch-two") == 0,
+              "each recipient atom: walletBundle -> its bundle, its batch id", NULL);
+        /* Exact JS bytes for Balance units with "metas": null (TokenUnit.createFromGraphQL makes
+         * them {}; reference: node digests/C-8.mjs in the wave scratch). */
+        const char *t0 = shape ? meta_value(m->atoms[0], "tokenUnits") : NULL;
+        const char *t1 = shape ? meta_value(m->atoms[1], "tokenUnits") : NULL;
+        const char *t2 = shape ? meta_value(m->atoms[2], "tokenUnits") : NULL;
+        const char *t3 = shape ? meta_value(m->atoms[3], "tokenUnits") : NULL;
+        check(t0 && strcmp(t0, "[[\"u1\",\"u1\",{}],[\"u2\",\"u2\",{}],[\"u3\",\"u3\",{}]]") == 0,
+              "tokenUnits: source = JS [[u1,u1,{}],[u2,u2,{}],[u3,u3,{}]] (sent union)", t0);
+        check(t1 && strcmp(t1, "[[\"u1\",\"u1\",{}],[\"u3\",\"u3\",{}]]") == 0,
+              "tokenUnits: recipient 1 = JS [[u1,u1,{}],[u3,u3,{}]]", t1);
+        check(t2 && strcmp(t2, "[[\"u2\",\"u2\",{}]]") == 0, "tokenUnits: recipient 2 = JS [[u2,u2,{}]]", t2);
+        check(t3 && strcmp(t3, "[[\"u4\",\"u4\",{}]]") == 0, "tokenUnits: remainder = JS [[u4,u4,{}]]", t3);
+        check(m && knishio_molecule_check(m, NULL) == KNISHIO_SUCCESS, "the sent molecule passes the SDK check", NULL);
+        knishio_molecule_free_deep(m);
+        knishio_transfer_result_free(res);
+
+        recipients[1].amount = 5;                     /* units AND an amount */
+        before = count_requests(&s, "\"query\"");
+        res = NULL;
+        err = knishio_client_transfer_tokens_multi(client, &params, &res);
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT && !res, "units with an amount -> StackableUnitAmount", detail);
+        check(count_requests(&s, "\"query\"") == before, "nothing is sent for the refused transfer", NULL);
+
+        knishio_transfer_params_t single = { .recipient = b1, .token = "MTK", .amount = 2, .units = r1, .unit_count = 2 };
+        res = NULL;
+        err = knishio_client_transfer_tokens(client, &single, &res);
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT && !res,
+              "single transferTokens: units with an amount -> StackableUnitAmount", detail);
+        check(count_requests(&s, "\"query\"") == before, "nothing is sent for the refused single transfer", NULL);
+        knishio_client_destroy(client);
+    }
+    server_stop(&s);
+    cJSON_free(bal);
+}
+
+static void case_burn_units(void) {
+    printf("burnTokens with units burns the unit count: V source, V zero bundle, V remainder\n");
+    stub_server_t s;
+    if (!server_start(&s)) { check(false, "stub server starts", NULL); return; }
+    const char *units[] = { "u1", "u2", "u3" };
+    char *bal = balance_reply("BTK", POS_REGULAR, "3", units, 3);
+    s.balance_reply = bal;
+    knishio_client_t *client = logged_in_client(&s);
+    check(client != NULL, "login through the stub", NULL);
+    if (client) {
+        const char *burn[] = { "u1", "u3" };
+        char detail[160];
+        size_t before = count_requests(&s, "\"query\"");
+        knishio_transfer_result_t *res = NULL;
+        knishio_error_t err = knishio_client_burn_tokens(client, "BTK", 2, burn, 2, &res);
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT && !res, "units with an amount -> StackableUnitAmount", detail);
+        check(count_requests(&s, "\"query\"") == before, "nothing is sent for the refused burn", NULL);
+
+        res = NULL;
+        err = knishio_client_burn_tokens(client, "BTK", -1, NULL, 0, &res);
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_ERROR_NEGATIVE_AMOUNT && !res, "a negative amount -> NegativeAmount", detail);
+        check(count_requests(&s, "\"query\"") == before, "nothing is sent for the negative burn", NULL);
+
+        size_t proposals = count_requests(&s, "ProposeMolecule");
+        res = NULL;
+        err = knishio_client_burn_tokens(client, "BTK", 0, burn, 2, &res);
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_SUCCESS && res && res->success, "the unit burn is submitted and accepted", detail);
+        check(count_requests(&s, "ProposeMolecule") == proposals + 1, "exactly one molecule is proposed", NULL);
+        knishio_molecule_t *m = last_proposal(&s);
+        bool shape = m && m->atom_count == 3;
+        for (size_t i = 0; shape && i < 3; i++) shape = m->atoms[i]->isotope == KNISHIO_ISOTOPE_V;
+        check(shape, "atoms are [V, V, V] (source, burn, remainder)", NULL);
+        check(shape && strcmp(m->atoms[0]->value, "-3") == 0 && strcmp(m->atoms[1]->value, "2") == 0
+                  && strcmp(m->atoms[2]->value, "1") == 0,
+              "values -3, +2 (unit count), +1", shape ? m->atoms[1]->value : NULL);
+        check(shape && m->atoms[1]->meta_type && strcmp(m->atoms[1]->meta_type, "walletBundle") == 0
+                  && m->atoms[1]->meta_id
+                  && strcmp(m->atoms[1]->meta_id, "0000000000000000000000000000000000000000000000000000000000000000") == 0,
+              "the burn atom goes to the zero bundle", NULL);
+        const char *t0 = shape ? meta_value(m->atoms[0], "tokenUnits") : NULL;
+        const char *t1 = shape ? meta_value(m->atoms[1], "tokenUnits") : NULL;
+        const char *t2 = shape ? meta_value(m->atoms[2], "tokenUnits") : NULL;
+        check(t0 && strcmp(t0, "[[\"u1\",\"u1\",{}],[\"u3\",\"u3\",{}]]") == 0 && !t1,
+              "tokenUnits: source = JS [[u1,u1,{}],[u3,u3,{}]] (burned), burn atom none", t0);
+        check(t2 && strcmp(t2, "[[\"u2\",\"u2\",{}]]") == 0, "tokenUnits: remainder = JS [[u2,u2,{}]] (kept)", t2);
+        check(m && knishio_molecule_check(m, NULL) == KNISHIO_SUCCESS, "the sent molecule passes the SDK check", NULL);
+        knishio_molecule_free_deep(m);
+        knishio_transfer_result_free(res);
+        knishio_client_destroy(client);
+    }
+    server_stop(&s);
+    cJSON_free(bal);
+}
+
 int main(void) {
     printf("Phase B client operations (SDK %s)\n", KNISHIO_VERSION_STRING);
     knishio_init();
@@ -729,6 +873,8 @@ int main(void) {
     case_withdraw();
     case_presubmit_check();
     case_request_tokens();
+    case_transfer_multi();
+    case_burn_units();
     printf("%s: %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_failures);
     knishio_free(g_secret);
     knishio_free(g_bundle);

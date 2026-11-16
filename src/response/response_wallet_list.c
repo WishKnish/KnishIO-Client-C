@@ -7,6 +7,46 @@
 #include "knishio/utils/memory.h"
 #include "knishio/json/parser.h"
 #include <stdlib.h>
+#include <string.h>
+
+/* JS truthiness of a JSON value: null, false, 0 and "" are falsy. */
+static bool json_js_falsy(const knishio_json_t *v) {
+    double d = 0;
+    bool b = false;
+    switch (knishio_json_get_type(v)) {
+        case KNISHIO_JSON_NULL:
+            return true;
+        case KNISHIO_JSON_BOOL:
+            return knishio_json_get_bool(v, &b) && !b;
+        case KNISHIO_JSON_NUMBER:
+            return knishio_json_get_number(v, &d) && (d == 0 || d != d);
+        case KNISHIO_JSON_STRING: {
+            const char *s = knishio_json_get_string(v);
+            return !s || !s[0];
+        }
+        default:
+            return false;
+    }
+}
+
+/* A unit's metas as JS TokenUnit.createFromGraphQL reads them, stored as a JSON string:
+ * `data.metas || {}`, then a non-empty string is JSON-parsed and a falsy result becomes {}.
+ * So absent, null, false, 0, "" and the strings "null", "false", "0" give "{}"; an object,
+ * array or other value is kept. A string that is not JSON is kept as given (JS throws there;
+ * the molecule builder falls back to {} for it). */
+static char *metas_like_js(const knishio_json_t *metas) {
+    if (!metas || json_js_falsy(metas)) {
+        return knishio_strdup("{}");
+    }
+    if (knishio_json_get_type(metas) == KNISHIO_JSON_STRING) {
+        const char *ms = knishio_json_get_string(metas);
+        knishio_json_t *parsed = knishio_json_parse(ms, NULL);
+        bool falsy = parsed && json_js_falsy(parsed);
+        knishio_json_free(parsed);
+        return knishio_strdup(falsy ? "{}" : ms);
+    }
+    return knishio_json_serialize(metas, false);
+}
 
 /**
  * @brief Convert wallet data to client wallet (placeholder)
@@ -92,12 +132,9 @@ knishio_wallet_t* knishio_response_wallet_list_to_client_wallet(knishio_json_t *
                 knishio_token_unit_t *slot = &wallet->token_units[wallet->token_unit_count];
                 slot->id = id_s ? knishio_strdup(id_s) : NULL;
                 slot->name = name_s ? knishio_strdup(name_s) : NULL;
-                /* metas may arrive as a JSON string or an object; store as a JSON string. */
-                char *metas_json = NULL;
-                if (metas) {
-                    const char *ms = knishio_json_get_string(metas);
-                    metas_json = ms ? knishio_strdup(ms) : knishio_json_serialize(metas, false);
-                }
+                /* metas may arrive as a JSON string or an object; store as a JSON string, read as
+                 * JS TokenUnit.createFromGraphQL reads it (null metas -> {}). */
+                char *metas_json = metas_like_js(metas);
                 slot->metas_json = metas_json ? metas_json : knishio_strdup("{}");
                 wallet->token_unit_count++;
                 knishio_json_free(metas);

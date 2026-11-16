@@ -35,7 +35,29 @@ struct knishio_json_object {
 /* Helper to wrap cJSON in our structure */
 static knishio_json_t* wrap_cjson(cJSON *cjson, bool owned) {
     if (!cjson) return NULL;
-    
+
+    /* An owned scalar root (knishio_json_parse of "null", "true", "1" or "\"s\"") has no tree
+     * left to hold once its value is copied into the wrapper, so it is deleted here; leaving it
+     * referenced only by a scalar wrapper leaked it, since knishio_json_free deletes trees only
+     * through ARRAY/OBJECT wrappers. A string root's bytes are allocated together with the
+     * wrapper (one block), so knishio_json_free's single knishio_free releases them and the
+     * string stays valid exactly as long as the wrapper. Borrowed (child) nodes are unchanged. */
+    if (owned && cJSON_IsString(cjson)) {
+        const char *s = cjson->valuestring;
+        size_t len = s ? strlen(s) : 0;
+        knishio_json_t *json = knishio_calloc(1, sizeof(knishio_json_t) + len + 1);
+        if (json) {
+            json->type = KNISHIO_JSON_STRING;
+            if (s) {
+                char *copy = (char *)(json + 1);
+                memcpy(copy, s, len + 1);
+                json->data.string_value = copy;
+            }
+        }
+        cJSON_Delete(cjson);
+        return json;
+    }
+
     knishio_json_t *json = knishio_calloc(1, sizeof(knishio_json_t));
     if (!json) {
         if (owned) cJSON_Delete(cjson);
@@ -92,7 +114,12 @@ static knishio_json_t* wrap_cjson(cJSON *cjson, bool owned) {
             if (owned) cJSON_Delete(cjson);
             return NULL;
     }
-    
+
+    if (owned && (json->type == KNISHIO_JSON_NULL || json->type == KNISHIO_JSON_BOOL
+                  || json->type == KNISHIO_JSON_NUMBER)) {
+        cJSON_Delete(cjson);  /* value copied above; nothing references the root */
+    }
+
     return json;
 }
 
@@ -147,9 +174,9 @@ void knishio_json_free(knishio_json_t *json) {
     
     switch (json->type) {
         case KNISHIO_JSON_STRING:
-            /* string_value references the cJSON tree's valuestring (see wrap_cjson) — it is NOT
-             * owned by this wrapper, so do not free it here. It is released with the owning root's
-             * cJSON tree (the OBJECT/ARRAY case below cJSON_Delete's that tree when owned). */
+            /* string_value either references the cJSON tree's valuestring (a borrowed child, see
+             * wrap_cjson), released with the owning root's tree, or, for an owned string root, lies
+             * in the wrapper's own block, released by the knishio_free below. Never freed here. */
             break;
             
         case KNISHIO_JSON_ARRAY:

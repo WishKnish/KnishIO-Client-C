@@ -63,7 +63,7 @@ knishio_error_t knishio_client_transfer_tokens(
         return KNISHIO_ERROR_INVALID_ARGS;
     }
     if (params->unit_count > 0 && params->amount > 0) {
-        return KNISHIO_ERROR_INVALID_ARGS;  /* can't move units AND an amount */
+        return KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT;  /* can't move units AND an amount (JS StackableUnitAmountException) */
     }
     /* Units-only stackable transfer → amount = unit count (mirrors transfer_tokens_multi). */
     int64_t amt = (params->unit_count > 0) ? (int64_t) params->unit_count : (int64_t) params->amount;
@@ -296,7 +296,7 @@ knishio_error_t knishio_client_transfer_tokens_multi(
         const knishio_transfer_recipient_t* r = &params->recipients[i];
         if (r->unit_count > 0) {
             if (r->amount > 0) {
-                error = KNISHIO_ERROR_INVALID_ARGS;  /* can't move units AND an amount */
+                error = KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT;  /* can't move units AND an amount (JS StackableUnitAmountException) */
                 goto cleanup;
             }
             amounts[i] = (int64_t) r->unit_count;
@@ -699,9 +699,16 @@ knishio_error_t knishio_client_burn_tokens(
     if (!client || !token || !result) {
         return KNISHIO_ERROR_INVALID_ARGS;
     }
-    if (amount <= 0) {
-        return KNISHIO_ERROR_INVALID_ARGS;
+    /* JS burnTokens: units set the amount (their count) and units together with an amount are
+     * refused (StackableUnitAmountException); Molecule.burnToken refuses a negative amount
+     * (NegativeAmountException) and accepts 0. Checked before any request. */
+    if (unit_count > 0 && amount > 0) {
+        return KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT;
     }
+    if (unit_count == 0 && amount < 0) {
+        return KNISHIO_ERROR_NEGATIVE_AMOUNT;
+    }
+    const int64_t amt = (unit_count > 0) ? (int64_t) unit_count : (int64_t) amount;
 
     /* Canonical burn = 3 V-atoms (source -balance, +amount to the all-zeros burn bundle,
      * remainder +(balance-amount)); sum 0. Mirrors create_token's resolve+submit pattern,
@@ -711,6 +718,7 @@ knishio_error_t knishio_client_burn_tokens(
     knishio_wallet_t* user = NULL;       /* USER ContinuID wallet → client secret + bundle */
     knishio_wallet_t* source = NULL;     /* the funded token wallet (burn source) */
     knishio_wallet_t* remainder = NULL;
+    knishio_wallet_t* bw = NULL;         /* Balance-parsed wallet → carries the source's tokenUnits */
     char* remainder_position = NULL;
     char* tok_position = NULL;
     char* tok_amount = NULL;
@@ -746,6 +754,15 @@ knishio_error_t knishio_client_burn_tokens(
                 if (p) tok_position = knishio_strdup(p);
                 if (a) tok_amount = knishio_strdup(a);
                 if (w) tok_address = knishio_strdup(w);
+                if (unit_count > 0) {
+                    /* The source must carry its stackable units for split_units to partition
+                     * them (as transfer_tokens does); a fungible burn skips it. */
+                    knishio_json_t* bal = knishio_json_get_path(root, "data.Balance");
+                    if (bal) {
+                        bw = knishio_response_wallet_list_to_client_wallet(bal, NULL);
+                        knishio_json_free(bal);
+                    }
+                }
                 knishio_json_free(root);
             }
         }
@@ -764,6 +781,14 @@ knishio_error_t knishio_client_burn_tokens(
         goto cleanup;
     }
     source->balance = (double) strtoll(tok_amount, NULL, 10);
+    if (bw) {
+        /* Move the parsed token units onto the key-bearing source (it has none; bw is freed in
+         * cleanup), as transfer_tokens does. */
+        source->token_units = bw->token_units;
+        source->token_unit_count = bw->token_unit_count;
+        bw->token_units = NULL;
+        bw->token_unit_count = 0;
+    }
 
     /* 4. Remainder: a fresh same-token wallet (the change returns to the source identity). */
     if (!knishio_generate_position(&remainder_position)) {
@@ -778,10 +803,9 @@ knishio_error_t knishio_client_burn_tokens(
         goto cleanup;
     }
 
-    /* 4b. Stackable (NFT) burn: partition the source's tokenUnits → source keeps the BURNED units,
-     * remainder keeps the rest (no recipient); init_burn then emits each atom's tokenUnits. No-op
-     * for a fungible burn (unit_count == 0). NOTE: a live-queried source carries units only once
-     * GraphQL tokenUnits response-parsing lands (follow-up); offline drivers set units directly. */
+    /* 4b. Stackable (NFT) burn: partition the source's tokenUnits (parsed from Balance above) →
+     * source keeps the BURNED units, remainder keeps the rest (no recipient); init_burn then emits
+     * each atom's tokenUnits. No-op for a fungible burn (unit_count == 0). */
     if (unit_count > 0) {
         knishio_wallet_split_units(source, (char**)units, unit_count, remainder, NULL);
     }
@@ -794,7 +818,7 @@ knishio_error_t knishio_client_burn_tokens(
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
-    error = knishio_molecule_init_burn(molecule, (int64_t) amount);
+    error = knishio_molecule_init_burn(molecule, amt);
     if (error != KNISHIO_SUCCESS) {
         goto cleanup;
     }
@@ -845,6 +869,7 @@ cleanup:
     if (tok_address) knishio_free(tok_address);
     if (source) knishio_wallet_free(source);
     if (remainder) knishio_wallet_free(remainder);
+    if (bw) knishio_wallet_free(bw);
     if (user) knishio_wallet_free(user);
     return error;
 }
