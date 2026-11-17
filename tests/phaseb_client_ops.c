@@ -313,9 +313,11 @@ static char *derived_address(const char *token, const char *position) {
     return address;
 }
 
-/* {"data":{"Balance":{...}}} for this identity's wallet of `token` at `position`. */
-static char *balance_reply(const char *token, const char *position, const char *amount,
-                           const char *const *unit_ids, size_t unit_count) {
+/* {"data":{"Balance":{...}}} for this identity's wallet of `token` at `position`; unit i carries
+ * the served metas string metas_strings[i] (null when the list or the entry is NULL). */
+static char *balance_reply_metas(const char *token, const char *position, const char *amount,
+                                 const char *const *unit_ids, const char *const *metas_strings,
+                                 size_t unit_count) {
     char *address = derived_address(token, position);
     cJSON *root = cJSON_CreateObject();
     cJSON *bal = cJSON_AddObjectToObject(cJSON_AddObjectToObject(root, "data"), "Balance");
@@ -331,13 +333,22 @@ static char *balance_reply(const char *token, const char *position, const char *
         cJSON *u = cJSON_CreateObject();
         cJSON_AddStringToObject(u, "id", unit_ids[i]);
         cJSON_AddStringToObject(u, "name", unit_ids[i]);
-        cJSON_AddNullToObject(u, "metas");
+        if (metas_strings && metas_strings[i]) {
+            cJSON_AddStringToObject(u, "metas", metas_strings[i]);
+        } else {
+            cJSON_AddNullToObject(u, "metas");
+        }
         cJSON_AddItemToArray(units, u);
     }
     char *text = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     free(address);
     return text;
+}
+
+static char *balance_reply(const char *token, const char *position, const char *amount,
+                           const char *const *unit_ids, size_t unit_count) {
+    return balance_reply_metas(token, position, amount, unit_ids, NULL, unit_count);
 }
 
 /* A fresh client logged in through the stub (first login: AUTH wallet, genesis ContinuID). */
@@ -859,6 +870,81 @@ static void case_burn_units(void) {
     cJSON_free(bal);
 }
 
+/* Served metas (validator: keys sorted bytewise) are signed as JS signs JSON.parse of them:
+ * array-index keys ascending first, then the rest in document order, numbers as JS prints them. */
+static const char *const UNIT_METAS_SERVED =
+    "{\"$x\":1,\"10\":2,\"2\":{\"z\":1e-7,\"1\":0.30000000000000004},\"01\":3,\"4294967295\":4,"
+    "\"b\":25e-6,\"c\":1e16}";
+static const char *const UNIT_METAS_JS =
+    "[[\"u1\",\"u1\",{\"2\":{\"1\":0.30000000000000004,\"z\":1e-7},\"10\":2,\"$x\":1,\"01\":3,"
+    "\"4294967295\":4,\"b\":0.000025,\"c\":10000000000000000}]]";
+
+static void case_unit_metas_js_order(void) {
+    printf("unit metas are signed in JS key order with JS number text (burn and replenish)\n");
+    stub_server_t s;
+    if (!server_start(&s)) { check(false, "stub server starts", NULL); return; }
+    const char *units[] = { "u1", "u2", "u3", "u4" };
+    const char *metas[] = { UNIT_METAS_SERVED, NULL, "null", "false" };
+    char *bal = balance_reply_metas("MTK", POS_REGULAR, "4", units, metas, 4);
+    s.balance_reply = bal;
+    knishio_client_t *client = logged_in_client(&s);
+    check(client != NULL, "login through the stub", NULL);
+    if (client) {
+        const char *burn[] = { "u1" };
+        char detail[160];
+        knishio_transfer_result_t *res = NULL;
+        knishio_error_t err = knishio_client_burn_tokens(client, "MTK", 0, burn, 1, &res);
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_SUCCESS && res && res->success, "the unit burn is submitted and accepted", detail);
+        knishio_molecule_t *m = last_proposal(&s);
+        const char *t0 = (m && m->atom_count == 3) ? meta_value(m->atoms[0], "tokenUnits") : NULL;
+        check(t0 && strcmp(t0, UNIT_METAS_JS) == 0, "burn source tokenUnits = JS bytes", t0);
+        const char *t2 = (m && m->atom_count == 3) ? meta_value(m->atoms[2], "tokenUnits") : NULL;
+        check(t2 && strcmp(t2, "[[\"u2\",\"u2\",{}],[\"u3\",\"u3\",{}],[\"u4\",\"u4\",{}]]") == 0,
+              "burn remainder: null, \"null\" and \"false\" metas sign {} as JS", t2);
+        knishio_molecule_free_deep(m);
+        knishio_transfer_result_free(res);
+
+        knishio_token_unit_t unit;
+        memset(&unit, 0, sizeof(unit));
+        unit.id = "u1";
+        unit.name = "u1";
+        unit.metas_json = (char *)UNIT_METAS_SERVED;
+        knishio_request_tokens_result_t *rres = NULL;
+        err = knishio_client_replenish_token(client, "MTK", 0, &unit, 1, &rres);
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_SUCCESS && rres && rres->success, "the unit replenish is submitted and accepted", detail);
+        m = last_proposal(&s);
+        const char *tc = (m && m->atom_count >= 1) ? meta_value(m->atoms[0], "tokenUnits") : NULL;
+        check(tc && strcmp(tc, UNIT_METAS_JS) == 0, "replenish C atom tokenUnits = JS bytes", tc);
+        knishio_molecule_free_deep(m);
+        knishio_request_tokens_result_free(rres);
+
+        knishio_token_unit_t falsy[4];
+        memset(falsy, 0, sizeof(falsy));
+        const char *falsy_metas[] = { "null", "false", "0", "\"\"" };
+        const char *falsy_ids[] = { "f1", "f2", "f3", "f4" };
+        for (size_t i = 0; i < 4; i++) {
+            falsy[i].id = (char *)falsy_ids[i];
+            falsy[i].name = (char *)falsy_ids[i];
+            falsy[i].metas_json = (char *)falsy_metas[i];
+        }
+        rres = NULL;
+        err = knishio_client_replenish_token(client, "MTK", 0, falsy, 4, &rres);
+        snprintf(detail, sizeof(detail), "err=%d", (int)err);
+        check(err == KNISHIO_SUCCESS && rres && rres->success, "the falsy-metas replenish is accepted", detail);
+        m = last_proposal(&s);
+        tc = (m && m->atom_count >= 1) ? meta_value(m->atoms[0], "tokenUnits") : NULL;
+        check(tc && strcmp(tc, "[[\"f1\",\"f1\",{}],[\"f2\",\"f2\",{}],[\"f3\",\"f3\",{}],[\"f4\",\"f4\",{}]]") == 0,
+              "replenish: metas null, false, 0 and \"\" sign {} as JS", tc);
+        knishio_molecule_free_deep(m);
+        knishio_request_tokens_result_free(rres);
+        knishio_client_destroy(client);
+    }
+    server_stop(&s);
+    cJSON_free(bal);
+}
+
 int main(void) {
     printf("Phase B client operations (SDK %s)\n", KNISHIO_VERSION_STRING);
     knishio_init();
@@ -875,6 +961,7 @@ int main(void) {
     case_request_tokens();
     case_transfer_multi();
     case_burn_units();
+    case_unit_metas_js_order();
     printf("%s: %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_failures);
     knishio_free(g_secret);
     knishio_free(g_bundle);

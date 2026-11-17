@@ -40,6 +40,16 @@ substantiate a detail, the entry says so instead of guessing.
 
 ### Fixed
 
+- **Signed bytes:** a token unit's `metas` are signed as JS signs them (`JSON.stringify` of
+  `JSON.parse(metas)`): array-index keys first in ascending order, then the other keys in
+  document order, recursively, and numbers as JS prints them. The validator serves `metas` with
+  keys sorted bytewise, and C signed that order with cJSON's number text, so
+  `{"10":2,"2":{"z":1e-7}}` went out as `{"10":2,"2":{"z":1e-07}}` where JS sends
+  `{"2":{"z":1e-7},"10":2}`. Transfers, multi-transfers and burns now serialise `tokenUnits`
+  through the same path as replenish and fuse. Units with `{}` or null metas sign the same bytes
+  as before, and caller metas whose value is JS-falsy (`null`, `false`, `0`, `""`) sign `{}` as in
+  JS. Test: `PhaseBClientOps` `case_unit_metas_js_order`.
+
 - `knishio_response_wallet_list_to_client_wallet` leaked the JSON wrappers of `tokenUnits` and of
   each unit's `id`, `name` and `metas`; `knishio_client_query_wallets` leaked each list item;
   `knishio_client_transfer_tokens` and `knishio_client_transfer_tokens_multi` leaked the

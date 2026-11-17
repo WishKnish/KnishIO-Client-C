@@ -37,6 +37,7 @@ static knishio_error_t copy_string_field(char** dest, const char* src);
 static void free_string_field(char** field);
 static int compare_atoms_by_index(const void* a, const void* b);
 static knishio_error_t set_atom_meta_pairs(knishio_atom_t* atom, const char** keys, const char** vals, size_t n);
+static char* token_units_to_json(const knishio_token_unit_t* const* units, size_t n);
 
 /* Atom values are integer strings as JS String(n) renders them ("-0" never appears). Amounts are
  * int64_t and a wallet balance is a double holding a whole number, exact within ±(2^53-1). */
@@ -1310,43 +1311,22 @@ static knishio_error_t add_continuid_atom(knishio_molecule_t* molecule) {
     return KNISHIO_SUCCESS;
 }
 
-/* Build the canonical tokenUnits wire value `[[id, name, metas], ...]` (matches JS/Rust/Python
- * to_data()) from a wallet's token_units. Returns a malloc'd JSON string (caller frees) or NULL. */
+/* Build the canonical tokenUnits wire value `[[id, name, metas], ...]` (matches JS to_data())
+ * from a wallet's token_units, through the same serialiser as replenish and fuse. Returns a
+ * knishio_malloc'd JSON string (caller frees) or NULL. */
 static char* build_token_units_json(const knishio_wallet_t* w) {
-    knishio_json_array_builder_t* outer = knishio_json_array_builder_create();
-    if (!outer) {
+    if (w->token_unit_count == 0) {
+        return token_units_to_json(NULL, 0);
+    }
+    const knishio_token_unit_t** list = knishio_calloc(w->token_unit_count, sizeof(*list));
+    if (!list) {
         return NULL;
     }
-    bool ok = true;
     for (size_t i = 0; i < w->token_unit_count; i++) {
-        const knishio_token_unit_t* u = &w->token_units[i];
-        knishio_json_array_builder_t* inner = knishio_json_array_builder_create();
-        if (!inner) {
-            ok = false;
-            break;
-        }
-        knishio_json_array_add_string(inner, u->id ? u->id : "");
-        knishio_json_array_add_string(inner, u->name ? u->name : "");
-        const char* metas_src = (u->metas_json && u->metas_json[0]) ? u->metas_json : "{}";
-        knishio_json_t* metas_val = knishio_json_parse(metas_src, NULL);
-        if (!metas_val) {
-            metas_val = knishio_json_parse("{}", NULL);
-        }
-        if (metas_val) {
-            knishio_json_array_add(inner, metas_val); /* consumes (frees) metas_val */
-        }
-        knishio_json_array_add_array(outer, inner);   /* duplicates inner */
-        knishio_json_array_builder_free(inner);
+        list[i] = &w->token_units[i];
     }
-    char* result = NULL;
-    if (ok) {
-        knishio_json_t* arr = knishio_json_array_build(outer);
-        if (arr) {
-            result = knishio_json_serialize(arr, false);
-            knishio_json_free(arr);
-        }
-    }
-    knishio_json_array_builder_free(outer);
+    char* result = token_units_to_json(list, w->token_unit_count);
+    knishio_free(list);
     return result;
 }
 
@@ -2759,8 +2739,55 @@ static knishio_error_t set_atom_meta_pairs(knishio_atom_t* atom, const char** ke
     return KNISHIO_SUCCESS;
 }
 
-/* One unit as the canonical wire triple [id, name, metas] (metas parsed from metas_json, "{}"
- * when absent or unparseable). */
+/* Every finite number node becomes a raw node holding JS String(n), so cJSON_PrintUnformatted
+ * copies the text verbatim instead of re-printing it with %1.15g. Non-finite numbers are left
+ * alone (cJSON prints null, as JSON.stringify does). False only on allocation failure. */
+static bool js_number_nodes(cJSON* item) {
+    for (; item; item = item->next) {
+        if (cJSON_IsNumber(item)) {
+            char buf[32];
+            if (knishio_json_number_to_string(item->valuedouble, buf, sizeof(buf))) {
+                size_t len = strlen(buf);
+                char* text = cJSON_malloc(len + 1);
+                if (!text) {
+                    return false;
+                }
+                memcpy(text, buf, len + 1);
+                item->valuestring = text;
+                /* Parsed nodes carry no cJSON_IsReference/cJSON_StringIsConst flag to keep. */
+                item->type = cJSON_Raw;
+            }
+        } else if (item->child && !js_number_nodes(item->child)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* JSON.parse(text) laid out as JSON.stringify prints it: object members in JS property order
+ * and numbers as JS prints them. Caller owns the tree (cJSON_Delete); NULL when text is not
+ * JSON, when its value is JS-falsy (null, false, 0, "": JS TokenUnit metas become {}), or on
+ * allocation failure. */
+static cJSON* parse_metas_like_js(const char* text) {
+    cJSON* tree = cJSON_Parse(text);
+    if (tree && (cJSON_IsNull(tree) || cJSON_IsFalse(tree)
+                 || (cJSON_IsNumber(tree) && (tree->valuedouble == 0 || isnan(tree->valuedouble)))
+                 || (cJSON_IsString(tree) && tree->valuestring[0] == '\0'))) {
+        cJSON_Delete(tree);
+        tree = NULL;
+    }
+    if (tree) {
+        knishio_json_js_order(tree);
+        if (!js_number_nodes(tree)) {
+            cJSON_Delete(tree);
+            tree = NULL;
+        }
+    }
+    return tree;
+}
+
+/* One unit as the canonical wire triple [id, name, metas] (metas parsed from metas_json as JS
+ * parses and prints it, "{}" when absent or unparseable). */
 static cJSON* token_unit_triple(const knishio_token_unit_t* u) {
     cJSON* triple = cJSON_CreateArray();
     if (!triple) {
@@ -2768,7 +2795,7 @@ static cJSON* token_unit_triple(const knishio_token_unit_t* u) {
     }
     cJSON_AddItemToArray(triple, cJSON_CreateString(u->id ? u->id : ""));
     cJSON_AddItemToArray(triple, cJSON_CreateString(u->name ? u->name : ""));
-    cJSON* metas = (u->metas_json && u->metas_json[0]) ? cJSON_Parse(u->metas_json) : NULL;
+    cJSON* metas = (u->metas_json && u->metas_json[0]) ? parse_metas_like_js(u->metas_json) : NULL;
     cJSON_AddItemToArray(triple, metas ? metas : cJSON_CreateObject());
     return triple;
 }
