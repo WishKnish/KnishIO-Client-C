@@ -16,6 +16,8 @@ substantiate a detail, the entry says so instead of guessing.
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-11-17
+
 ### Upgrade notes
 
 - `knishio_request_tokens_params_t` gained a trailing `batch_id` field (see Added). Callers must
@@ -1036,7 +1038,8 @@ version line.
 
 - README, LICENSE, and examples (from the 2025-10-08 initial import).
 
-[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.7.1...HEAD
+[Unreleased]: https://github.com/WishKnish/KnishIO-Client-C/compare/1.8.0...HEAD
+[1.8.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.8.0
 [1.7.1]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.7.1
 [1.7.0]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.7.0
 [1.6.2]: https://github.com/WishKnish/KnishIO-Client-C/releases/tag/1.6.2
