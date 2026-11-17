@@ -30,6 +30,12 @@ substantiate a detail, the entry says so instead of guessing.
   `KNISHIO_ERROR_NEGATIVE_AMOUNT`, units with a positive amount return
   `KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT`, and amount 0 without units is proposed as JS does (see
   Fixed).
+- `knishio_client_transfer_tokens`, `knishio_client_transfer_tokens_multi`,
+  `knishio_client_burn_tokens` (with units), `knishio_client_query_balance_wallet` and
+  `knishio_client_query_balance_wallet_of_type` (and the operations built on them: replenish,
+  fuse, deposit and withdraw), and `knishio_client_query_wallets` can return
+  `KNISHIO_ERROR_JSON_PARSE` when a reply unit's `metas` string is not JSON (see Fixed);
+  `knishio_client_query_wallets` fails instead of skipping that wallet.
 
 ### Added
 
@@ -49,6 +55,14 @@ substantiate a detail, the entry says so instead of guessing.
   through the same path as replenish and fuse. Units with `{}` or null metas sign the same bytes
   as before, and caller metas whose value is JS-falsy (`null`, `false`, `0`, `""`) sign `{}` as in
   JS. Test: `PhaseBClientOps` `case_unit_metas_js_order`.
+- A reply unit whose `metas` string is not JSON (`{bad`, or a value followed by text such as
+  `{}x` or `nullx`) was signed as `{}`. JS `TokenUnit.createFromGraphQL` throws there
+  (`JSON.parse`), so the call fails before anything is proposed. Reading now also refuses text
+  after the value, as `JSON.parse` does, and burn, transfer, multi-transfer, the balance-wallet
+  query (replenish, fuse, deposit, withdraw) and `knishio_client_query_wallets` return
+  `KNISHIO_ERROR_JSON_PARSE` and propose nothing. `knishio_response_wallet_list_to_client_wallet`
+  returns NULL for such a row. Caller-supplied replenish metas keep the `{}` fallback. Test:
+  `PhaseBClientOps` `case_unit_metas_not_json`.
 
 - `knishio_response_wallet_list_to_client_wallet` leaked the JSON wrappers of `tokenUnits` and of
   each unit's `id`, `name` and `metas`; `knishio_client_query_wallets` leaked each list item;

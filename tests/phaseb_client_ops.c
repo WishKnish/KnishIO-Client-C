@@ -28,7 +28,10 @@
  *   - burnTokens with units takes the amount from the unit count (JS burnTokens): V source -balance
  *     with the burned units, V +count to the zero bundle, V remainder with the kept units; units
  *     with an amount return KNISHIO_ERROR_STACKABLE_UNIT_AMOUNT and a negative amount
- *     KNISHIO_ERROR_NEGATIVE_AMOUNT, nothing sent.
+ *     KNISHIO_ERROR_NEGATIVE_AMOUNT, nothing sent;
+ *   - a reply unit whose metas string is not JSON fails burnTokens, transferTokens (single and
+ *     multi), queryBalance and queryWallets with KNISHIO_ERROR_JSON_PARSE before anything is
+ *     proposed (JS TokenUnit.createFromGraphQL: JSON.parse throws).
  */
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -54,6 +57,7 @@
 #include "knishio/operations/identity.h"
 #include "knishio/operations/token.h"
 #include "knishio/operations/transfer.h"
+#include "knishio/operations/wallet.h"
 #include "knishio/wallet.h"
 
 static int g_failures = 0;
@@ -945,6 +949,82 @@ static void case_unit_metas_js_order(void) {
     cJSON_free(bal);
 }
 
+/* Served metas that are not JSON: JS TokenUnit.createFromGraphQL JSON.parses them and throws, so
+ * queryBalance/queryWallets and every operation built on them fail before anything is proposed.
+ * "{}x" and "nullx" are JSON values followed by text, which JSON.parse refuses as well. */
+static void case_unit_metas_not_json(void) {
+    printf("unit metas that are not JSON fail the call before anything is proposed\n");
+    const char *const bad[] = { "{bad", "{}x", "nullx" };
+    for (size_t b = 0; b < sizeof(bad) / sizeof(bad[0]); b++) {
+        stub_server_t s;
+        if (!server_start(&s)) { check(false, "stub server starts", NULL); return; }
+        const char *units[] = { "u1", "u2" };
+        const char *metas[] = { bad[b], NULL };
+        char *bal = balance_reply_metas("MTK", POS_REGULAR, "2", units, metas, 2);
+        /* Wallet list: a wallet without units, then the same Balance row carrying the bad unit. */
+        cJSON *root = cJSON_Parse(bal);
+        cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
+        cJSON *row = cJSON_DetachItemFromObjectCaseSensitive(data, "Balance");
+        cJSON *plain = cJSON_Duplicate(row, true);
+        cJSON_ReplaceItemInObjectCaseSensitive(plain, "tokenUnits", cJSON_CreateArray());
+        cJSON *rows = cJSON_AddArrayToObject(data, "Wallet");
+        cJSON_AddItemToArray(rows, plain);
+        cJSON_AddItemToArray(rows, row);
+        char *list = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        s.balance_reply = bal;
+        s.wallet_list_reply = list;
+        knishio_client_t *client = logged_in_client(&s);
+        check(client != NULL, "login through the stub", NULL);
+        if (client) {
+            char detail[160];
+            const char *one[] = { "u1" };
+            const char *b1 = "1111111111111111111111111111111111111111111111111111111111111111";
+            size_t proposals = count_requests(&s, "ProposeMolecule");
+
+            knishio_transfer_result_t *res = NULL;
+            knishio_error_t err = knishio_client_burn_tokens(client, "MTK", 0, one, 1, &res);
+            snprintf(detail, sizeof(detail), "metas=%s err=%d", bad[b], (int)err);
+            check(err == KNISHIO_ERROR_JSON_PARSE && !res, "burnTokens -> JsonParse", detail);
+            knishio_transfer_result_free(res);
+
+            knishio_transfer_params_t single = { .recipient = b1, .token = "MTK", .units = one, .unit_count = 1 };
+            res = NULL;
+            err = knishio_client_transfer_tokens(client, &single, &res);
+            snprintf(detail, sizeof(detail), "metas=%s err=%d", bad[b], (int)err);
+            check(err == KNISHIO_ERROR_JSON_PARSE && !res, "transferTokens -> JsonParse", detail);
+            knishio_transfer_result_free(res);
+
+            knishio_transfer_recipient_t recipients[] = { { .bundle_hash = b1, .units = one, .unit_count = 1 } };
+            knishio_transfer_multi_params_t multi = { .token = "MTK", .recipients = recipients, .recipient_count = 1 };
+            res = NULL;
+            err = knishio_client_transfer_tokens_multi(client, &multi, &res);
+            snprintf(detail, sizeof(detail), "metas=%s err=%d", bad[b], (int)err);
+            check(err == KNISHIO_ERROR_JSON_PARSE && !res, "transferTokens (multi) -> JsonParse", detail);
+            knishio_transfer_result_free(res);
+
+            check(count_requests(&s, "ProposeMolecule") == proposals, "nothing is proposed", bad[b]);
+
+            knishio_wallet_t *w = NULL;
+            err = knishio_client_query_balance_wallet(client, "MTK", &w);
+            snprintf(detail, sizeof(detail), "metas=%s err=%d", bad[b], (int)err);
+            check(err == KNISHIO_ERROR_JSON_PARSE && !w, "queryBalance wallet -> JsonParse, no wallet", detail);
+            knishio_wallet_free(w);
+
+            knishio_wallet_list_result_t *wl = NULL;
+            err = knishio_client_query_wallets(client, NULL, &wl);
+            snprintf(detail, sizeof(detail), "metas=%s err=%d wallets=%zu", bad[b], (int)err,
+                     wl ? wl->wallet_count : (size_t)0);
+            check(err == KNISHIO_ERROR_JSON_PARSE && !wl, "queryWallets -> JsonParse, no list", detail);
+            knishio_wallet_list_result_free(wl);
+            knishio_client_destroy(client);
+        }
+        server_stop(&s);
+        cJSON_free(list);
+        cJSON_free(bal);
+    }
+}
+
 int main(void) {
     printf("Phase B client operations (SDK %s)\n", KNISHIO_VERSION_STRING);
     knishio_init();
@@ -962,6 +1042,7 @@ int main(void) {
     case_transfer_multi();
     case_burn_units();
     case_unit_metas_js_order();
+    case_unit_metas_not_json();
     printf("%s: %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_failures);
     knishio_free(g_secret);
     knishio_free(g_bundle);

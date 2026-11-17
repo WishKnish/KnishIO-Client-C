@@ -8,7 +8,7 @@
 #include "knishio/graphql.h"
 #include "knishio/json/builder.h"
 #include "knishio/json/parser.h"
-#include "knishio/response/response_wallet_list.h"  /* knishio_response_wallet_list_to_client_wallet */
+#include "../token_unit_internal.h"  /* knishio_wallet_from_reply_json */
 #include "knishio/client_ops.h"  /* knishio_client_get_source_wallet_continuid, execute_graphql */
 #include "operations_internal.h"
 
@@ -114,10 +114,11 @@ knishio_error_t knishio_client_transfer_tokens(
                 /* Also parse the FULL Balance wallet (incl. tokenUnits) so the source carries its
                  * stackable units — otherwise split_units has nothing to partition and the V-atoms
                  * emit no tokenUnits meta, so the validator never routes the units (mirrors
-                 * transfer_tokens_multi's source-units fix). */
+                 * transfer_tokens_multi's source-units fix). A unit whose metas are not JSON fails
+                 * the transfer (JS createFromGraphQL throws). */
                 knishio_json_t* bal = knishio_json_get_path(root, "data.Balance");
                 if (bal) {
-                    bw = knishio_response_wallet_list_to_client_wallet(bal, NULL);
+                    error = knishio_wallet_from_reply_json(bal, NULL, &bw);
                     knishio_json_free(bal);
                 }
                 knishio_json_free(root);
@@ -125,6 +126,9 @@ knishio_error_t knishio_client_transfer_tokens(
         }
         knishio_graphql_response_free(response);
         response = NULL;
+        if (error != KNISHIO_SUCCESS) {
+            goto cleanup;
+        }
         if (!tok_position || strlen(tok_position) != 64 || !tok_amount) {
             error = KNISHIO_ERROR_INVALID_RESPONSE;  /* no funded token wallet to transfer from */
             goto cleanup;
@@ -336,10 +340,11 @@ knishio_error_t knishio_client_transfer_tokens_multi(
                 if (a) tok_amount = knishio_strdup(a);
                 /* Also parse the FULL Balance wallet (incl. tokenUnits) so the source carries its
                  * stackable units — otherwise split_units_multi has nothing to partition and the
-                 * V-atoms emit no tokenUnits meta, so the validator never routes the units. */
+                 * V-atoms emit no tokenUnits meta, so the validator never routes the units. A unit
+                 * whose metas are not JSON fails the transfer (JS createFromGraphQL throws). */
                 knishio_json_t* bal = knishio_json_get_path(root, "data.Balance");
                 if (bal) {
-                    bw = knishio_response_wallet_list_to_client_wallet(bal, NULL);
+                    error = knishio_wallet_from_reply_json(bal, NULL, &bw);
                     knishio_json_free(bal);
                 }
                 knishio_json_free(root);
@@ -347,6 +352,9 @@ knishio_error_t knishio_client_transfer_tokens_multi(
         }
         knishio_graphql_response_free(response);
         response = NULL;
+        if (error != KNISHIO_SUCCESS) {
+            goto cleanup;
+        }
         if (!tok_position || strlen(tok_position) != 64 || !tok_amount) {
             error = KNISHIO_ERROR_INVALID_RESPONSE;
             goto cleanup;
@@ -560,11 +568,13 @@ knishio_error_t knishio_client_query_balance(
 /* Query a full balance WALLET (balance + stackable token_units) for the authenticated
  * bundle + token. Completes the all-C stackable round-trip (create_token -> query units
  * back), mirroring the JS queryBalance().payload(). Reuses the cycle-72 response parser
- * (knishio_response_wallet_list_to_client_wallet) which populates wallet->token_units
+ * (knishio_wallet_from_reply_json) which populates wallet->token_units
  * from the validator's Wallet.tokenUnits resolver (gap SDK-001 Phase 1, cycle 75).
  *
  * The caller owns *wallet (free with knishio_wallet_free). A null data.Balance (no
- * balance for this bundle+token, or a shadow) leaves *wallet == NULL and returns SUCCESS. */
+ * balance for this bundle+token, or a shadow) leaves *wallet == NULL and returns SUCCESS.
+ * A unit whose metas are not JSON returns KNISHIO_ERROR_JSON_PARSE with *wallet == NULL
+ * (JS createFromGraphQL throws). */
 knishio_error_t knishio_client_query_balance_wallet(
     knishio_client_t* client,
     const char* token,
@@ -625,7 +635,7 @@ knishio_error_t knishio_client_query_balance_wallet_of_type(
             if (bal && knishio_json_get_type(bal) == KNISHIO_JSON_OBJECT) {
                 /* Reuse the cycle-72 parser: fields + balance + tokenUnits -> token_units.
                  * secret=NULL (read-only wallet; no signing-key derivation needed). */
-                *wallet = knishio_response_wallet_list_to_client_wallet(bal, NULL);
+                error = knishio_wallet_from_reply_json(bal, NULL, wallet);
             }
             if (bal) knishio_json_free(bal);
             knishio_json_free(root);
@@ -633,7 +643,7 @@ knishio_error_t knishio_client_query_balance_wallet_of_type(
     }
 
     knishio_graphql_response_free(response);
-    return KNISHIO_SUCCESS;
+    return error;
 }
 
 /* Query source wallet for transfers with validation */
@@ -756,10 +766,11 @@ knishio_error_t knishio_client_burn_tokens(
                 if (w) tok_address = knishio_strdup(w);
                 if (unit_count > 0) {
                     /* The source must carry its stackable units for split_units to partition
-                     * them (as transfer_tokens does); a fungible burn skips it. */
+                     * them (as transfer_tokens does); a fungible burn skips it. A unit whose
+                     * metas are not JSON fails the burn (JS createFromGraphQL throws). */
                     knishio_json_t* bal = knishio_json_get_path(root, "data.Balance");
                     if (bal) {
-                        bw = knishio_response_wallet_list_to_client_wallet(bal, NULL);
+                        error = knishio_wallet_from_reply_json(bal, NULL, &bw);
                         knishio_json_free(bal);
                     }
                 }
@@ -768,6 +779,9 @@ knishio_error_t knishio_client_burn_tokens(
         }
         knishio_graphql_response_free(response);
         response = NULL;
+        if (error != KNISHIO_SUCCESS) {
+            goto cleanup;
+        }
         if (!tok_position || strlen(tok_position) != 64 || !tok_amount) {
             error = KNISHIO_ERROR_INVALID_RESPONSE;  /* no funded token wallet to burn from */
             goto cleanup;

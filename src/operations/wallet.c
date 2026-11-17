@@ -8,7 +8,7 @@
 #include "knishio/client_ops.h"
 #include "knishio/graphql.h"
 #include "knishio/json/parser.h"
-#include "knishio/response/response_wallet_list.h"  /* knishio_response_wallet_list_to_client_wallet */
+#include "../token_unit_internal.h"  /* knishio_wallet_from_reply_json */
 #include "operations_internal.h"
 
 #include <cjson/cJSON.h>
@@ -275,8 +275,14 @@ knishio_error_t knishio_client_query_wallets(
                 knishio_json_free(item);
                 continue;
             }
-            /* Shared Balance/Wallet parser: fields, amount, batchId, tokenUnits. */
-            knishio_wallet_t* w = knishio_response_wallet_list_to_client_wallet(item, NULL);
+            /* Shared Balance/Wallet parser: fields, amount, batchId, tokenUnits. A unit whose
+             * metas are not JSON fails the whole query (JS createFromGraphQL throws). */
+            knishio_wallet_t* w = NULL;
+            if (knishio_wallet_from_reply_json(item, NULL, &w) == KNISHIO_ERROR_JSON_PARSE) {
+                error = KNISHIO_ERROR_JSON_PARSE;
+                knishio_json_free(item);
+                break;
+            }
             bool is_shadow = (w && w->address == NULL);
             knishio_json_get_bool_path(item, "isShadow", &is_shadow);
             knishio_json_free(item);
@@ -298,6 +304,10 @@ knishio_error_t knishio_client_query_wallets(
     if (root) knishio_json_free(root);
 
     knishio_graphql_response_free(response);
+    if (error != KNISHIO_SUCCESS) {
+        knishio_wallet_list_result_free(res);
+        return error;
+    }
     *result = res;
     return KNISHIO_SUCCESS;
 }

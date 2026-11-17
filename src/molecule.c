@@ -20,6 +20,7 @@
 #include "knishio/policy_meta.h"
 #include "atom_internal.h"
 #include "kcore_bridge.h"
+#include "token_unit_internal.h"
 
 #include <cjson/cJSON.h>
 
@@ -2766,10 +2767,10 @@ static bool js_number_nodes(cJSON* item) {
 
 /* JSON.parse(text) laid out as JSON.stringify prints it: object members in JS property order
  * and numbers as JS prints them. Caller owns the tree (cJSON_Delete); NULL when text is not
- * JSON, when its value is JS-falsy (null, false, 0, "": JS TokenUnit metas become {}), or on
- * allocation failure. */
+ * JSON (nothing may follow the value), when its value is JS-falsy (null, false, 0, "": JS
+ * TokenUnit metas become {}), or on allocation failure. */
 static cJSON* parse_metas_like_js(const char* text) {
-    cJSON* tree = cJSON_Parse(text);
+    cJSON* tree = cJSON_ParseWithOpts(text, NULL, 1);
     if (tree && (cJSON_IsNull(tree) || cJSON_IsFalse(tree)
                  || (cJSON_IsNumber(tree) && (tree->valuedouble == 0 || isnan(tree->valuedouble)))
                  || (cJSON_IsString(tree) && tree->valuestring[0] == '\0'))) {
@@ -2784,6 +2785,14 @@ static cJSON* parse_metas_like_js(const char* text) {
         }
     }
     return tree;
+}
+
+/* Declared in token_unit_internal.h. cJSON refuses NaN and Infinity, as JSON.parse does. */
+bool knishio_metas_text_is_json(const char* text) {
+    cJSON* tree = text ? cJSON_ParseWithOpts(text, NULL, 1) : NULL;
+    bool parsed = tree != NULL;
+    cJSON_Delete(tree);
+    return parsed;
 }
 
 /* One unit as the canonical wire triple [id, name, metas] (metas parsed from metas_json as JS
